@@ -1,0 +1,40 @@
+{
+  "fixture_metadata": {
+    "fixture_name": "gateway_http_response_merge_devices_array",
+    "transport_encoding": "messagepack_candidate",
+    "planned_content_type": "application/msgpack",
+    "purpose": "Two devices[] entries that should merge into one response_ab sample."
+  },
+  "body": {
+    "message_id": "gw-http-response-merge-001",
+    "gateway_mac": "54:10:26:AA:BB:CC",
+    "gateway_ip": "192.168.50.10",
+    "reported_at": "2026-03-21T08:05:00Z",
+    "uptime_ms": 128456,
+    "devices": [
+      {
+        "device_mac": "53:57:08:02:00:01",
+        "rssi": -70,
+        "data_type": "00",
+        "raw_payload": "00535708020001BA0A095431302D5741544348141618030ACB640DD400540063535708020001061A"
+      },
+      {
+        "device_mac": "53:57:08:02:00:01",
+        "rssi": -70,
+        "data_type": "00",
+        "raw_payload": "00535708020001BA0A095431302D5741544348071603187C5F0E42"
+      }
+    ]
+  },
+  "expected": {
+    "sample_count": 2,
+    "final_sample": {
+      "device_mac": "53:57:08:02:00:01",
+      "packet_type": "response_ab",
+      "blood_pressure": "124/95",
+      "temperature": 36.5,
+      "heart_rate": 84,
+      "blood_oxygen": 99
+    }
+  }
+}

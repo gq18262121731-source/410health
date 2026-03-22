@@ -1,0 +1,36 @@
+{
+  "fixture_metadata": {
+    "fixture_name": "gateway_http_broadcast_devices_array",
+    "transport_encoding": "messagepack_candidate",
+    "planned_content_type": "application/msgpack",
+    "purpose": "Single broadcast packet inside a future gateway HTTP body."
+  },
+  "body": {
+    "message_id": "gw-http-broadcast-001",
+    "gateway_mac": "54:10:26:AA:BB:CC",
+    "gateway_ip": "192.168.50.10",
+    "reported_at": "2026-03-21T08:00:00Z",
+    "uptime_ms": 123456,
+    "devices": [
+      {
+        "device_mac": "53:57:08:03:00:01",
+        "rssi": -70,
+        "data_type": "00",
+        "raw_payload": "00535708030001BA0201061AFF4C000215526164696F6C616E642D54100000000054630E4201"
+      }
+    ]
+  },
+  "expected": {
+    "sample_count": 1,
+    "samples": [
+      {
+        "device_mac": "53:57:08:03:00:01",
+        "packet_type": "broadcast",
+        "heart_rate": 84,
+        "blood_oxygen": 99,
+        "temperature": 36.5,
+        "sos_flag": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+frontend/vue-dashboard/node_modules/
+frontend/vue-dashboard/dist/
+.env
+__pycache__/
+*.pyc
+.playwright-cli/
+output/
+.pytest_cache/
+pytest-cache-files-*
+data/
+backend/tmp_x.txt

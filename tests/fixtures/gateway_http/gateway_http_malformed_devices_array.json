@@ -1,0 +1,26 @@
+{
+  "fixture_metadata": {
+    "fixture_name": "gateway_http_malformed_devices_array",
+    "transport_encoding": "messagepack_candidate",
+    "planned_content_type": "application/msgpack",
+    "purpose": "Malformed raw payload example for future HTTP receiver rejection and parser-side no-sample handling."
+  },
+  "body": {
+    "message_id": "gw-http-malformed-001",
+    "gateway_mac": "54:10:26:AA:BB:CC",
+    "gateway_ip": "192.168.50.10",
+    "reported_at": "2026-03-21T08:10:00Z",
+    "uptime_ms": 133456,
+    "devices": [
+      {
+        "device_mac": "53:57:08:09:00:01",
+        "rssi": -70,
+        "data_type": "00",
+        "raw_payload": "00535708090001BAABC"
+      }
+    ]
+  },
+  "expected": {
+    "sample_count": 0
+  }
+}
