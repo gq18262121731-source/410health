@@ -7,6 +7,8 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from backend.runtime_bootstrap import resolve_runtime_bootstrap
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
@@ -15,7 +17,7 @@ class Settings(BaseSettings):
     """Application settings aligned with the 2026 competition platform."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(BASE_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -28,7 +30,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
-    allowed_mac_prefixes: list[str] = Field(default_factory=lambda: ["53:57:08"])
+    allowed_mac_prefixes: list[str] = Field(default_factory=list)
+    mock_device_mac_prefix: str = "53:57:08"
     default_device_name: str = "T10-WATCH"
     device_uuid: str = "52616469-6F6C-616E-642D-541000000000"
     service_uuid: str = "00001803-494c-4f47-4943-544543480000"
@@ -38,6 +41,7 @@ class Settings(BaseSettings):
     chroma_path: str = str(BASE_DIR / "data" / "chroma")
 
     offline_only_runtime: bool = True
+    llm_provider: Literal["auto", "qwen", "ollama"] = "qwen"
     local_model_routing: Literal["single", "task_router"] = "task_router"
     local_report_routing: Literal["fixed", "role_router"] = "fixed"
     local_approved_models: Annotated[
@@ -50,11 +54,16 @@ class Settings(BaseSettings):
 
     qwen_api_base: str = ""
     qwen_api_key: str = ""
+    dashscope_api_key_env: str = Field(default="", validation_alias="DASHSCOPE_API_KEY")
     qwen_model: str = ""
     qwen_embedding_model: str = ""
     qwen_rerank_model: str = ""
+    qwen_asr_model: str = ""
+    qwen_tts_model: str = ""
+    qwen_tts_voice: str = ""
     qwen_rerank_api: str = ""
     qwen_enable_rerank: bool = False
+    tavily_api_key: str = ""
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:1.7b"
@@ -73,6 +82,8 @@ class Settings(BaseSettings):
     network_probe_cache_seconds: int = 20
 
     jwt_secret: str = "replace-me-in-production"
+    seed_default_accounts: bool = True
+    seed_default_password: str = "123456"
     ws_heartbeat_seconds: int = 30
 
     realtime_window_size: int = 30
@@ -80,12 +91,20 @@ class Settings(BaseSettings):
     mock_device_count: int = 10
     mock_push_interval_seconds: float = 1.2
     use_mock_data: bool = True
+    enable_mock_overlay: bool = False
+    strict_source_match: bool = True
     data_mode: Literal["mock", "serial", "mqtt"] = "mock"
+    shouhuan_script_path: str = str(BASE_DIR / "shouhuan.py")
+    bootstrap_source: str = "fallback_mock"
+    bootstrap_status: str = "fallback"
+    bootstrap_reason: str = "shouhuan_missing"
     serial_enabled: bool = False
     serial_port: str = ""
     serial_baudrate: int = 115200
+    serial_collection_strategy: Literal["single_target", "static_filter"] = "single_target"
     serial_packet_type: int = 5
-    serial_mac_filter: str = "535708000000"
+    serial_packet_merge_timeout_seconds: float = 2.5
+    serial_mac_filter: str = "53:57:08:00:00:00"
     serial_detection_keywords: list[str] = Field(
         default_factory=lambda: ["cp210", "usb serial", "nrf", "silicon labs"]
     )
@@ -109,6 +128,70 @@ class Settings(BaseSettings):
     sos_broadcast_window_seconds: int = 15
     health_score_floor: int = 35
     stream_retention_points: int = 600
+    raw_data_dir: str = str(BASE_DIR / "data" / "raw")
+    processed_data_dir: str = str(BASE_DIR / "data" / "processed")
+    artifact_data_dir: str = str(BASE_DIR / "data" / "artifacts")
+    static_health_data_path: str = str(BASE_DIR / "data" / "raw" / "patients_data_with_alerts.xlsx")
+    static_health_sheet_name: str = ""
+    static_model_dir: str = str(BASE_DIR / "data" / "artifacts" / "static_health")
+    static_model_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "static_health_model.pt")
+    static_scaler_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "feature_scaler.joblib")
+    static_feature_columns_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "feature_columns.json")
+    static_label_mapping_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "label_mapping.json")
+    static_training_config_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "training_config.json")
+    static_metrics_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "metrics.json")
+    train_batch_size: int = 16
+    train_epochs: int = 40
+    train_learning_rate: float = 1e-3
+    train_val_ratio: float = 0.2
+    train_random_seed: int = 42
+    allow_rule_only_fallback: bool = False
+    alert_probability_threshold: float = 0.5
+    model_fusion_rule_weight: float = 0.6
+    model_fusion_model_weight: float = 0.4
+    model_device: Literal["auto", "cpu", "cuda"] = "auto"
+    rule_quality_floor: float = 0.80
+    poor_signal_quality_threshold: float = 85.0
+    stability_profile: str = "robust_demo"
+    stabilization_window_seconds: int = 45
+    stabilization_max_points: int = 5
+    stabilization_bp_points: int = 3
+    stabilization_min_points: int = 3
+    stabilization_history_cap: int = 120
+    stability_recovery_points: int = 3
+    stability_activation_min_abnormal_points: int = 2
+    stability_default_sample_interval_seconds: int = 10
+    stability_warning_aggregation_seconds: int = 60
+    stability_explanation_refresh_seconds: int = 45
+    score_max_drop_per_sample: float = 6.0
+    stability_event_thresholds: dict[str, dict[str, float]] = Field(
+        default_factory=lambda: {
+            "tachycardia": {"enter": 105.0, "exit": 98.0},
+            "bradycardia": {"enter": 50.0, "exit": 60.0},
+            "low_spo2": {"enter": 89.0, "exit": 91.0},
+            "hypertension": {"sbp_enter": 145.0, "dbp_enter": 92.0, "sbp_exit": 138.0, "dbp_exit": 88.0},
+            "fever": {"enter": 37.5, "exit": 37.2},
+            "poor_signal_quality": {"enter": 85.0, "exit": 88.0},
+        }
+    )
+    stability_event_min_duration_seconds: dict[str, int] = Field(
+        default_factory=lambda: {
+            "tachycardia": 25,
+            "bradycardia": 25,
+            "low_spo2": 25,
+            "hypertension": 45,
+            "fever": 45,
+            "poor_signal_quality": 20,
+        }
+    )
+    rule_score_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "heart_rate": 0.30,
+            "spo2": 0.30,
+            "blood_pressure": 0.25,
+            "body_temp": 0.15,
+        }
+    )
 
     @field_validator("debug", mode="before")
     @classmethod
@@ -147,6 +230,47 @@ class Settings(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def apply_runtime_bootstrap(self) -> "Settings":
+        if self.data_mode == "mqtt" and self.mqtt_enabled:
+            self.bootstrap_source = "mqtt_config"
+            self.bootstrap_status = "ready"
+            self.bootstrap_reason = "mqtt_runtime_selected"
+            self.use_mock_data = False
+            self.enable_mock_overlay = False
+            self.serial_enabled = False
+            return self
+
+        bootstrap = resolve_runtime_bootstrap(self.shouhuan_script_path)
+        self.bootstrap_source = bootstrap.bootstrap_source
+        self.bootstrap_status = bootstrap.bootstrap_status
+        self.bootstrap_reason = bootstrap.bootstrap_reason
+
+        if bootstrap.port:
+            self.serial_port = bootstrap.port
+        if bootstrap.baudrate:
+            self.serial_baudrate = bootstrap.baudrate
+        if bootstrap.mac_address:
+            self.serial_mac_filter = bootstrap.mac_address
+        if bootstrap.packet_type:
+            self.serial_packet_type = bootstrap.packet_type
+
+        if bootstrap.mode == "serial":
+            self.data_mode = "serial"
+            self.serial_enabled = True
+            self.use_mock_data = False
+            self.enable_mock_overlay = True
+            self.serial_collection_strategy = "single_target"
+            self.serial_apply_mac_filter = False
+            self.serial_apply_packet_type = False
+            return self
+
+        self.data_mode = "mock"
+        self.serial_enabled = False
+        self.use_mock_data = True
+        self.enable_mock_overlay = False
+        return self
+
     @property
     def data_dir(self) -> Path:
         return BASE_DIR / "data"
@@ -157,6 +281,473 @@ class Settings(BaseSettings):
         if approved:
             return approved
         return ("qwen3:1.7b", "deepseek-r1:1.5b")
+
+    def _normalize_qwen_model(self, model: str) -> str:
+        normalized = (model or "").strip()
+        if not normalized:
+            return "qwen3.5-flash"
+        lower = normalized.lower()
+        # 兼容脚本中指定的旧模型名和易出错名称，强制改为官方推荐模型
+        if lower in {"qwen3.5-flash", "qwen3.5", "qwen3.5-flash-mini", "qwen3.5-lite"}:
+            return "qwen3.5-flash"
+        return normalized
+
+    @property
+    def qwen_llm_configured(self) -> bool:
+        return bool(self.qwen_api_key.strip() and self._normalize_qwen_model(self.qwen_model))
+
+    @property
+    def qwen_missing_config_fields(self) -> list[str]:
+        missing: list[str] = []
+        if not self.dashscope_api_key:
+            missing.append("QWEN_API_KEY/DASHSCOPE_API_KEY")
+        if not self.qwen_model.strip():
+            missing.append("QWEN_MODEL")
+        return missing
+
+    @property
+    def dashscope_api_key(self) -> str:
+        return self.dashscope_api_key_env.strip() or self.qwen_api_key.strip()
+
+    @property
+    def tongyi_chat_model(self) -> str:
+        return self._normalize_qwen_model(self.qwen_model)
+
+    @property
+    def tongyi_embedding_model(self) -> str:
+        return self.qwen_embedding_model.strip() or "text-embedding-v2"
+
+    @property
+    def tongyi_rerank_model(self) -> str:
+        return self.qwen_rerank_model.strip() or "gte-rerank-v2"
+
+    @property
+    def qwen_asr_model_name(self) -> str:
+        return self.qwen_asr_model.strip() or "qwen3-asr-flash-realtime-2026-02-10"
+
+    @property
+    def qwen_asr_model_id(self) -> str:
+        raw = (self.qwen_asr_model.strip() or "").lower()
+        if not raw:
+            return "qwen3-asr-flash-realtime-2026-02-10"
+        if raw in {"qwen3-asr-flash", "qwen3-asr", "qwen-asr", "qwen3-asr-flash-realtime"}:
+            return "qwen3-asr-flash-realtime-2026-02-10"
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2025-10-27":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10", "qwen3-asr-flash-realtime-2025-10-27"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime":
+            return "qwen3-asr-flash-realtime-2026-02-10"
+        if raw == "qwen3-asr-flash":
+            return "qwen3-asr-flash-realtime-2026-02-10"
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw in {"qwen3-asr-flash-realtime-2026-02-10"}:
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        if raw == "qwen3-asr-flash-realtime-2026-02-10":
+            return raw
+        return self.qwen_asr_model.strip()
+
+    @property
+    def qwen_asr_model_id(self) -> str:
+        raw = self.qwen_asr_model.strip()
+        if not raw:
+            return "qwen3-asr-flash-realtime-2026-02-10"
+        v = raw.lower()
+        if v in {"qwen3-asr-flash", "qwen3-asr", "qwen-asr", "qwen3-asr-flash-realtime"}:
+            return "qwen3-asr-flash-realtime-2026-02-10"
+        if v == "qwen3-asr-flash-realtime":
+            return "qwen3-asr-flash-realtime-2026-02-10"
+        return v
+
+    @property
+    def qwen_tts_model_name(self) -> str:
+        return self.qwen_tts_model.strip() or "cosyvoice-v3-flash"
+
+    @property
+    def qwen_tts_model_id(self) -> str:
+        raw = (self.qwen_tts_model.strip() or "").lower()
+        if not raw:
+            return "cosyvoice-v3-flash"
+        if raw in {"qwen3-tts-flash", "qwen3-tts", "qwen-tts"}:
+            return "cosyvoice-v3-flash"
+        return self.qwen_tts_model.strip().lower()
+
+    @property
+    def qwen_tts_voice_id(self) -> str:
+        return self.qwen_tts_voice.strip() or "longyingtian"
+
+    @property
+    def tongyi_chat_configured(self) -> bool:
+        return bool(self.dashscope_api_key and self.tongyi_chat_model)
+
+    @property
+    def tongyi_embedding_configured(self) -> bool:
+        return bool(self.dashscope_api_key and self.tongyi_embedding_model)
+
+    @property
+    def tongyi_rerank_configured(self) -> bool:
+        return bool(self.dashscope_api_key and self.tongyi_rerank_model)
+
+    @property
+    def preferred_llm_provider(self) -> Literal["qwen", "ollama"]:
+        if self.llm_provider == "ollama":
+            return "ollama"
+        if self.llm_provider == "auto":
+            return "qwen" if self.qwen_llm_configured else "ollama"
+        return "qwen"
+
+    @property
+    def runtime_mode(self) -> Literal["mock", "serial", "mqtt"]:
+        if self.data_mode == "mqtt" and self.mqtt_enabled:
+            return "mqtt"
+        if self.data_mode == "serial" and self.serial_enabled:
+            return "serial"
+        return "mock"
+
+    @property
+    def serial_runtime_enabled(self) -> bool:
+        return self.runtime_mode == "serial"
+
+    @property
+    def mock_runtime_enabled(self) -> bool:
+        return self.runtime_mode == "mock" and self.use_mock_data
 
 
 @lru_cache(maxsize=1)

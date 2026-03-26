@@ -10,6 +10,12 @@ function formatError(error: unknown, fallback: string) {
   return fallback;
 }
 
+function normalizeMacAddressInput(raw: string) {
+  const compact = raw.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+  if (compact.length !== 12) return raw.trim().toUpperCase();
+  return compact.match(/.{1,2}/g)?.join(":") ?? raw.trim().toUpperCase();
+}
+
 export function useRelationActions(options: {
   sessionUser: Ref<SessionUser | null>;
   refreshDashboardData: () => Promise<void>;
@@ -18,13 +24,18 @@ export function useRelationActions(options: {
   const relationBusy = ref<BusyKey>("");
   const relationStatus = ref("");
   const relationError = ref("");
+  const lastRegisteredDeviceMac = ref("");
   const elderForm = ref({ name: "", phone: "", password: "123456", age: 78, apartment: "" });
   const familyForm = ref({ name: "", phone: "", password: "123456", relationship: "daughter", loginUsername: "" });
   const relationForm = ref({ elderUserId: "", familyUserId: "", relationType: "daughter", isPrimary: true });
   const deviceForm = ref({
     mode: "register" as DeviceActionMode,
     macAddress: "",
-    deviceName: "T10 Health Band",
+    deviceName: "T10-WATCH",
+    modelCode: "t10_v3",
+    ingestMode: "serial" as const,
+    serviceUuid: "00001803-494C-4F47-4943-544543480000",
+    deviceUuid: "52616469-6F6C-616E-642D-541000000000",
     targetUserId: "",
     reason: "",
   });
@@ -126,12 +137,14 @@ export function useRelationActions(options: {
 
   async function submitDeviceAction() {
     clearRelationFeedback();
-    const mac = deviceForm.value.macAddress.trim();
+    lastRegisteredDeviceMac.value = "";
+    const mac = normalizeMacAddressInput(deviceForm.value.macAddress);
+    deviceForm.value.macAddress = mac;
     if (!mac) {
       relationError.value = "请填写或选择设备 MAC。";
       return;
     }
-    if (deviceForm.value.mode !== "unbind" && !deviceForm.value.targetUserId) {
+    if (deviceForm.value.mode !== "register" && deviceForm.value.mode !== "unbind" && !deviceForm.value.targetUserId) {
       relationError.value = "请选择设备归属的老人。";
       return;
     }
@@ -142,11 +155,16 @@ export function useRelationActions(options: {
         await api.registerDevice(
           {
             mac_address: mac,
-            device_name: deviceForm.value.deviceName.trim() || "T10 Health Band",
+            device_name: deviceForm.value.deviceName.trim() || "T10-WATCH",
             user_id: deviceForm.value.targetUserId || null,
+            model_code: deviceForm.value.modelCode,
+            ingest_mode: deviceForm.value.ingestMode,
+            service_uuid: deviceForm.value.serviceUuid,
+            device_uuid: deviceForm.value.deviceUuid,
           },
           options.getToken(),
         );
+        lastRegisteredDeviceMac.value = mac.toUpperCase();
       } else if (deviceForm.value.mode === "bind") {
         await api.bindDevice(
           {
@@ -177,7 +195,9 @@ export function useRelationActions(options: {
         );
       }
 
-      relationStatus.value = "设备操作已完成。";
+      relationStatus.value = deviceForm.value.mode === "register"
+        ? `T10 手环已注册${deviceForm.value.targetUserId ? "，并已写入当前成员台账" : "，当前暂未绑定成员"}。采集器接入后，系统会自动锁定这台设备并开始等待完整 A/B 双包。`
+        : "设备操作已完成。";
       deviceForm.value.reason = "";
       await options.refreshDashboardData();
     } catch (error) {
@@ -191,6 +211,7 @@ export function useRelationActions(options: {
     deviceForm,
     elderForm,
     familyForm,
+    lastRegisteredDeviceMac,
     relationBusy,
     relationError,
     relationForm,

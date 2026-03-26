@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import re
 from uuid import uuid4
 
 from backend.config import Settings
@@ -15,28 +16,21 @@ from backend.services.user_service import UserService
 
 
 ELDER_NAME_POOL = [
-    "Zhang Guihua",
-    "Li Xiuying",
-    "Wang Shulan",
-    "Chen Yulan",
-    "Zhou Lanying",
-    "Wu Xiuzhen",
-    "Liu Yumei",
-    "Xu Guiying",
-    "Sun Yulan",
-    "Ma Xiulan",
+    "王秀英",
+    "李建国",
+    "张桂兰",
+    "陈德福",
+    "刘春梅",
+    "赵志强",
+    "黄玉兰",
+    "周永顺",
+    "吴淑芬",
+    "郑国华",
+    "孙美玲",
+    "冯桂芝",
 ]
 
-FAMILY_NAME_POOL = [
-    "Li Na",
-    "Zhang Min",
-    "Wang Lei",
-    "Chen Fang",
-    "Zhou Qiang",
-    "Wu Jing",
-]
-
-RELATIONSHIP_POOL = ["daughter", "son", "spouse", "granddaughter", "grandson", "relative"]
+RELATIONSHIP_POOL = ["女儿", "儿子", "配偶", "外孙女", "外孙", "亲属"]
 
 
 def _pick_from_pool(pool: list[str], index: int, fallback_prefix: str) -> str:
@@ -78,11 +72,17 @@ class CareService:
         formal_directory = self._build_formal_directory()
         if formal_directory is not None:
             return formal_directory
+        return self.get_demo_directory()
+
+    def get_demo_directory(self) -> CareDirectory:
         return self._build_demo_directory(self._device_service.list_devices())
 
     def get_family_directory(self, family_id: str) -> CareDirectory:
         directory = self.get_directory()
         family = next((item for item in directory.families if item.id == family_id), None)
+        if family is None:
+            directory = self.get_demo_directory()
+            family = next((item for item in directory.families if item.id == family_id), None)
         if not family:
             return CareDirectory(community=directory.community, elders=[], families=[])
         elder_set = set(family.elder_ids)
@@ -98,6 +98,7 @@ class CareService:
                 role=record.user.role,
                 family_id=record.user.family_id,
                 community_id=record.user.community_id,
+                default_password=record.password,
             )
             for record in records
         ]
@@ -198,23 +199,23 @@ class CareService:
         return CareDirectory(community=community, elders=elders, families=families)
 
     def _build_demo_accounts(self) -> list[AccountRecord]:
-        directory = self._build_demo_directory(self._device_service.list_devices())
+        directory = self.get_demo_directory()
         community_user = SessionUser(
-            id="user-community-admin",
+            id=directory.community.id,
             username="community_admin",
-            name=f"{directory.community.name} Admin",
+            name="社区管理员",
             role=UserRole.COMMUNITY,
             community_id=directory.community.id,
             family_id=None,
         )
-        records = [AccountRecord(username="community_admin", password="123456", user=community_user)]
+        records = [AccountRecord(username="community_admin", password=self._settings.seed_default_password, user=community_user)]
         for family in directory.families:
             records.append(
                 AccountRecord(
                     username=family.login_username.lower(),
-                    password="123456",
+                    password=self._settings.seed_default_password,
                     user=SessionUser(
-                        id=f"user-{family.id}",
+                        id=family.id,
                         username=family.login_username.lower(),
                         name=family.name,
                         role=UserRole.FAMILY,
@@ -223,6 +224,27 @@ class CareService:
                     ),
                 )
             )
+            match = re.search(r"\d+", family.login_username)
+            family_seq = match.group(0) if match else "00"
+            for elder_index, elder_id in enumerate(family.elder_ids, start=1):
+                elder = next((item for item in directory.elders if item.id == elder_id), None)
+                if elder is None:
+                    continue
+                elder_username = f"elder{family_seq}_{elder_index:02d}"
+                records.append(
+                    AccountRecord(
+                        username=elder_username,
+                        password=self._settings.seed_default_password,
+                        user=SessionUser(
+                            id=elder.id,
+                            username=elder_username,
+                            name=elder.name,
+                            role=UserRole.ELDER,
+                            community_id=directory.community.id,
+                            family_id=family.id,
+                        ),
+                    )
+                )
         return records
 
     def _build_formal_session_user(self, user) -> SessionUser | None:
@@ -279,7 +301,7 @@ class CareService:
             if family_id not in family_map:
                 family_map[family_id] = FamilyProfile(
                     id=family_id,
-                    name=_pick_from_pool(FAMILY_NAME_POOL, family_index, "Family"),
+                    name=f"家属 {family_index + 1:02d}",
                     relationship=_pick_from_pool(RELATIONSHIP_POOL, family_index, "relative"),
                     phone=_build_phone(family_index),
                     community_id=community.id,
@@ -305,8 +327,8 @@ class CareService:
     def _community_profile() -> CommunityProfile:
         return CommunityProfile(
             id="community-haitang",
-            name="Haitang Community",
-            address="68 Haitang Road",
-            manager="Community Manager",
+            name="海棠社区",
+            address="海棠路 68 号",
+            manager="社区值班中心",
             hotline="400-810-6868",
         )

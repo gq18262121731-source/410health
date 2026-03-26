@@ -24,7 +24,9 @@ class PacketLayout:
     legacy_header_length: int = 14
     legacy_response_a_marker: bytes = bytes.fromhex("1803")
     legacy_response_b_marker: bytes = bytes.fromhex("0318")
-    response_scan_limit: int = 18
+    response_a_marker: bytes = bytes.fromhex("161803")
+    response_b_marker: bytes = bytes.fromhex("160318")
+    response_scan_limit: int = 64
     broadcast_prefix: bytes = bytes.fromhex("0201061AFF4C000215")
     default_uuid: str = "52616469-6F6C-616E-642D-541000000000"
 
@@ -40,7 +42,7 @@ class PartialPacket:
 
 
 class T10PacketParser:
-    """Parser for the T10 bracelet broadcast and response frames."""
+    """Parser for T10 bracelet data aligned with the field script in shouhuan.py."""
 
     def __init__(
         self,
@@ -63,41 +65,35 @@ class T10PacketParser:
         timestamp: datetime | None = None,
     ) -> HealthSample | None:
         timestamp = timestamp or datetime.now(timezone.utc)
+        stale = self._flush_stale_partials(timestamp)
         packet = self._normalize_payload(payload)
         kind = self.identify_packet(packet)
 
         if kind is PacketKind.UNKNOWN:
-            return None
+            return stale
 
         if kind is PacketKind.BROADCAST:
-            return self._decode_broadcast(device_mac, packet, timestamp, source)
+            return self._decode_broadcast(device_mac, packet, timestamp, source) or stale
 
         if kind is PacketKind.RESPONSE_A:
-            return self._handle_response_a(packet, timestamp, source)
+            return self._handle_response_a(device_mac, packet, timestamp, source) or stale
 
         if kind is PacketKind.RESPONSE_B:
-            return self._handle_response_b(device_mac, packet, timestamp, source)
+            return self._handle_response_b(device_mac, packet, timestamp, source) or stale
 
-        return self._decode_legacy(device_mac, packet, kind, timestamp, source)
+        return self._decode_legacy(device_mac, packet, kind, timestamp, source) or stale
 
     def identify_packet(self, payload: bytes) -> PacketKind:
         if payload.startswith(self._layout.broadcast_prefix) and len(payload) >= 30:
             return PacketKind.BROADCAST
 
-        if payload.startswith(bytes.fromhex("0A09")) or payload.startswith(bytes.fromhex("0909")):
-            marker_index = self._find_response_marker(payload, self._layout.legacy_response_a_marker)
-            if marker_index != -1 and len(payload) >= marker_index + 19:
-                return PacketKind.RESPONSE_A
+        response_a_index = self._find_response_marker(payload, self._layout.response_a_marker)
+        if response_a_index != -1 and len(payload) >= response_a_index + 20:
+            return PacketKind.RESPONSE_A
 
-        if payload.startswith(bytes.fromhex("0716")) or payload.startswith(bytes.fromhex("0909")):
-            marker_index = self._find_response_marker(payload, self._layout.legacy_response_b_marker)
-            if marker_index != -1 and len(payload) >= marker_index + 6:
-                return PacketKind.RESPONSE_B
-
-        if payload.startswith(bytes.fromhex("0A09")):
-            marker_index = self._find_response_marker(payload, self._layout.legacy_response_b_marker)
-            if marker_index != -1 and len(payload) >= marker_index + 6:
-                return PacketKind.RESPONSE_B
+        response_b_index = self._find_response_marker(payload, self._layout.response_b_marker)
+        if response_b_index != -1 and len(payload) >= response_b_index + 7:
+            return PacketKind.RESPONSE_B
 
         if len(payload) <= self._layout.legacy_marker_offset + 1:
             return PacketKind.UNKNOWN
@@ -133,6 +129,7 @@ class T10PacketParser:
         blood_oxygen = payload[26]
         temperature = round(int.from_bytes(payload[27:29], byteorder="big") / 100.0, 2)
         sos_value = payload[29]
+        sos_trigger = self._decode_sos_trigger(sos_value)
 
         normalized_mac = self._normalize_mac(device_mac)
         return HealthSample(
@@ -143,6 +140,8 @@ class T10PacketParser:
             blood_oxygen=blood_oxygen,
             battery=0,
             sos_flag=bool(sos_value),
+            sos_value=sos_value,
+            sos_trigger=sos_trigger,
             source=source,
             device_uuid=self._format_uuid(uuid_bytes),
             packet_type=PacketKind.BROADCAST.value,
@@ -151,31 +150,34 @@ class T10PacketParser:
 
     def _decode_response_a(
         self,
+        device_mac: str | None,
         payload: bytes,
         timestamp: datetime,
         source: IngestionSource,
     ) -> HealthSample | None:
-        marker_index = self._find_response_marker(payload, self._layout.legacy_response_a_marker)
-        if marker_index == -1 or len(payload) < marker_index + 19:
+        marker_index = self._find_response_marker(payload, self._layout.response_a_marker)
+        if marker_index == -1 or len(payload) < marker_index + 20:
             return None
 
         ambient_temperature = round(
-            int.from_bytes(payload[marker_index + 2 : marker_index + 4], byteorder="big") / 100.0,
+            int.from_bytes(payload[marker_index + 3 : marker_index + 5], byteorder="big") / 100.0,
             2,
         )
-        battery = payload[marker_index + 4]
+        battery = payload[marker_index + 5]
         surface_temperature = round(
-            int.from_bytes(payload[marker_index + 5 : marker_index + 7], byteorder="big") / 100.0,
+            int.from_bytes(payload[marker_index + 6 : marker_index + 8], byteorder="big") / 100.0,
             2,
         )
         sample_temperature = surface_temperature if 30.0 <= surface_temperature <= 45.0 else 30.0
-        heart_rate = int.from_bytes(payload[marker_index + 7 : marker_index + 9], byteorder="big")
-        blood_oxygen = int.from_bytes(payload[marker_index + 9 : marker_index + 11], byteorder="big")
-        device_mac = self._format_mac(payload[marker_index + 11 : marker_index + 17])
-        steps = int.from_bytes(payload[marker_index + 17 : marker_index + 19], byteorder="big")
+        heart_rate = int.from_bytes(payload[marker_index + 8 : marker_index + 10], byteorder="big")
+        blood_oxygen = int.from_bytes(payload[marker_index + 10 : marker_index + 12], byteorder="big")
+        resolved_mac = self._normalize_mac(device_mac) if device_mac else None
+        if not resolved_mac:
+            resolved_mac = self._format_mac(payload[marker_index + 12 : marker_index + 18])
+        steps = int.from_bytes(payload[marker_index + 18 : marker_index + 20], byteorder="big")
 
         return HealthSample(
-            device_mac=device_mac,
+            device_mac=resolved_mac,
             timestamp=timestamp,
             heart_rate=heart_rate,
             temperature=sample_temperature,
@@ -191,13 +193,33 @@ class T10PacketParser:
             raw_packet_a=payload.hex().upper(),
         )
 
+    def _flush_stale_partials(self, now: datetime) -> HealthSample | None:
+        """Emit a response_a_only sample for any partial that has expired."""
+        stale_macs = [
+            mac
+            for mac, partial in self._partials.items()
+            if partial.sample
+            and partial.packet_a
+            and not partial.packet_b
+            and now - partial.first_seen > timedelta(seconds=self._merge_timeout)
+        ]
+        flushed: HealthSample | None = None
+        for mac in stale_macs:
+            partial = self._partials.pop(mac)
+            if partial.sample:
+                flushed = partial.sample.model_copy(
+                    update={"packet_type": "response_a_only"}
+                )
+        return flushed
+
     def _handle_response_a(
         self,
+        device_mac: str | None,
         payload: bytes,
         timestamp: datetime,
         source: IngestionSource,
     ) -> HealthSample | None:
-        sample = self._decode_response_a(payload, timestamp, source)
+        sample = self._decode_response_a(device_mac, payload, timestamp, source)
         if sample is None:
             return None
 
@@ -212,11 +234,11 @@ class T10PacketParser:
         self._partials[sample.device_mac] = partial
 
         if partial.packet_b:
-            merged = self._merge_response_b(sample, partial.packet_b, partial.raw_b)
+            merged = self._merge_response_b(sample, partial.packet_b, partial.raw_b, timestamp)
             del self._partials[sample.device_mac]
             return merged
 
-        return sample
+        return None
 
     def _handle_response_b(
         self,
@@ -239,7 +261,7 @@ class T10PacketParser:
         self._partials[normalized_mac] = partial
 
         if partial.sample:
-            merged = self._merge_response_b(partial.sample, payload, partial.raw_b)
+            merged = self._merge_response_b(partial.sample, payload, partial.raw_b, timestamp)
             del self._partials[normalized_mac]
             return merged
 
@@ -250,25 +272,35 @@ class T10PacketParser:
         sample: HealthSample,
         payload: bytes,
         raw_packet_b: str | None,
+        timestamp: datetime,
     ) -> HealthSample:
-        marker_index = self._find_response_marker(payload, self._layout.legacy_response_b_marker)
-        if marker_index == -1 or len(payload) < marker_index + 6:
+        marker_index = self._find_response_marker(payload, self._layout.response_b_marker)
+        if marker_index == -1 or len(payload) < marker_index + 7:
             return sample
 
-        systolic = payload[marker_index + 2]
-        diastolic = payload[marker_index + 3]
+        systolic = payload[marker_index + 3]
+        diastolic = payload[marker_index + 4]
         body_temperature = round(
-            int.from_bytes(payload[marker_index + 4 : marker_index + 6], byteorder="big") / 100.0,
+            int.from_bytes(payload[marker_index + 5 : marker_index + 7], byteorder="big") / 100.0,
             2,
         )
         return sample.model_copy(
             update={
+                "timestamp": timestamp,
                 "temperature": body_temperature,
                 "blood_pressure": f"{systolic}/{diastolic}",
                 "packet_type": "response_ab",
                 "raw_packet_b": raw_packet_b,
             }
         )
+
+    @staticmethod
+    def _decode_sos_trigger(sos_value: int) -> str | None:
+        if sos_value == 0x01:
+            return "double_click"
+        if sos_value == 0x02:
+            return "long_press"
+        return None
 
     def _decode_legacy(
         self,
@@ -366,7 +398,7 @@ class T10PacketParser:
         return sample.model_dump(mode="json") if sample else None
 
     def _find_response_marker(self, payload: bytes, marker: bytes) -> int:
-        return payload.find(marker, 0, self._layout.response_scan_limit)
+        return payload.find(marker, 0, self._layout.response_scan_limit) if self._layout.response_scan_limit else payload.find(marker)
 
     @staticmethod
     def _format_mac(raw: bytes) -> str:

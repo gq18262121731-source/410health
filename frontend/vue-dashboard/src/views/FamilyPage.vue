@@ -313,7 +313,7 @@ async function generateHealthReport() {
       start_at: startAt.toISOString(),
       end_at: endAt.toISOString(),
       role: "family",
-      mode: "local",
+      mode: "qwen",
     });
   } catch (error) {
     reportError.value = formatUiError(error, "正式健康报告生成失败，请稍后重试。");

@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, ref } from "vue";
 import type { DeviceRecord, HealthSample } from "../api/client";
 
@@ -111,3 +111,241 @@ const filteredDevices = computed(() => {
     </div>
   </section>
 </template>
+
+<style scoped>
+.device-panel {
+  display: grid;
+  gap: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(34, 211, 238, 0.06), transparent 40%),
+    linear-gradient(180deg, rgba(10, 16, 30, 0.99), rgba(7, 12, 22, 0.99));
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  color: #e2f0ff;
+  font-family: var(--font-display);
+}
+
+.panel-head > span {
+  color: #4d7a94;
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+.panel-subtitle {
+  margin: 6px 0 0;
+  color: #6ea8c8;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.toolbar-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.search-input {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(13, 20, 38, 0.96);
+  border: 1px solid rgba(56, 189, 248, 0.14);
+  color: #c8e0f4;
+  font-size: 0.92rem;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 160ms ease;
+}
+
+.search-input::placeholder {
+  color: #4d7a94;
+}
+
+.search-input:focus {
+  border-color: rgba(34, 211, 238, 0.40);
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-chip {
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(13, 20, 38, 0.96);
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  color: #6ea8c8;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.filter-chip:hover,
+.filter-chip.active {
+  background: rgba(34, 211, 238, 0.12);
+  border-color: rgba(34, 211, 238, 0.36);
+  color: #22d3ee;
+}
+
+.device-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
+.device-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: rgba(13, 20, 38, 0.96);
+  border: 1px solid rgba(56, 189, 248, 0.10);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.device-card:hover,
+.device-card.active {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+}
+
+.device-card.active {
+  border-color: rgba(34, 211, 238, 0.38);
+  background: rgba(18, 28, 52, 0.98);
+}
+
+.device-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.device-card-top p {
+  margin: 0;
+  color: #c8e0f4;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.device-card-top strong {
+  color: #4d7a94;
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.status-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+  font-size: 0.74rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  border: 1px solid rgba(52, 211, 153, 0.20);
+}
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.metrics span {
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(56, 189, 248, 0.07);
+  color: #7eb8d4;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.empty-copy {
+  margin: 0;
+  color: #4d7a94;
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.device-card-footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.risk-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.risk-idle {
+  background: rgba(56, 189, 248, 0.08);
+  color: #4d7a94;
+  border-color: rgba(56, 189, 248, 0.12);
+}
+
+.risk-low {
+  background: rgba(52, 211, 153, 0.10);
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.18);
+}
+
+.risk-medium {
+  background: rgba(251, 146, 60, 0.10);
+  color: #fb923c;
+  border-color: rgba(251, 146, 60, 0.20);
+}
+
+.risk-high {
+  background: rgba(248, 113, 122, 0.10);
+  color: #f87171;
+  border-color: rgba(248, 113, 122, 0.20);
+}
+
+.tone-high {
+  border-color: rgba(248, 113, 122, 0.22);
+  background: rgba(22, 10, 12, 0.96);
+}
+
+.tone-medium {
+  border-color: rgba(251, 146, 60, 0.20);
+  background: rgba(20, 14, 8, 0.96);
+}
+
+.tone-low {
+  border-color: rgba(52, 211, 153, 0.16);
+}
+
+.sos-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(248, 113, 122, 0.14);
+  color: #f87171;
+  font-size: 0.76rem;
+  font-weight: 800;
+  border: 1px solid rgba(248, 113, 122, 0.28);
+  animation: sos-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes sos-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+</style>

@@ -311,9 +311,9 @@ const metricEntries = computed(() => {
 .report-card,
 .meta-card,
 .metric-report-card {
-  border: 1px solid rgba(15, 118, 110, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.10);
   border-radius: 22px;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(13, 22, 38, 0.90);
   padding: 18px;
 }
 
@@ -359,18 +359,18 @@ const metricEntries = computed(() => {
 }
 
 .evaluation-risk-card.tone-critical {
-  border-color: rgba(220, 38, 38, 0.2);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(254, 242, 242, 0.88));
+  border-color: rgba(248, 113, 113, 0.24);
+  background: linear-gradient(180deg, rgba(33, 18, 30, 0.96), rgba(52, 20, 28, 0.92));
 }
 
 .evaluation-risk-card.tone-warning {
-  border-color: rgba(249, 115, 22, 0.18);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 247, 237, 0.88));
+  border-color: rgba(251, 146, 60, 0.22);
+  background: linear-gradient(180deg, rgba(28, 20, 30, 0.96), rgba(52, 30, 16, 0.92));
 }
 
 .evaluation-risk-card.tone-stable {
-  border-color: rgba(15, 118, 110, 0.18);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 253, 250, 0.88));
+  border-color: rgba(52, 211, 153, 0.22);
+  background: linear-gradient(180deg, rgba(14, 24, 34, 0.96), rgba(16, 42, 38, 0.92));
 }
 
 .score-card {
@@ -396,12 +396,12 @@ const metricEntries = computed(() => {
 }
 
 .score-card.emphasis {
-  border-color: rgba(14, 165, 233, 0.18);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(240, 249, 255, 0.88));
+  border-color: rgba(34, 211, 238, 0.20);
+  background: linear-gradient(180deg, rgba(12, 30, 42, 0.98), rgba(14, 22, 36, 0.92));
 }
 
 .score-card.emphasis strong {
-  color: var(--brand);
+  color: #67e8f9;
 }
 
 .report-head {

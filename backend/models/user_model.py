@@ -20,4 +20,5 @@ class UserRecord(BaseModel):
     role: UserRole
     phone: str
     password_hash: str = ""
+    is_seeded: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

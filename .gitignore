@@ -9,3 +9,4 @@ output/
 pytest-cache-files-*
 data/
 backend/tmp_x.txt
+.cursor

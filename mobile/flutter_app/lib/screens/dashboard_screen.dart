@@ -7,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/health_sample.dart';
 import '../services/api_service.dart';
 import '../widgets/vital_card.dart';
+import '../widgets/logout_action.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key, required this.role});
@@ -65,6 +66,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
         title: Text('AIoT ${widget.role}监护端'),
+        actions: const [LogoutAction()],
       ),
       body: sample == null
           ? const Center(child: CircularProgressIndicator())

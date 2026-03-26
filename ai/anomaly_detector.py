@@ -107,7 +107,34 @@ class RealtimeAnomalyDetector:
         )
 
     def evaluate(self, sample: HealthSample) -> list[AlarmRecord]:
+        return self._evaluate_with_rules(sample)
+
+    def _evaluate_with_rules(self, sample: HealthSample) -> list[AlarmRecord]:
         alarms: list[AlarmRecord] = []
+        if sample.sos_flag:
+            trigger = self._resolve_sos_trigger(sample.sos_value, sample.sos_trigger)
+            alarms.append(
+                AlarmRecord(
+                    device_mac=sample.device_mac,
+                    alarm_type=AlarmType.SOS,
+                    alarm_level=AlarmPriority.SOS,
+                    alarm_layer=AlarmLayer.REALTIME,
+                    message=(
+                        "检测到手环长按 SOS 求助，请立即联系值守人员并安排现场核查。"
+                        if trigger == "long_press"
+                        else "检测到手环双击 SOS 求助，请立即联系值守人员并安排现场核查。"
+                    ),
+                    anomaly_probability=1.0,
+                    metadata={
+                        "event": "sos_broadcast",
+                        "sos_value": sample.sos_value,
+                        "sos_trigger": trigger,
+                        "packet_type": sample.packet_type,
+                        "is_real_device": sample.source.value == "serial",
+                    },
+                )
+            )
+            sample = sample.model_copy(update={"sos_flag": False})
         systolic, diastolic = sample.blood_pressure_pair or (None, None)
 
         if sample.sos_flag:
@@ -206,6 +233,16 @@ class RealtimeAnomalyDetector:
 
         self._append_window(window, sample, systolic=systolic, diastolic=diastolic)
         return alarms
+
+    @staticmethod
+    def _resolve_sos_trigger(sos_value: int | None, current_trigger: str | None) -> str | None:
+        if current_trigger:
+            return current_trigger
+        if sos_value == 0x02:
+            return "long_press"
+        if sos_value == 0x01:
+            return "double_click"
+        return None
 
     @staticmethod
     def _append_window(

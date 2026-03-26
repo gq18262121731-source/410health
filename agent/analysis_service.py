@@ -9,6 +9,12 @@ from backend.models.health_model import HealthSample
 class HealthDataAnalysisService:
     """Provides deterministic time-window analytics for device and community agents."""
 
+    def sample_risk_flags(self, sample: HealthSample) -> list[str]:
+        return self._risk_flags(sample)
+
+    def sample_risk_level(self, sample: HealthSample) -> str:
+        return self._risk_level(sample)
+
     def summarize_device(self, samples: list[HealthSample]) -> dict[str, object]:
         if not samples:
             return {

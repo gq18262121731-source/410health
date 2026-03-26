@@ -43,6 +43,14 @@ export function useDeviceTrend(options: {
       try {
         const sample = JSON.parse(event.data) as HealthSample;
         options.latest.value = { ...options.latest.value, [sample.device_mac]: sample };
+        const previous = trendStore.value[sample.device_mac] ?? [];
+        const merged = [...previous, sample]
+          .sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime())
+          .filter((item, index, array) => {
+            if (index === 0) return true;
+            return item.timestamp !== array[index - 1].timestamp;
+          });
+        trendStore.value = { ...trendStore.value, [sample.device_mac]: merged.slice(-240) };
       } catch {
         // Keep page state stable if socket data is malformed.
       }

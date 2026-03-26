@@ -4,7 +4,9 @@ import AppShell from "./components/layout/AppShell.vue";
 import { useHashRouting } from "./composables/useHashRouting";
 import { useSessionAuth } from "./composables/useSessionAuth";
 import AccessDeniedPage from "./views/AccessDeniedPage.vue";
+import CommunityAgentPage from "./views/CommunityAgentPage.vue";
 import CommunityPage from "./views/CommunityPage.vue";
+import CommunityTopologyPage from "./views/CommunityTopologyPage.vue";
 import DebugPage from "./views/DebugPage.vue";
 import FamilyPage from "./views/FamilyPage.vue";
 import LoginPage from "./views/LoginPage.vue";
@@ -30,6 +32,7 @@ const {
   initHashRouting,
   resetToDefaultPage,
   routeTo,
+  routeToNonce,
 } = useHashRouting(sessionUser);
 
 async function submitLogin() {
@@ -42,7 +45,7 @@ async function submitLogin() {
   }
 
   if (user.role === "community" || user.role === "admin") {
-    routeTo("community");
+    routeTo("overview");
     return;
   }
 
@@ -106,13 +109,24 @@ onUnmounted(() => {
   >
     <DebugPage
       v-if="activePage === 'debug'"
-      :can-go-community="allowedPages.includes('community')"
+      :can-go-community="allowedPages.includes('overview')"
       @navigate="routeTo"
     />
 
     <CommunityPage
-      v-else-if="activePage === 'community'"
+      v-else-if="activePage === 'overview'"
       :session-user="sessionUser"
+    />
+
+    <CommunityTopologyPage
+      v-else-if="activePage === 'topology'"
+      :session-user="sessionUser"
+    />
+
+    <CommunityAgentPage
+      v-else-if="activePage === 'agent'"
+      :session-user="sessionUser"
+      :refresh-key="routeToNonce"
     />
 
     <FamilyPage
@@ -121,7 +135,7 @@ onUnmounted(() => {
     />
 
     <MemberDevicePage
-      v-else-if="activePage === 'relation'"
+      v-else-if="activePage === 'members'"
       :session-user="sessionUser"
     />
 

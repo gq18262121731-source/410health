@@ -103,7 +103,7 @@ async function analyze() {
       device_mac: props.deviceMac,
       question: finalQuestion,
       role: "family",
-      mode: "local",
+      mode: "qwen",
       history_limit: 240,
       history_minutes: 1440,
     });
@@ -254,7 +254,8 @@ async function analyze() {
   gap: 18px;
   color: var(--text-main);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 251, 250, 0.9));
+    radial-gradient(circle at top right, rgba(34, 211, 238, 0.10), transparent 30%),
+    linear-gradient(180deg, rgba(15, 22, 40, 0.98), rgba(11, 18, 32, 0.96));
 }
 
 .assistant-head,
@@ -293,15 +294,15 @@ async function analyze() {
 
 .card,
 .summary-card {
-  border: 1px solid rgba(15, 118, 110, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.10);
   border-radius: 22px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.9));
+    linear-gradient(180deg, rgba(16, 24, 44, 0.98), rgba(12, 18, 32, 0.94));
   transition: box-shadow 200ms ease;
 }
 
 .card:hover {
-  box-shadow: 0 20px 36px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 20px 36px rgba(0, 0, 0, 0.26);
 }
 
 .card {
@@ -349,9 +350,9 @@ async function analyze() {
   padding: 7px 13px;
   font-size: 0.8rem;
   font-weight: 600;
-  background: rgba(236, 253, 245, 0.9);
-  border: 1px solid rgba(15, 118, 110, 0.16);
-  color: var(--brand);
+  background: rgba(34, 211, 238, 0.10);
+  border: 1px solid rgba(34, 211, 238, 0.18);
+  color: #67e8f9;
 }
 
 .analysis-chip {
@@ -359,9 +360,9 @@ async function analyze() {
   padding: 6px 12px;
   font-size: 0.8rem;
   font-weight: 600;
-  background: rgba(239, 248, 247, 0.92);
-  border: 1px solid rgba(14, 165, 233, 0.16);
-  color: var(--brand);
+  background: rgba(15, 24, 42, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  color: #67e8f9;
 }
 
 .answer-copy {
@@ -377,7 +378,7 @@ async function analyze() {
 }
 
 .error-copy {
-  color: #dc2626;
+  color: #fca5a5;
 }
 
 .list-copy {
@@ -395,11 +396,11 @@ async function analyze() {
 }
 
 .prompt-chip {
-  border: 1.5px solid rgba(15, 118, 110, 0.16);
+  border: 1.5px solid rgba(56, 189, 248, 0.16);
   border-radius: 999px;
   padding: 8px 14px;
-  background: rgba(240, 253, 250, 0.94);
-  color: var(--brand);
+  background: rgba(13, 24, 38, 0.94);
+  color: #8ddff8;
   cursor: pointer;
   font-size: 0.84rem;
   font-weight: 500;
@@ -407,8 +408,8 @@ async function analyze() {
 }
 
 .prompt-chip:hover {
-  background: rgba(15, 118, 110, 0.12);
-  border-color: rgba(14, 165, 233, 0.22);
+  background: rgba(34, 211, 238, 0.12);
+  border-color: rgba(34, 211, 238, 0.24);
 }
 
 .composer {
@@ -423,8 +424,8 @@ async function analyze() {
   resize: vertical;
   min-height: 110px;
   border-radius: 16px;
-  border: 1.5px solid rgba(15, 118, 110, 0.16);
-  background: rgba(255, 255, 255, 0.98);
+  border: 1.5px solid rgba(56, 189, 248, 0.16);
+  background: rgba(10, 18, 30, 0.96);
   color: var(--text-main);
   padding: 14px;
   transition: border-color 200ms ease, box-shadow 200ms ease;
@@ -432,8 +433,8 @@ async function analyze() {
 
 .composer textarea:focus {
   outline: none;
-  border-color: rgba(14, 165, 233, 0.28);
-  box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.12);
+  border-color: rgba(34, 211, 238, 0.28);
+  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.12);
 }
 
 .compact {

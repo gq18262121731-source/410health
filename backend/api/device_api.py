@@ -5,7 +5,13 @@ from fastapi import APIRouter, Header, HTTPException
 from backend.dependencies import get_device_service, require_write_session_user
 from backend.models.auth_model import SessionUser
 from backend.models.device_bind_model import DeviceBindLogRecord, DeviceBindRequest, DeviceRebindRequest, DeviceUnbindRequest
-from backend.models.device_model import DeviceRecord, DeviceRegisterRequest
+from backend.models.device_model import (
+    DeviceRecord,
+    DeviceRegisterRequest,
+    SerialTargetSwitchRequest,
+    SerialTargetSwitchResponse,
+)
+from datetime import datetime, timezone
 
 
 router = APIRouter(prefix="/devices", tags=["devices"])
@@ -105,3 +111,28 @@ async def delete_device(mac_address: str, authorization: str | None = Header(def
         if code == "DEVICE_NOT_FOUND":
             raise HTTPException(status_code=404, detail=code) from exc
         raise HTTPException(status_code=400, detail=code) from exc
+
+
+@router.post("/serial-target", response_model=SerialTargetSwitchResponse)
+async def switch_serial_target(
+    payload: SerialTargetSwitchRequest,
+    authorization: str | None = Header(default=None),
+) -> SerialTargetSwitchResponse:
+    _require_writer(authorization)
+    switched_at = datetime.now(timezone.utc)
+    try:
+        active_target, previous_target_mac = get_device_service().set_active_serial_target(payload.mac_address)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "DEVICE_NOT_FOUND":
+            raise HTTPException(status_code=404, detail=code) from exc
+        if code in {"DEVICE_NOT_SERIAL", "DEVICE_DISABLED"}:
+            raise HTTPException(status_code=409, detail=code) from exc
+        raise HTTPException(status_code=400, detail=code) from exc
+
+    return SerialTargetSwitchResponse(
+        active_target_mac=active_target.mac_address,
+        active_target_device_name=active_target.device_name,
+        previous_target_mac=previous_target_mac,
+        switched_at=switched_at,
+    )

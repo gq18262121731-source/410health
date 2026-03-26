@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -17,20 +18,20 @@ except ImportError:
 
 MAC_PATTERN = re.compile(r"(?i)\b((?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}|53(?:57|:57)(?:08|:08)[0-9a-f:-]{6,})\b")
 BROADCAST_MARKER = "0201061AFF4C000215"
-RESPONSE_HEADER = "0A09"
-RESPONSE_A_MARKER = "1803"
-RESPONSE_B_MARKER = "0318"
+RESPONSE_A_MARKER = "161803"
+RESPONSE_B_MARKER = "160318"
+logger = logging.getLogger(__name__)
 
 
 class SerialGatewayReader:
-    """Serial adapter for nRF52832 transparent transmission collectors."""
+    """Serial adapter for the nRF52832 collector used by the T10 wristband."""
 
     def __init__(self, parser: T10PacketParser) -> None:
         self._parser = parser
 
     def list_candidate_ports(self, keywords: list[str] | None = None) -> list[object]:
         if list_ports is None:
-            raise RuntimeError("pyserial 未安装，无法枚举串口。")
+            raise RuntimeError("pyserial is not installed; serial collection is unavailable.")
         normalized_keywords = [keyword.lower() for keyword in (keywords or [])]
         ports = list(list_ports.comports())
         if not normalized_keywords:
@@ -57,7 +58,7 @@ class SerialGatewayReader:
 
         candidates = self.list_candidate_ports(keywords)
         if not candidates:
-            raise RuntimeError("未检测到可用蓝牙采集器串口。")
+            raise RuntimeError("No compatible collector serial port was detected.")
         return str(candidates[0].device)
 
     def initialize_collector(
@@ -79,12 +80,32 @@ class SerialGatewayReader:
         if apply_packet_type:
             commands.append(f"AT+TYPE={packet_type}")
         commands.append("AT+SCANSTART")
+        self._run_commands(connection, commands, command_delay_seconds=command_delay_seconds)
 
-        for command in commands:
-            connection.write(f"{command}\r\n".encode("utf-8"))
-            connection.flush()
-            time.sleep(command_delay_seconds)
-            self._drain_feedback(connection)
+    def configure_single_target(
+        self,
+        connection,
+        *,
+        target_mac: str,
+        packet_type: int = 5,
+        command_delay_seconds: float = 0.5,
+    ) -> None:
+        compact_mac = self._compact_mac(target_mac)
+        commands = [
+            "AT+SCANSTOP",
+            f"AT+MAC={compact_mac}",
+            f"AT+TYPE={packet_type}",
+            "AT+SCANSTART",
+        ]
+        self._run_commands(connection, commands, command_delay_seconds=command_delay_seconds)
+
+    def stop_scan(
+        self,
+        connection,
+        *,
+        command_delay_seconds: float = 0.2,
+    ) -> None:
+        self._run_commands(connection, ["AT+SCANSTOP"], command_delay_seconds=command_delay_seconds)
 
     def switch_packet_type(
         self,
@@ -93,17 +114,15 @@ class SerialGatewayReader:
         packet_type: int,
         command_delay_seconds: float = 0.2,
     ) -> None:
-        for command in ("AT+SCANSTOP", f"AT+TYPE={packet_type}", "AT+SCANSTART"):
-            connection.write(f"{command}\r\n".encode("utf-8"))
-            connection.flush()
-            time.sleep(command_delay_seconds)
-            self._drain_feedback(connection)
+        commands = ["AT+SCANSTOP", f"AT+TYPE={packet_type}", "AT+SCANSTART"]
+        self._run_commands(connection, commands, command_delay_seconds=command_delay_seconds)
 
     def run(
         self,
         *,
         port: str | None = None,
         baudrate: int = 115200,
+        collection_strategy: str = "single_target",
         packet_type: int = 5,
         mac_filter: str = "535708000000",
         detection_keywords: list[str] | None = None,
@@ -115,15 +134,19 @@ class SerialGatewayReader:
         enable_broadcast_sos_overlay: bool = False,
         response_cycle_seconds: float = 8.0,
         broadcast_cycle_seconds: float = 2.0,
+        target_mac_provider: Callable[[], str | None] | None = None,
         on_sample: Callable[[HealthSample], None] | None = None,
     ) -> None:
         if serial is None:
-            raise RuntimeError("pyserial 未安装，无法启用串口采集模式。")
+            raise RuntimeError("pyserial is not installed; serial collection is unavailable.")
 
         selected_port = self.detect_port(port, detection_keywords)
         with serial.Serial(port=selected_port, baudrate=baudrate, timeout=1) as connection:
             active_packet_type = packet_type
-            if auto_configure:
+            active_target_mac: str | None = None
+            cycle_started_at = time.monotonic()
+
+            if collection_strategy != "single_target" and auto_configure:
                 self.initialize_collector(
                     connection,
                     mac_filter=mac_filter,
@@ -132,10 +155,41 @@ class SerialGatewayReader:
                     apply_mac_filter=apply_mac_filter,
                     apply_packet_type=apply_packet_type,
                 )
-            cycle_started_at = time.monotonic()
 
             while True:
-                if enable_broadcast_sos_overlay:
+                if collection_strategy == "single_target":
+                    desired_target_mac = self._normalize_mac(target_mac_provider() if target_mac_provider else mac_filter)
+                    desired_packet_type = packet_type
+                    if enable_broadcast_sos_overlay:
+                        elapsed = time.monotonic() - cycle_started_at
+                        if active_packet_type == 5 and elapsed >= response_cycle_seconds:
+                            desired_packet_type = 4
+                        elif active_packet_type == 4 and elapsed >= broadcast_cycle_seconds:
+                            desired_packet_type = 5
+                        else:
+                            desired_packet_type = active_packet_type
+
+                    if desired_target_mac != active_target_mac or desired_packet_type != active_packet_type:
+                        if desired_target_mac:
+                            self.configure_single_target(
+                                connection,
+                                target_mac=desired_target_mac,
+                                packet_type=desired_packet_type,
+                            )
+                            active_target_mac = desired_target_mac
+                            active_packet_type = desired_packet_type
+                            cycle_started_at = time.monotonic()
+                        else:
+                            if active_target_mac:
+                                self.stop_scan(connection)
+                            active_target_mac = None
+                            active_packet_type = packet_type
+
+                    if not active_target_mac:
+                        time.sleep(0.2)
+                        continue
+
+                if collection_strategy != "single_target" and enable_broadcast_sos_overlay:
                     elapsed = time.monotonic() - cycle_started_at
                     target_packet_type = 5
                     if active_packet_type == 5 and elapsed >= response_cycle_seconds:
@@ -155,14 +209,40 @@ class SerialGatewayReader:
                 payload, line_mac = self._extract_payload_and_mac(line)
                 if not payload:
                     continue
+                normalized_line_mac = self._normalize_mac(line_mac)
+                if (
+                    collection_strategy == "single_target"
+                    and active_target_mac
+                    and normalized_line_mac
+                    and normalized_line_mac != active_target_mac
+                ):
+                    logger.debug(
+                        "Dropping serial payload for off-target MAC %s while tracking %s",
+                        normalized_line_mac,
+                        active_target_mac,
+                    )
+                    continue
 
                 sample = self._parser.feed(
-                    line_mac or fallback_device_mac,
+                    normalized_line_mac or fallback_device_mac or active_target_mac,
                     payload,
                     source=IngestionSource.SERIAL,
                 )
                 if sample and on_sample:
                     on_sample(sample)
+
+    def _run_commands(
+        self,
+        connection,
+        commands: list[str],
+        *,
+        command_delay_seconds: float,
+    ) -> None:
+        for command in commands:
+            connection.write(f"{command}\r\n".encode("utf-8"))
+            connection.flush()
+            time.sleep(command_delay_seconds)
+            self._drain_feedback(connection)
 
     @staticmethod
     def _drain_feedback(connection) -> None:
@@ -192,7 +272,7 @@ class SerialGatewayReader:
         if mac_match:
             compact_mac = re.sub(r"[^0-9A-Fa-f]", "", mac_match.group(1)).upper()
             if len(compact_mac) == 12:
-                mac = ":".join(compact_mac[index : index + 2] for index in range(0, 12, 2))
+                mac = SerialGatewayReader._format_mac(compact_mac)
 
         payload = SerialGatewayReader._extract_embedded_payload(compact)
         if not payload or len(payload) % 2 != 0:
@@ -204,8 +284,6 @@ class SerialGatewayReader:
         if len(compact) < 16:
             return None, None
 
-        # nRF52832 collector format observed in the field:
-        # RSSI(1 byte) + device MAC(6 bytes) + advertising payload
         candidate_mac = compact[2:14]
         candidate_payload = compact[14:]
         if len(candidate_payload) % 2 != 0:
@@ -214,7 +292,7 @@ class SerialGatewayReader:
         if candidate_payload.startswith(BROADCAST_MARKER):
             return candidate_payload, SerialGatewayReader._format_mac(candidate_mac)
 
-        if RESPONSE_A_MARKER in candidate_payload[:40] or RESPONSE_B_MARKER in candidate_payload[:40]:
+        if RESPONSE_A_MARKER in candidate_payload or RESPONSE_B_MARKER in candidate_payload:
             return candidate_payload, SerialGatewayReader._format_mac(candidate_mac)
 
         return None, None
@@ -225,19 +303,13 @@ class SerialGatewayReader:
         if broadcast_index != -1:
             return compact[broadcast_index:]
 
-        response_a_index = compact.find(RESPONSE_HEADER)
-        while response_a_index != -1:
-            marker_index = compact.find(RESPONSE_A_MARKER, response_a_index)
-            if marker_index != -1:
-                return compact[response_a_index:]
-            response_a_index = compact.find(RESPONSE_HEADER, response_a_index + 1)
+        response_a_index = compact.find(RESPONSE_A_MARKER)
+        if response_a_index != -1:
+            return compact[response_a_index:]
 
-        response_b_index = compact.find(RESPONSE_HEADER)
-        while response_b_index != -1:
-            marker_index = compact.find(RESPONSE_B_MARKER, response_b_index)
-            if marker_index != -1:
-                return compact[response_b_index:]
-            response_b_index = compact.find(RESPONSE_HEADER, response_b_index + 1)
+        response_b_index = compact.find(RESPONSE_B_MARKER)
+        if response_b_index != -1:
+            return compact[response_b_index:]
 
         if re.fullmatch(r"[0-9A-F]+", compact):
             return compact
@@ -246,3 +318,16 @@ class SerialGatewayReader:
     @staticmethod
     def _format_mac(compact_mac: str) -> str:
         return ":".join(compact_mac[index : index + 2] for index in range(0, 12, 2))
+
+    @staticmethod
+    def _compact_mac(mac_address: str) -> str:
+        return re.sub(r"[^0-9A-Fa-f]", "", mac_address).upper()
+
+    @staticmethod
+    def _normalize_mac(mac_address: str | None) -> str | None:
+        if not mac_address:
+            return None
+        compact = SerialGatewayReader._compact_mac(mac_address)
+        if len(compact) != 12:
+            return None
+        return SerialGatewayReader._format_mac(compact)

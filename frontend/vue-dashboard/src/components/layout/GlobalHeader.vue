@@ -15,13 +15,13 @@ const emit = defineEmits<{
 const roleLabel = computed(() => {
   switch (props.sessionUser.role) {
     case "community":
-      return "社区角色";
+      return "社区值守";
     case "family":
-      return "家属角色";
+      return "家属查看";
     case "admin":
-      return "管理员";
+      return "系统管理";
     default:
-      return "成员角色";
+      return "成员账号";
   }
 });
 </script>
@@ -32,14 +32,14 @@ const roleLabel = computed(() => {
       <div class="brand-icon">护</div>
       <div class="global-header__brand-copy">
         <p class="section-eyebrow">AIoT Care Console</p>
-        <h1>智慧养老健康监测平台</h1>
+        <h1>智慧康养健康监测平台</h1>
       </div>
     </div>
 
     <div class="global-header__meta">
       <span class="meta-pill meta-pill--icon">
         <Bell :size="14" />
-        全局告警 {{ activeAlarmCount }}
+        未确认告警 {{ activeAlarmCount }}
       </span>
       <span class="meta-pill">{{ props.sessionUser.name }}</span>
       <span class="meta-pill meta-pill--icon">

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from backend.dependencies import get_alarm_service
+from backend.dependencies import get_alarm_service, get_health_data_repository, get_websocket_manager
 from backend.models.alarm_model import AlarmQueueItem, AlarmRecord, MobilePushRecord
 
 
@@ -37,4 +37,13 @@ async def acknowledge_alarm(alarm_id: str) -> AlarmRecord:
     alarm = get_alarm_service().acknowledge(alarm_id)
     if not alarm:
         raise HTTPException(status_code=404, detail="Alarm not found")
+    get_health_data_repository().acknowledge_alert(alarm_id)
+    await get_websocket_manager().broadcast_alarm(alarm.model_dump(mode="json"))
+    await get_websocket_manager().broadcast_alarm_queue(
+        {
+            "type": "alarm_queue",
+            "queue": [item.model_dump(mode="json") for item in get_alarm_service().queue_items(active_only=True)],
+            "snapshot": get_alarm_service().queue_snapshot(),
+        }
+    )
     return alarm

@@ -66,7 +66,7 @@ onUnmounted(() => {
         </span>
         <span class="tool-entry__copy">
           <strong>调试看板</strong>
-          <small>查看设备实时数据与趋势调试信息</small>
+          <small>查看设备原始样本、实时字段与趋势调试信息。</small>
         </span>
       </button>
     </div>

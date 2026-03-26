@@ -17,20 +17,31 @@ from agent.model_interfaces import (
 )
 from ai.anomaly_detector import CommunityHealthClusterer, IntelligentAnomalyScorer, RealtimeAnomalyDetector
 from ai.data_generator import SyntheticHealthDataGenerator
-from ai.health_score_model import BaselineTracker, HealthScoreService
+from ai.health_score_model import BaselineTracker, HealthScoreService as DemoHealthScoreService
 from backend.config import get_settings
 from backend.models.auth_model import SessionUser
-from backend.models.device_model import DeviceRecord, DeviceStatus
+from backend.models.device_model import DeviceIngestMode, DeviceRecord, DeviceStatus, ingest_source_matches_mode
 from backend.models.health_model import HealthSample, IngestResponse
+from backend.models.analytics_model import AgentElderSubject
 from backend.models.user_model import UserRole
+from backend.ml.inference import HealthInferenceEngine
+from backend.repositories.score_repo import ScoreRepository
+from backend.repositories.warning_repo import WarningRepository
+from backend.repositories.wearable_repo import WearableRepository
 from backend.services.alarm_priority_queue import AlarmPriorityQueue
 from backend.services.alarm_service import AlarmService
+from backend.services.community_insight_service import CommunityInsightService
 from backend.services.care_service import CareService
 from backend.services.device_service import DeviceService
+from backend.services.explanation_service import ExplanationService
+from backend.services.health_data_repository import HealthDataRepository
+from backend.services.health_score_service import HealthScoreService as StructuredHealthScoreService
+from backend.services.health_stability_service import HealthStabilityService
 from backend.services.notification_service import NotificationService
 from backend.services.relation_service import RelationService
 from backend.services.stream_service import StreamService
 from backend.services.user_service import UserService
+from backend.services.warning_service import WarningService
 from backend.services.websocket_manager import WebSocketManager
 from iot.parser import T10PacketParser
 
@@ -43,6 +54,7 @@ _stream_service = StreamService(retention_points=_settings.stream_retention_poin
 _websocket_manager = WebSocketManager()
 _alarm_priority_queue = AlarmPriorityQueue(redis_url=_settings.redis_url)
 _notification_service = NotificationService()
+_health_data_repository = HealthDataRepository(database_url=_settings.database_url)
 _realtime_detector = RealtimeAnomalyDetector(
     window_size=_settings.realtime_window_size,
     zscore_threshold=_settings.zscore_threshold,
@@ -53,12 +65,12 @@ _alarm_service = AlarmService(
     notification_service=_notification_service,
 )
 _baseline_tracker = BaselineTracker()
-_health_score_service = HealthScoreService(floor=_settings.health_score_floor)
+_health_score_service = DemoHealthScoreService(floor=_settings.health_score_floor)
 _community_clusterer = CommunityHealthClusterer()
 _intelligent_scorer = IntelligentAnomalyScorer()
 _data_generator = SyntheticHealthDataGenerator(
     device_count=_settings.mock_device_count,
-    mac_prefix=_settings.allowed_mac_prefixes[0],
+    mac_prefix=(_settings.allowed_mac_prefixes[0] if _settings.allowed_mac_prefixes else _settings.mock_device_mac_prefix),
 )
 _parser = T10PacketParser(sos_window_seconds=_settings.sos_broadcast_window_seconds)
 _analysis_service = HealthDataAnalysisService()
@@ -84,6 +96,8 @@ _agent_tool_adapter.register_tool(name="weather_lookup", description="Reserved w
 _agent_tool_adapter.register_tool(name="air_quality_lookup", description="Reserved air quality context lookup", source="external_placeholder", handler=lambda call: _tool_placeholder_external("air_quality_lookup", call.payload))
 _agent_tool_adapter.register_tool(name="nearby_facility_lookup", description="Reserved nearby facility lookup", source="external_placeholder", handler=lambda call: _tool_placeholder_external("nearby_facility_lookup", call.payload))
 _agent_tool_adapter.register_tool(name="holiday_lookup", description="Reserved holiday lookup", source="external_placeholder", handler=lambda call: _tool_holiday_lookup(call.payload))
+_agent_tool_adapter.register_tool(name="run_tavily_search", description="Run external web search for complementary context", handler=lambda call: _community_insight_service.tool_run_tavily_search(call.payload))
+_agent_tool_adapter.register_tool(name="generate_analysis_report", description="Generate structured analysis report", handler=lambda call: _tool_generate_analysis_report(call.payload))
 _agent_model_suite = AgentModelSuite(
     health_assessment=RuleBasedHealthAssessmentModel(_analysis_service),
     risk_scoring=RuleBasedRiskScoringModel(),
@@ -99,6 +113,30 @@ _agent_service = HealthAgentService(
     tool_adapter=_agent_tool_adapter,
     model_suite=_agent_model_suite,
 )
+_explanation_service = ExplanationService()
+_community_insight_service = CommunityInsightService(
+    settings=_settings,
+    analysis_service=_analysis_service,
+    stream_service=_stream_service,
+    alarm_service=_alarm_service,
+    device_service=_device_service,
+    care_service=_care_service,
+    rag_service=_rag_service,
+    repository=_health_data_repository,
+)
+_structured_inference_engine = HealthInferenceEngine(_settings)
+_structured_stability_service = HealthStabilityService(_settings)
+_wearable_repo = WearableRepository(_settings.database_url)
+_score_repo = ScoreRepository(_settings.database_url)
+_warning_repo = WarningRepository(_settings.database_url)
+_structured_health_score_service = StructuredHealthScoreService(
+    inference_engine=_structured_inference_engine,
+    wearable_repo=_wearable_repo,
+    score_repo=_score_repo,
+    warning_repo=_warning_repo,
+    stability_service=_structured_stability_service,
+)
+_warning_service = WarningService(health_score_service=_structured_health_score_service)
 _last_community_alarm_at: datetime | None = None
 
 if _settings.data_mode == "mock" and _settings.use_mock_data:
@@ -135,8 +173,76 @@ def get_websocket_manager() -> WebSocketManager:
     return _websocket_manager
 
 
+def get_health_data_repository() -> HealthDataRepository:
+    return _health_data_repository
+
+
 def get_data_generator() -> SyntheticHealthDataGenerator:
     return _data_generator
+
+
+_demo_overlay_cycle_index = 0
+_demo_overlay_last_published_at: datetime | None = None
+_demo_overlay_last_refresh_at: datetime | None = None
+
+
+def _eligible_demo_overlay_device_macs() -> list[str]:
+    devices = _device_service.list_devices()
+    known_devices = {device.mac_address for device in devices}
+    personas = getattr(_data_generator, "personas", None) or []
+    eligible: list[str] = []
+    for persona in personas:
+        mac = str(getattr(persona, "mac_address", "")).strip().upper()
+        if mac and mac in known_devices:
+            eligible.append(mac)
+    return eligible
+
+
+def _sample_source_allowed(device: DeviceRecord, sample: HealthSample) -> bool:
+    if not _settings.strict_source_match:
+        return True
+    effective_mode = get_effective_device_ingest_mode(device.mac_address, device.ingest_mode)
+    return ingest_source_matches_mode(effective_mode, sample.source)
+
+
+def _persist_demo_overlay_sample(sample: HealthSample, *, explanation: str, source_label: str) -> None:
+    device = _device_service.get_device(sample.device_mac)
+    if isinstance(device, DeviceRecord) and not _sample_source_allowed(device, sample):
+        return
+    _health_data_repository.persist_sample(sample)
+    _stream_service.publish(sample)
+
+
+def refresh_demo_overlay_samples() -> dict[str, object]:
+    global _demo_overlay_last_refresh_at
+    eligible = _eligible_demo_overlay_device_macs()
+    for mac in eligible:
+        sample = _data_generator.sample_for_device(mac)
+        _persist_demo_overlay_sample(sample, explanation="community sample refresh", source_label="demo_overlay_refresh")
+    _demo_overlay_last_refresh_at = datetime.now(timezone.utc)
+    return {"device_count": len(eligible), "device_macs": eligible}
+
+
+def publish_next_demo_overlay_sample() -> None:
+    global _demo_overlay_cycle_index, _demo_overlay_last_published_at
+    eligible = _eligible_demo_overlay_device_macs()
+    if not eligible:
+        return
+    mac = eligible[_demo_overlay_cycle_index % len(eligible)]
+    _demo_overlay_cycle_index = (_demo_overlay_cycle_index + 1) % len(eligible)
+    sample = _data_generator.sample_for_device(mac)
+    _persist_demo_overlay_sample(sample, explanation="community sample overlay", source_label="demo_overlay_tick")
+    _demo_overlay_last_published_at = datetime.now(timezone.utc)
+
+
+def get_demo_data_status() -> dict[str, object]:
+    eligible = _eligible_demo_overlay_device_macs()
+    return {
+        "device_count": len(eligible),
+        "device_macs": eligible,
+        "last_refresh_at": _demo_overlay_last_refresh_at.isoformat() if _demo_overlay_last_refresh_at else None,
+        "last_published_at": _demo_overlay_last_published_at.isoformat() if _demo_overlay_last_published_at else None,
+    }
 
 
 def get_settings_dependency():
@@ -153,6 +259,33 @@ def get_agent_service() -> HealthAgentService:
 
 def get_care_service() -> CareService:
     return _care_service
+
+
+def get_explanation_service() -> ExplanationService:
+    return _explanation_service
+
+
+def get_community_insight_service() -> CommunityInsightService:
+    return _community_insight_service
+
+
+def get_demo_elder_subjects() -> list[AgentElderSubject]:
+    directory = _care_service.get_demo_directory()
+    subjects: list[AgentElderSubject] = []
+    for elder in directory.elders:
+        macs = list(getattr(elder, "device_macs", [])) or ([elder.device_mac] if elder.device_mac else [])
+        subjects.append(
+            AgentElderSubject(
+                elder_id=elder.id,
+                elder_name=elder.name,
+                apartment=elder.apartment,
+                device_macs=[mac for mac in macs if mac],
+                has_realtime_device=bool(macs),
+                risk_level="unknown",
+                is_demo_subject=True,
+            )
+        )
+    return subjects
 
 
 def require_session_user(authorization: str | None) -> SessionUser:
@@ -184,6 +317,154 @@ def get_intelligent_scorer() -> IntelligentAnomalyScorer:
 
 def get_community_clusterer() -> CommunityHealthClusterer:
     return _community_clusterer
+
+
+def get_score_repo() -> ScoreRepository:
+    return _score_repo
+
+
+def get_structured_health_score_service() -> StructuredHealthScoreService:
+    return _structured_health_score_service
+
+
+def get_warning_evaluation_service() -> WarningService:
+    return _warning_service
+
+
+def get_effective_device_ingest_mode(
+    device_mac: str,
+    stored_mode: DeviceIngestMode | str | None,
+) -> DeviceIngestMode | None:
+    normalized_mac = device_mac.strip().upper()
+    personas = getattr(_data_generator, "personas", None)
+    if personas:
+        known = {str(persona.mac_address).strip().upper() for persona in personas if getattr(persona, "mac_address", None)}
+        if normalized_mac in known:
+            return DeviceIngestMode.MOCK
+    if stored_mode is None:
+        return None
+    if isinstance(stored_mode, DeviceIngestMode):
+        return stored_mode
+    try:
+        return DeviceIngestMode(str(stored_mode))
+    except ValueError:
+        return None
+
+
+def is_display_ready_sample(sample: HealthSample, ingest_mode: DeviceIngestMode | str | None) -> bool:
+    effective = get_effective_device_ingest_mode(sample.device_mac, ingest_mode)
+    if effective == DeviceIngestMode.MOCK:
+        return True
+    if effective == DeviceIngestMode.SERIAL:
+        if sample.packet_type == "response_a":
+            return False
+        if sample.heart_rate <= 0:
+            return False
+        if not sample.blood_pressure or sample.blood_pressure == "0/0":
+            return False
+        if sample.battery <= 0:
+            return False
+        return True
+    return True
+
+
+def _filter_display_samples(
+    samples: list[HealthSample],
+    ingest_mode: DeviceIngestMode | str | None,
+) -> list[HealthSample]:
+    if not samples:
+        return []
+    effective_mode = get_effective_device_ingest_mode(samples[0].device_mac, ingest_mode)
+    ordered = sorted(samples, key=lambda item: item.timestamp)
+    if effective_mode != DeviceIngestMode.SERIAL:
+        return ordered
+    resolved: list[HealthSample] = []
+    last_valid_spo2: int | None = None
+    for sample in ordered:
+        update: dict[str, object] = {}
+        if sample.blood_oxygen in (None, 0) and last_valid_spo2 not in (None, 0):
+            update["blood_oxygen"] = last_valid_spo2
+        resolved_sample = sample.model_copy(update=update) if update else sample
+        if resolved_sample.blood_oxygen not in (None, 0):
+            last_valid_spo2 = resolved_sample.blood_oxygen
+        resolved.append(resolved_sample)
+    return resolved
+
+
+def get_display_latest_sample(
+    device_mac: str,
+    ingest_mode: DeviceIngestMode | str | None,
+) -> HealthSample | None:
+    effective_mode = get_effective_device_ingest_mode(device_mac, ingest_mode)
+    recent = _stream_service.recent(device_mac, limit=240)
+    if not recent:
+        now = datetime.now(timezone.utc)
+        persisted = _health_data_repository.list_samples(
+            device_mac=device_mac.strip().upper(),
+            start_at=now - timedelta(hours=24),
+            end_at=now,
+            limit=240,
+        )
+        if persisted:
+            restored = _filter_display_samples(persisted, effective_mode)
+            for sample in restored:
+                if is_display_ready_sample(sample, effective_mode):
+                    _stream_service.publish(sample)
+            recent = restored
+
+    filtered = _filter_display_samples(recent, effective_mode)
+    for sample in reversed(filtered):
+        if is_display_ready_sample(sample, effective_mode):
+            return sample
+    return None
+
+
+def get_display_trend_samples(
+    device_mac: str,
+    ingest_mode: DeviceIngestMode | str | None,
+    *,
+    minutes: int,
+    limit: int,
+) -> list[HealthSample]:
+    effective_mode = get_effective_device_ingest_mode(device_mac, ingest_mode)
+    requested_limit = max(1, int(limit))
+    minutes = max(1, int(minutes))
+    samples = _stream_service.recent_in_window(device_mac, minutes=minutes, limit=max(240, requested_limit * 3))
+    if not samples:
+        now = datetime.now(timezone.utc)
+        persisted = _health_data_repository.list_samples(
+            device_mac=device_mac.strip().upper(),
+            start_at=now - timedelta(minutes=minutes),
+            end_at=now,
+            limit=max(240, requested_limit * 3),
+        )
+        restored = _filter_display_samples(persisted, effective_mode)
+        for sample in restored:
+            if is_display_ready_sample(sample, effective_mode):
+                _stream_service.publish(sample)
+        samples = restored
+
+    filtered = _filter_display_samples(samples, effective_mode)
+    ready = [sample for sample in filtered if is_display_ready_sample(sample, effective_mode)]
+    return ready[-requested_limit:]
+
+
+def _restore_recent_samples_to_stream(*, hours: int = 24, per_device_limit: int = 288) -> None:
+    now = datetime.now(timezone.utc)
+    devices = _device_service.list_devices()
+    histories = _health_data_repository.list_samples_by_devices(
+        device_macs=[device.mac_address for device in devices],
+        start_at=now - timedelta(hours=hours),
+        end_at=now,
+        per_device_limit=per_device_limit,
+    )
+    for device in devices:
+        effective_mode = get_effective_device_ingest_mode(device.mac_address, device.ingest_mode)
+        samples = histories.get(device.mac_address, [])
+        filtered = _filter_display_samples(samples, effective_mode)
+        for sample in filtered:
+            if is_display_ready_sample(sample, effective_mode):
+                _stream_service.publish(sample)
 
 
 def _normalize_mac_from_payload(payload: dict[str, object]) -> str:
@@ -336,6 +617,33 @@ def _tool_holiday_lookup(payload: dict[str, object]) -> dict[str, object]:
         "source_note": "local_placeholder_calendar",
     }
 
+
+def _tool_generate_analysis_report(payload: dict[str, object]) -> dict[str, object]:
+    scope = str(payload.get("scope", "community"))
+    window = str(payload.get("window", "day"))
+    title = "社区健康分析报告" if scope == "community" else "老人健康分析报告"
+    summary = "窗口内健康态势结构化报告"
+    report_payload = {
+        "scope": scope,
+        "window": window,
+        "sections": [
+            {"title": "摘要", "content": "关键指标与事件汇总"},
+            {"title": "风险评估", "content": "风险等级与触发原因"},
+            {"title": "建议动作", "content": "建议的处置与观察措施"},
+        ],
+    }
+    return {
+        "attachments": [
+            {
+                "id": f"analysis-report-{scope}-{window}",
+                "title": title,
+                "summary": summary,
+                "render_type": "report_document",
+                "render_payload": report_payload,
+                "source_tool": "generate_analysis_report",
+            }
+        ]
+    }
 
 def _care_directory_lookup(device_mac: str) -> dict[str, object]:
     directory = _care_service.get_directory()

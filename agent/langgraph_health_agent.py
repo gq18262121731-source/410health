@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
-from typing import Any, TypedDict
+from typing import Any, Iterator, TypedDict
 from urllib import error, request
 from uuid import uuid4
 
@@ -21,6 +22,11 @@ try:
     from langchain_core.prompts import ChatPromptTemplate
 except Exception:
     ChatPromptTemplate = None
+
+try:
+    from langchain_community.chat_models import ChatTongyi
+except Exception:
+    ChatTongyi = None
 
 try:
     from langchain_ollama import ChatOllama
@@ -45,6 +51,10 @@ class AgentState(TypedDict, total=False):
     scope: str
     role: UserRole
     question: str
+    workflow: str
+    conversation_history: list[dict[str, str]]
+    history_minutes: int
+    focus_device_mac: str
     target_device_mac: str
     target_device_macs: list[str]
     samples: list[HealthSample]
@@ -52,6 +62,7 @@ class AgentState(TypedDict, total=False):
     route_mode: str
     network_online: bool
     selected_mode: str
+    selected_provider: str
     selected_model: str
     context_bundle: dict[str, Any]
     tool_results: list[dict[str, Any]]
@@ -73,7 +84,7 @@ class AgentState(TypedDict, total=False):
 
 
 class HealthAgentService:
-    """Offline-only health agent pinned to local Ollama models."""
+    """Health agent with provider auto-routing for Qwen API and local fallbacks."""
 
     def __init__(
         self,
@@ -130,18 +141,77 @@ class HealthAgentService:
         question: str,
         device_samples: dict[str, list[HealthSample]],
         mode: str = "local",
+        history_minutes: int = 1440,
+        workflow: str = "free_chat",
+        focus_device_mac: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        scope: str = "community",
+        subject_elder_id: str | None = None,
+        window: str = "day",
+        provider: str = "qwen",
+        include_report: bool = False,
+        per_device_limit: int = 240,
+        device_macs: list[str] | None = None,
     ) -> dict[str, object]:
+        samples_by_device = device_samples or {}
         state = self._execute(
             {
-                "scope": "community",
+                "scope": scope,
                 "role": role,
                 "question": question,
-                "target_device_macs": sorted(device_samples.keys()),
-                "community_samples": device_samples,
+                "workflow": workflow,
+                "conversation_history": self._normalize_conversation_history(history),
+                "history_minutes": history_minutes,
+                "focus_device_mac": str(focus_device_mac or "").strip().upper(),
+                "target_device_macs": sorted(samples_by_device.keys()),
+                "community_samples": samples_by_device,
                 "route_mode": mode,
+                "include_report": bool(include_report),
             }
         )
         return self._format_result(state)
+
+    def stream_analyze_community(
+        self,
+        *,
+        role: UserRole,
+        question: str,
+        device_samples: dict[str, list[HealthSample]] | None = None,
+        mode: str = "local",
+        history_minutes: int = 1440,
+        workflow: str = "free_chat",
+        focus_device_mac: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        scope: str = "community",
+        subject_elder_id: str | None = None,
+        window: str = "day",
+        provider: str = "qwen",
+        include_report: bool = False,
+        per_device_limit: int = 240,
+        device_macs: list[str] | None = None,
+    ) -> Iterator[dict[str, object]]:
+        samples_by_device = device_samples or {}
+        session_id = str(uuid4())
+        initial_state: AgentState = {
+          "scope": scope,
+          "role": role,
+          "question": question,
+          "workflow": workflow,
+          "conversation_history": self._normalize_conversation_history(history),
+          "history_minutes": history_minutes,
+          "focus_device_mac": str(focus_device_mac or "").strip().upper(),
+          "target_device_macs": sorted(samples_by_device.keys()),
+          "community_samples": samples_by_device,
+          "route_mode": mode,
+          "include_report": bool(include_report),
+        }
+        yield {
+            "type": "session.started",
+            "session_id": session_id,
+            "scope": "community",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        yield from self._stream_execute(initial_state, session_id=session_id)
 
     def generate_device_health_report(
         self,
@@ -190,7 +260,7 @@ class HealthAgentService:
             ),
             top_k=self._settings.rag_top_k,
             network_online=False,
-            allow_rerank=False,
+            allow_rerank=self._settings.qwen_enable_rerank,
         )
 
         prompt = self._build_report_prompt(
@@ -204,14 +274,17 @@ class HealthAgentService:
             model_signals=model_signals,
             health_model_evidence=health_model_evidence,
         )
-        selected_model = self._select_report_model(
+        selected_provider = self._select_generation_provider(requested_mode=mode)
+        selected_model = self._select_report_generation_model(
             role=role,
             requested_mode=mode,
+            provider=selected_provider,
         )
         summary = self._invoke_local(
             prompt["prompt_text"],
             prompt["messages"],
             selected_model=selected_model,
+            selected_provider=selected_provider,
             system_prompt=prompt["system_prompt"],
             user_prompt=prompt["user_prompt"],
             max_predict_tokens=None,
@@ -276,9 +349,15 @@ class HealthAgentService:
                 "langchain_prompt_available": ChatPromptTemplate is not None,
             },
             "llm_adapters": {
+                "langchain_tongyi": ChatTongyi is not None,
                 "langchain_ollama": ChatOllama is not None,
             },
             "configured_models": {
+                "preferred_provider": self._settings.preferred_llm_provider,
+                "llm_provider": self._settings.llm_provider,
+                "qwen_model": self._settings.qwen_model,
+                "qwen_api_base": self._settings.qwen_api_base,
+                "qwen_configured": self._settings.qwen_llm_configured,
                 "ollama_base_url": self._settings.ollama_base_url,
                 "ollama_model": self._settings.ollama_model,
                 "default_local_model": self._settings.local_default_model,
@@ -287,7 +366,7 @@ class HealthAgentService:
                 "approved_local_models": list(self._settings.supported_local_models),
                 "local_model_routing": self._settings.local_model_routing,
                 "local_report_routing": self._settings.local_report_routing,
-                "execution_mode": "local_only",
+                "execution_mode": "provider_auto_routing",
             },
             "retrieval": self._rag.stats(),
             "extensions": {
@@ -295,7 +374,7 @@ class HealthAgentService:
                 "tool_adapter": self._tool_adapter is not None,
                 "model_suite": self._model_suite is not None,
                 "mcp_connected": False,
-                "cloud_mode_enabled": False,
+                "cloud_mode_enabled": self._settings.qwen_llm_configured,
                 "offline_only_runtime": self._settings.offline_only_runtime,
             },
             "tool_specs": [
@@ -322,18 +401,154 @@ class HealthAgentService:
         state.update(self._aggregate_node(state))
         return state
 
+    @staticmethod
+    def _normalize_conversation_history(history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+        normalized: list[dict[str, str]] = []
+        for item in history or []:
+            role = str(item.get("role", "")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            normalized.append({"role": role, "content": content})
+        return normalized[-8:]
+
+    def _stream_execute(self, initial_state: AgentState, *, session_id: str) -> Iterator[dict[str, object]]:
+        state: AgentState = dict(initial_state)
+        stages = [
+            ("route", "路由模型", self._route_node),
+            ("context", "上下文整理", self._context_node),
+            ("tools", "工具调用", None),
+            ("analysis", "结构分析", self._analysis_node),
+            ("models", "模型信号", self._model_node),
+            ("dialogue", "过程归纳", self._dialogue_event_node),
+            ("retrieve", "知识检索", self._retrieve_node),
+            ("prompt", "提示构建", self._prompt_node),
+            ("generate", "回答生成", None),
+            ("aggregate", "结果汇总", self._aggregate_node),
+        ]
+
+        try:
+            for stage_key, stage_label, handler in stages:
+                yield self._make_stage_event(stage_key, stage_label, "running")
+
+                if stage_key == "tools":
+                    update = yield from self._stream_tool_node(state, stage=stage_key)
+                elif stage_key == "generate":
+                    answer = self._build_answer(state)
+                    update = {
+                        "answer": answer,
+                        "selected_mode": str(state.get("selected_mode", "local")),
+                    }
+                    for chunk in self._chunk_answer(answer):
+                        yield {
+                            "type": "answer.delta",
+                            "session_id": session_id,
+                            "delta": chunk,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                        time.sleep(0.015)
+                else:
+                    assert handler is not None
+                    update = handler(state)
+
+                state.update(update)
+
+                for note in self._build_stage_notes(stage_key, state):
+                    yield {
+                        "type": "trace.note",
+                        "stage": stage_key,
+                        "note": note,
+                        "level": "info",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+
+                yield self._make_stage_event(stage_key, stage_label, "completed")
+
+            formatted = self._format_result(state)
+            yield {
+                "type": "answer.completed",
+                "session_id": session_id,
+                "answer": str(formatted.get("answer", "")).strip(),
+                "references": list(formatted.get("references", [])),
+                "analysis": dict(formatted.get("analysis", {})),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            yield {
+                "type": "session.completed",
+                "session_id": session_id,
+                "selected_model": str(state.get("selected_model", self._settings.local_default_model)),
+                "degraded_notes": list(state.get("degraded_notes", [])),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as exc:
+            yield self._make_stage_event("aggregate", "结果汇总", "error", detail=exc.__class__.__name__)
+            yield {
+                "type": "session.error",
+                "session_id": session_id,
+                "error": f"{exc.__class__.__name__}: {exc}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+    def _make_stage_event(
+        self,
+        stage: str,
+        label: str,
+        status: str,
+        *,
+        detail: str = "",
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "type": "stage.changed",
+            "stage": stage,
+            "label": label,
+            "status": status,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if detail:
+            payload["detail"] = detail
+        return payload
+
     def _route_node(self, state: AgentState) -> AgentState:
-        selected_model = self._select_local_model(
+        requested_mode = str(state.get("route_mode", "local"))
+        selected_provider = self._select_generation_provider(requested_mode=requested_mode)
+        selected_model = self._select_generation_model(
             scope=str(state.get("scope", "device")),
             question=str(state.get("question", "")),
-            requested_mode=str(state.get("route_mode", "local")),
+            requested_mode=requested_mode,
+            provider=selected_provider,
         )
+        degraded_notes: list[str] = []
+        if selected_provider == "ollama" and self._settings.qwen_llm_configured:
+            degraded_notes.append("qwen_provider_fallback_to_local")
         return {
-            "network_online": False,
-            "selected_mode": "local",
+            "network_online": selected_provider == "qwen",
+            "selected_mode": "cloud" if selected_provider == "qwen" else "local",
+            "selected_provider": selected_provider,
             "selected_model": selected_model,
-            "degraded_notes": ["offline_only_runtime"],
+            "degraded_notes": degraded_notes,
         }
+
+    def _select_generation_provider(self, *, requested_mode: str) -> str:
+        normalized = requested_mode.strip().lower()
+        if normalized in {"qwen", "tongyi", "cloud", "api"} and self._settings.qwen_llm_configured:
+            return "qwen"
+        if normalized in {"ollama"}:
+            return "ollama"
+        return self._settings.preferred_llm_provider
+
+    def _normalize_qwen_model(self, model_name: str) -> str:
+        normalized = (model_name or "").strip()
+        if not normalized:
+            return "qwen-plus"
+        lower = normalized.lower()
+        if lower in {"qwen3.5-flash", "qwen3.5", "qwen3.5-flash-mini", "qwen3.5-lite"}:
+            return "qwen-plus"
+        return normalized
+
+    def _select_generation_model(self, *, scope: str, question: str, requested_mode: str, provider: str) -> str:
+        if provider == "qwen":
+            return self._normalize_qwen_model(self._settings.qwen_model)
+        return self._select_local_model(scope=scope, question=question, requested_mode=requested_mode)
 
     def _select_local_model(self, *, scope: str, question: str, requested_mode: str) -> str:
         del requested_mode
@@ -384,6 +599,17 @@ class HealthAgentService:
             return report_model
         return self._settings.local_default_model
 
+    def _select_report_generation_model(
+        self,
+        *,
+        role: UserRole,
+        requested_mode: str,
+        provider: str,
+    ) -> str:
+        if provider == "qwen":
+            return self._normalize_qwen_model(self._settings.qwen_model)
+        return self._select_report_model(role=role, requested_mode=requested_mode)
+
     def _context_node(self, state: AgentState) -> AgentState:
         if self._context_assembler is None:
             return {"context_bundle": {}, "degraded_notes": ["context_assembler_not_configured"]}
@@ -416,9 +642,15 @@ class HealthAgentService:
     def _tool_node(self, state: AgentState) -> AgentState:
         if self._tool_adapter is None:
             return {"tool_results": []}
+        calls = self._build_tool_calls(state)
+        results = self._tool_adapter.invoke_many(calls)
+        return {"tool_results": [self._serialize_tool_result(call, item) for call, item in zip(calls, results, strict=False)]}
 
+    def _build_tool_calls(self, state: AgentState) -> list[ToolInvocation]:
         scope = str(state.get("scope", "device"))
         role = str(state.get("role", ""))
+        workflow = str(state.get("workflow", "free_chat"))
+        question = str(state.get("question", "")).strip()
         community_id = None
         context_bundle = state.get("context_bundle", {})
         if isinstance(context_bundle, dict):
@@ -426,42 +658,383 @@ class HealthAgentService:
             if isinstance(community_value, dict):
                 community_id = str(community_value.get("id", "")) or None
 
-        calls: list[ToolInvocation] = []
         if scope == "community":
-            calls.extend(
-                [
-                    ToolInvocation(name="get_community_overview", request_id=str(uuid4()), operator_role=role, community_id=community_id),
-                    ToolInvocation(name="get_active_alarms", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"active_only": True}),
-                    ToolInvocation(name="get_care_directory", request_id=str(uuid4()), operator_role=role, community_id=community_id),
-                ]
-            )
-        else:
-            device_mac = str(state.get("target_device_mac", "")).strip()
-            calls.extend(
-                [
-                    ToolInvocation(name="get_device_realtime", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"mac_address": device_mac}),
-                    ToolInvocation(name="get_device_status", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"mac_address": device_mac}),
-                    ToolInvocation(name="get_active_alarms", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"mac_address": device_mac, "active_only": True}),
-                    ToolInvocation(name="get_elder_profile", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"mac_address": device_mac}),
-                ]
-            )
-
-        results = self._tool_adapter.invoke_many(calls)
-        return {
-            "tool_results": [
-                {
-                    "request_id": call.request_id,
-                    "name": item.name,
-                    "status": item.status,
-                    "success": item.success,
-                    "source": item.source,
-                    "data": item.data,
-                    "error_code": item.error_code,
-                    "error_message": item.error_message,
-                }
-                for call, item in zip(calls, results, strict=False)
+            device_macs = list(state.get("target_device_macs", []))
+            focus_device_mac = str(state.get("focus_device_mac", "")).strip().upper()
+            window = self._window_value_from_history(int(state.get("history_minutes", 1440) or 1440))
+            calls = [
+                ToolInvocation(name="get_community_overview", request_id=str(uuid4()), operator_role=role, community_id=community_id),
+                ToolInvocation(name="get_active_alarms", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"active_only": True}),
+                ToolInvocation(name="get_care_directory", request_id=str(uuid4()), operator_role=role, community_id=community_id),
+                ToolInvocation(
+                    name="summarize_window_metrics",
+                    request_id=str(uuid4()),
+                    operator_role=role,
+                    community_id=community_id,
+                    payload={"window": window, "device_macs": device_macs},
+                ),
             ]
+            if workflow == "community_report" or bool(state.get("include_report", False)):
+                calls.append(
+                    ToolInvocation(
+                        name="generate_analysis_report",
+                        request_id=str(uuid4()),
+                        operator_role=role,
+                        community_id=community_id,
+                        payload={"scope": "community", "window": window, "device_macs": device_macs},
+                    )
+                )
+            if workflow in {"overview", "device_focus", "free_chat", "risk_ranking"}:
+                calls.append(
+                    ToolInvocation(
+                        name="build_chart_payloads",
+                        request_id=str(uuid4()),
+                        operator_role=role,
+                        community_id=community_id,
+                        payload={"window": window, "device_macs": device_macs},
+                    )
+                )
+            if workflow in {"alert_digest", "free_chat"}:
+                calls.append(
+                    ToolInvocation(
+                        name="query_alert_history",
+                        request_id=str(uuid4()),
+                        operator_role=role,
+                        community_id=community_id,
+                        payload={"window": window, "device_macs": device_macs},
+                    )
+                )
+            if workflow == "device_focus" and focus_device_mac:
+                focus_payload = {"window": window, "device_mac": focus_device_mac, "mac_address": focus_device_mac}
+                calls.extend(
+                    [
+                        ToolInvocation(name="query_sensor_history", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload=focus_payload),
+                        ToolInvocation(name="query_health_scores", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload=focus_payload),
+                        ToolInvocation(name="query_device_status_history", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload=focus_payload),
+                    ]
+                )
+            if self._should_search(question=question, workflow=workflow):
+                calls.append(
+                    ToolInvocation(
+                        name="run_tavily_search",
+                        request_id=str(uuid4()),
+                        operator_role=role,
+                        community_id=community_id,
+                        payload={"query": question},
+                    )
+                )
+            return calls
+
+        device_mac = str(state.get("target_device_mac", "")).strip()
+        calls = [
+            ToolInvocation(name="get_device_realtime", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"mac_address": device_mac}),
+            ToolInvocation(name="get_device_status", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"mac_address": device_mac}),
+            ToolInvocation(name="get_active_alarms", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"mac_address": device_mac, "active_only": True}),
+            ToolInvocation(name="get_elder_profile", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"mac_address": device_mac}),
+        ]
+        if self._should_search(question=question, workflow=workflow):
+            calls.append(
+                ToolInvocation(
+                    name="run_tavily_search",
+                    request_id=str(uuid4()),
+                    operator_role=role,
+                    community_id=community_id,
+                    payload={"query": question},
+                )
+            )
+        return calls
+
+    @staticmethod
+    def _window_value_from_history(history_minutes: int) -> str:
+        return "week" if history_minutes >= 7 * 24 * 60 else "day"
+
+    @staticmethod
+    def _should_search(*, question: str, workflow: str) -> bool:
+        health_keywords = ("医学", "健康", "医生", "建议", "治疗", "预防", "症状", "饮食", "吃什么")
+        if any(kw in question.lower() for kw in health_keywords):
+            return True
+        if workflow in {"free_chat", "device_focus"} and any(
+            keyword in question.lower()
+            for keyword in ("搜索", "查找", "检索", "search", "政策", "指南", "天气", "空气", "周边", "假期")
+        ):
+            return True
+        return False
+
+    def _serialize_tool_result(self, call: ToolInvocation, item: Any) -> dict[str, Any]:
+        attachments = self._tool_result_attachments(call.name, item.data if isinstance(item.data, dict) else {})
+        return {
+            "request_id": call.request_id,
+            "name": item.name,
+            "status": item.status,
+            "success": item.success,
+            "source": item.source,
+            "data": item.data,
+            "attachments": attachments,
+            "error_code": item.error_code,
+            "error_message": item.error_message,
         }
+
+    def _stream_tool_node(self, state: AgentState, *, stage: str) -> Iterator[dict[str, object]]:
+        if self._tool_adapter is None:
+            return {"tool_results": []}
+
+        calls = self._build_tool_calls(state)
+        tool_results: list[dict[str, Any]] = []
+        for call in calls:
+            yield {
+                "type": "tool.started",
+                "stage": stage,
+                "tool_name": call.name,
+                "request_id": call.request_id,
+                "source": "local_service",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            result = self._tool_adapter.invoke_many([call])[0]
+            serialized = self._serialize_tool_result(call, result)
+            tool_results.append(serialized)
+            attachments = list(serialized.get("attachments", []))
+            yield {
+                "type": "tool.finished",
+                "stage": stage,
+                "tool_name": call.name,
+                "request_id": call.request_id,
+                "source": result.source,
+                "status": result.status,
+                "success": result.success,
+                "summary": self._tool_result_summary(call.name, result.data, result.success),
+                "attachments": attachments,
+                "title": attachments[0].get("title") if attachments else None,
+                "render_type": attachments[0].get("render_type") if attachments else None,
+                "render_payload": attachments[0].get("render_payload") if attachments else None,
+                "error_message": result.error_message,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        return {"tool_results": tool_results}
+
+    def _tool_result_summary(self, tool_name: str, data: dict[str, Any], success: bool) -> str:
+        if not success:
+            return "工具执行失败"
+        if tool_name == "generate_analysis_report":
+            if isinstance(data, dict):
+                attachments = data.get("attachments", [])
+                if isinstance(attachments, list) and attachments:
+                    return "已生成结构化分析报告"
+            return "报告生成完成"
+        if tool_name == "get_active_alarms":
+            return f"返回 {len(data.get('alarms', [])) if isinstance(data.get('alarms'), list) else 0} 条告警"
+        if tool_name == "get_community_overview":
+            return f"覆盖 {data.get('device_count', 0)} 台设备"
+        if tool_name == "get_care_directory":
+            families = data.get("families", []) if isinstance(data, dict) else []
+            elders = data.get("elders", []) if isinstance(data, dict) else []
+            return f"返回 {len(elders) if isinstance(elders, list) else 0} 位老人 / {len(families) if isinstance(families, list) else 0} 位家属"
+        if tool_name == "get_device_realtime":
+            return "已读取设备最新生命体征"
+        if tool_name == "get_device_status":
+            return f"设备状态 {data.get('status', 'unknown')}"
+        if tool_name == "get_elder_profile":
+            return f"已读取对象 {data.get('name', 'unknown')}"
+        if tool_name == "summarize_window_metrics":
+            metrics = data.get("key_metrics", {}) if isinstance(data, dict) else {}
+            return f"已汇总窗口关键指标 {len(metrics) if isinstance(metrics, dict) else 0} 项"
+        if tool_name == "build_chart_payloads":
+            charts = data.get("charts", []) if isinstance(data, dict) else []
+            return f"已生成 {len(charts) if isinstance(charts, list) else 0} 组图表"
+        if tool_name == "query_alert_history":
+            alerts = data.get("alerts", []) if isinstance(data, dict) else []
+            return f"已检索 {len(alerts) if isinstance(alerts, list) else 0} 条告警记录"
+        if tool_name == "query_health_scores":
+            scores = data.get("scores", []) if isinstance(data, dict) else []
+            return f"已返回 {len(scores) if isinstance(scores, list) else 0} 条健康评分记录"
+        if tool_name == "run_tavily_search":
+            results = data.get("results", []) if isinstance(data, dict) else []
+            return f"已检索 {len(results) if isinstance(results, list) else 0} 条外部参考"
+        return "已返回结构化结果"
+
+    def _tool_result_attachments(self, tool_name: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(data, dict):
+            return []
+        if tool_name == "generate_analysis_report":
+            attachments = data.get("attachments", [])
+            if isinstance(attachments, list):
+                normalized: list[dict[str, Any]] = []
+                for item in attachments:
+                    if not isinstance(item, dict):
+                        continue
+                    render_type = str(item.get("render_type", ""))
+                    title = str(item.get("title", ""))
+                    if not render_type or not title:
+                        continue
+                    normalized.append(
+                        {
+                            "id": str(item.get("id", "analysis-report")),
+                            "title": title,
+                            "summary": str(item.get("summary", "")),
+                            "render_type": render_type,
+                            "render_payload": dict(item.get("render_payload", {})),
+                            "source_tool": "generate_analysis_report",
+                        }
+                    )
+                return normalized
+        label_map = {
+            "device_count": "设备总数",
+            "reported_device_count": "已上报设备",
+            "active_alert_count": "活跃告警",
+            "high_risk_device_count": "高风险对象",
+            "average_health_score": "平均健康分",
+            "average_blood_oxygen": "平均血氧",
+            "elder_name": "老人",
+            "device_mac": "设备 MAC",
+            "risk_level": "风险等级",
+            "latest_health_score": "最新健康分",
+            "active_alert_count": "活跃告警数",
+            "alarm_type": "告警类型",
+            "alarm_level": "告警等级",
+            "message": "告警说明",
+            "created_at": "时间",
+            "evaluated_at": "评估时间",
+            "health_score": "健康分",
+            "recommendation_code": "推荐动作",
+            "title": "标题",
+            "url": "链接",
+            "snippet": "摘要",
+        }
+        if tool_name == "build_chart_payloads":
+            attachments: list[dict[str, Any]] = []
+            for index, chart in enumerate(data.get("charts", [])):
+                if not isinstance(chart, dict):
+                    continue
+                option = chart.get("echarts_option")
+                if not isinstance(option, dict):
+                    continue
+                attachments.append(
+                    {
+                        "id": str(chart.get("id") or f"chart-{index}"),
+                        "title": str(chart.get("title") or "图表输出"),
+                        "summary": str(chart.get("summary") or ""),
+                        "render_type": "echarts",
+                        "render_payload": {
+                            "id": str(chart.get("id") or f"chart-{index}"),
+                            "title": str(chart.get("title") or "图表输出"),
+                            "summary": str(chart.get("summary") or ""),
+                            "echarts_option": option,
+                        },
+                        "source_tool": tool_name,
+                    }
+                )
+            return attachments
+        if tool_name == "summarize_window_metrics":
+            metric_cards = []
+            key_metrics = data.get("key_metrics", {})
+            if isinstance(key_metrics, dict):
+                for key in (
+                    "device_count",
+                    "reported_device_count",
+                    "active_alert_count",
+                    "high_risk_device_count",
+                    "average_health_score",
+                    "average_blood_oxygen",
+                ):
+                    if key in key_metrics:
+                        metric_cards.append({"label": label_map.get(key, key), "value": key_metrics[key]})
+            high_risk_entities = data.get("high_risk_entities", [])
+            attachments: list[dict[str, Any]] = []
+            if metric_cards:
+                attachments.append(
+                    {
+                        "id": "window-metrics",
+                        "title": "社区关键指标",
+                        "summary": "窗口内的核心监护指标摘要",
+                        "render_type": "metric_cards",
+                        "render_payload": {"items": metric_cards},
+                        "source_tool": tool_name,
+                    }
+                )
+            if isinstance(high_risk_entities, list) and high_risk_entities:
+                attachments.append(
+                    {
+                        "id": "window-risk-ranking",
+                        "title": "高风险对象排行",
+                        "summary": "按当前窗口的风险等级与活跃告警排序",
+                        "render_type": "table",
+                        "render_payload": {
+                            "columns": [
+                                {"key": "elder_name", "label": label_map["elder_name"]},
+                                {"key": "device_mac", "label": label_map["device_mac"]},
+                                {"key": "risk_level", "label": label_map["risk_level"]},
+                                {"key": "latest_health_score", "label": label_map["latest_health_score"]},
+                                {"key": "active_alert_count", "label": label_map["active_alert_count"]},
+                            ],
+                            "rows": high_risk_entities[:8],
+                        },
+                        "source_tool": tool_name,
+                    }
+                )
+            return attachments
+        if tool_name == "query_alert_history":
+            alerts = data.get("alerts", [])
+            if isinstance(alerts, list) and alerts:
+                return [
+                    {
+                        "id": "alert-history",
+                        "title": "告警历史",
+                        "summary": "窗口内命中的告警记录",
+                        "render_type": "table",
+                        "render_payload": {
+                            "columns": [
+                                {"key": "device_mac", "label": label_map["device_mac"]},
+                                {"key": "alarm_type", "label": label_map["alarm_type"]},
+                                {"key": "alarm_level", "label": label_map["alarm_level"]},
+                                {"key": "message", "label": label_map["message"]},
+                                {"key": "created_at", "label": label_map["created_at"]},
+                            ],
+                            "rows": alerts[:10],
+                        },
+                        "source_tool": tool_name,
+                    }
+                ]
+        if tool_name == "query_health_scores":
+            scores = data.get("scores", [])
+            if isinstance(scores, list) and scores:
+                return [
+                    {
+                        "id": "health-score-history",
+                        "title": "健康评分记录",
+                        "summary": "聚焦设备最近窗口内的评分轨迹",
+                        "render_type": "table",
+                        "render_payload": {
+                            "columns": [
+                                {"key": "evaluated_at", "label": label_map["evaluated_at"]},
+                                {"key": "health_score", "label": label_map["health_score"]},
+                                {"key": "risk_level", "label": label_map["risk_level"]},
+                                {"key": "recommendation_code", "label": label_map["recommendation_code"]},
+                            ],
+                            "rows": scores[:10],
+                        },
+                        "source_tool": tool_name,
+                    }
+                ]
+        if tool_name == "run_tavily_search":
+            results = data.get("results", [])
+            if isinstance(results, list) and results:
+                return [
+                    {
+                        "id": "web-search-results",
+                        "title": "外部检索结果",
+                        "summary": "补充性的网络参考信息",
+                        "render_type": "table",
+                        "render_payload": {
+                            "columns": [
+                                {"key": "title", "label": label_map["title"]},
+                                {"key": "url", "label": label_map["url"]},
+                                {"key": "snippet", "label": label_map["snippet"]},
+                            ],
+                            "rows": results[:8],
+                        },
+                        "source_tool": tool_name,
+                    }
+                ]
+        return []
 
     def _analysis_node(self, state: AgentState) -> AgentState:
         scope = str(state.get("scope", "device"))
@@ -1117,17 +1690,30 @@ class HealthAgentService:
             query,
             top_k=self._settings.rag_top_k,
             network_online=False,
-            allow_rerank=False,
+            allow_rerank=self._settings.qwen_enable_rerank,
         )
         return {"knowledge_hits": hits}
 
     def _prompt_node(self, state: AgentState) -> AgentState:
+        # Extract search results from tool_results
+        tool_results = list(state.get("tool_results", []))
+        search_hits = []
+        for res in tool_results:
+            if res.get("name") == "run_tavily_search" and res.get("success"):
+                data = res.get("data", {})
+                if isinstance(data, dict):
+                    results = data.get("results", [])
+                    if isinstance(results, list):
+                        for r in results:
+                            search_hits.append(f"{r.get('title')}: {r.get('snippet')}")
+
         package = build_prompt_package(
             role=state.get("role", UserRole.FAMILY),
             scope=str(state.get("scope", "device")),
             question=str(state.get("question", "")),
             analysis_context=self._compose_analysis_context(state),
             knowledge_context="\n\n".join(state.get("knowledge_hits", [])),
+            search_context="\n\n".join(search_hits),
         )
         system_text = package["system"]
         user_text = package["user"]
@@ -1147,47 +1733,122 @@ class HealthAgentService:
         }
 
     def _generate_node(self, state: AgentState) -> AgentState:
+        return {
+            "answer": self._build_answer(state),
+            "selected_mode": str(state.get("selected_mode", "local")),
+        }
+
+    def _build_answer(self, state: AgentState) -> str:
         prompt_text = str(state.get("prompt_text", "")).strip()
         system_prompt = str(state.get("system_prompt", "")).strip()
         user_prompt = str(state.get("user_prompt", "")).strip()
         messages = list(state.get("messages", []))
         scope = str(state.get("scope", "device"))
         selected_model = str(state.get("selected_model", self._settings.local_default_model))
+        selected_provider = str(state.get("selected_provider", self._settings.preferred_llm_provider))
         dialogue_expression = dict(state.get("dialogue_expression", {}))
 
         if not prompt_text:
-            fallback = str(dialogue_expression.get("answer", "")).strip() or self._fallback_answer(state.get("analysis_payload", {}), scope)
-            return {"answer": fallback, "selected_mode": "local"}
+            return str(dialogue_expression.get("answer", "")).strip() or self._fallback_answer(state.get("analysis_payload", {}), scope)
 
-        _ = self._invoke_local(
+        llm_answer = self._invoke_local(
             prompt_text,
             messages,
             selected_model=selected_model,
+            selected_provider=selected_provider,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_predict_tokens=self._settings.dialogue_max_predict_tokens,
             max_output_chars=self._settings.dialogue_max_output_chars,
         )
+        if llm_answer:
+            return llm_answer
         event_answer = str(dialogue_expression.get("answer", "")).strip()
         if event_answer:
-            return {"answer": event_answer, "selected_mode": "local"}
-        return {"answer": self._fallback_answer(state.get("analysis_payload", {}), scope), "selected_mode": "local"}
+            return event_answer
+        return self._fallback_answer(state.get("analysis_payload", {}), scope)
 
     def _aggregate_node(self, state: AgentState) -> AgentState:
+        attachments = self._collect_attachments(list(state.get("tool_results", [])))
         final_payload = {
             "scope": str(state.get("scope", "device")),
             "mode": str(state.get("selected_mode", "local")),
-            "network_online": False,
+            "network_online": bool(state.get("network_online", False)),
+            "selected_provider": str(state.get("selected_provider", self._settings.preferred_llm_provider)),
             "selected_model": str(state.get("selected_model", self._settings.local_default_model)),
             "answer": str(state.get("answer", "")).strip(),
             "references": list(state.get("knowledge_hits", [])),
             "analysis": dict(state.get("analysis_payload", {})),
             "context": dict(state.get("context_bundle", {})),
             "tool_results": list(state.get("tool_results", [])),
+            "attachments": attachments,
             "model_results": dict(state.get("model_results", {})),
             "degraded": list(state.get("degraded_notes", [])),
         }
         return {"final_payload": final_payload}
+
+    @staticmethod
+    def _collect_attachments(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        attachments: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item in tool_results:
+            for attachment in item.get("attachments", []):
+                if not isinstance(attachment, dict):
+                    continue
+                attachment_id = str(attachment.get("id", "")).strip()
+                if not attachment_id or attachment_id in seen_ids:
+                    continue
+                seen_ids.add(attachment_id)
+                attachments.append(attachment)
+        return attachments
+
+    def _build_stage_notes(self, stage: str, state: AgentState) -> list[str]:
+        if stage == "route":
+            provider = str(state.get("selected_provider", self._settings.preferred_llm_provider))
+            model_name = state.get("selected_model", self._settings.local_default_model)
+            provider_label = "Tongyi/Qwen API" if provider == "qwen" else "本地 Ollama"
+            return [f"已选择 {provider_label}，模型 {model_name}。"]
+        if stage == "context":
+            context_bundle = state.get("context_bundle", {})
+            if isinstance(context_bundle, dict):
+                return [f"已整理 {len(context_bundle.keys())} 组业务上下文。"]
+        if stage == "tools":
+            tool_results = list(state.get("tool_results", []))
+            return [f"已完成 {len(tool_results)} 个工具调用。"] if tool_results else []
+        if stage == "analysis":
+            analysis_payload = state.get("analysis_payload", {})
+            if isinstance(analysis_payload, dict):
+                risk_level = str(analysis_payload.get("risk_level", "")).strip()
+                device_count = analysis_payload.get("device_count")
+                if risk_level and device_count is not None:
+                    return [f"社区结构分析完成，当前风险等级分布已更新，覆盖 {device_count} 台设备。"]
+                if risk_level:
+                    return [f"结构分析完成，当前综合风险等级为 {risk_level}。"]
+        if stage == "models":
+            model_results = state.get("model_results", {})
+            if isinstance(model_results, dict) and model_results:
+                return [f"已整合 {len(model_results.keys())} 路模型信号。"]
+        if stage == "dialogue":
+            events = state.get("dialogue_events", [])
+            if isinstance(events, list) and events:
+                return [str(event.get("title", "") or event.get("message", "")).strip() for event in events[:3] if isinstance(event, dict)]
+        if stage == "retrieve":
+            hits = list(state.get("knowledge_hits", []))
+            return [f"检索到 {len(hits)} 条参考信息。"] if hits else ["未命中额外参考信息，继续使用本地上下文生成结果。"]
+        if stage == "prompt":
+            return ["已构建回答提示，不向前端暴露原始提示内容。"]
+        if stage == "generate":
+            answer = str(state.get("answer", "")).strip()
+            return ["回答已生成，正在推送到前端。"] if answer else []
+        if stage == "aggregate":
+            return ["已聚合最终回答、分析摘要和参考信息。"]
+        return []
+
+    def _chunk_answer(self, answer: str, *, size: int = 32) -> list[str]:
+        text = answer.strip()
+        if not text:
+            return []
+        return [text[index:index + size] for index in range(0, len(text), size)]
 
     def _invoke_local(
         self,
@@ -1195,13 +1856,45 @@ class HealthAgentService:
         messages: list[Any],
         *,
         selected_model: str,
+        selected_provider: str = "",
         system_prompt: str = "",
         user_prompt: str = "",
         max_predict_tokens: int | None = None,
         max_output_chars: int | None = None,
     ) -> str | None:
+        provider = (selected_provider or self._settings.preferred_llm_provider).strip().lower()
+        local_fallback_model = self._settings.local_reasoning_model or self._settings.local_default_model
+
+        if provider == "qwen":
+            answer = self._truncate_output(
+                self._call_tongyi(
+                    prompt_text,
+                    messages,
+                    selected_model=selected_model,
+                    max_predict_tokens=max_predict_tokens,
+                ),
+                max_output_chars,
+            )
+            if answer:
+                return answer
+            answer = self._truncate_output(
+                self._call_qwen_compatible_http(
+                    prompt_text,
+                    selected_model=selected_model,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    max_predict_tokens=max_predict_tokens,
+                ),
+                max_output_chars,
+            )
+            if answer:
+                return answer
+
         if ChatOllama is not None:
-            local_llm = self._build_local_llm(selected_model, max_predict_tokens=max_predict_tokens)
+            local_llm = self._build_local_llm(
+                local_fallback_model if provider == "qwen" else selected_model,
+                max_predict_tokens=max_predict_tokens,
+            )
             if local_llm is not None:
                 try:
                     response = local_llm.invoke(messages or prompt_text)
@@ -1213,13 +1906,52 @@ class HealthAgentService:
         return self._truncate_output(
             self._call_ollama_http(
                 prompt_text,
-                selected_model=selected_model,
+                selected_model=local_fallback_model if provider == "qwen" else selected_model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_predict_tokens=max_predict_tokens,
             ),
             max_output_chars,
         )
+
+    def _call_tongyi(
+        self,
+        prompt_text: str,
+        messages: list[Any],
+        *,
+        selected_model: str,
+        max_predict_tokens: int | None = None,
+    ) -> str | None:
+        if ChatTongyi is None or not self._settings.qwen_llm_configured:
+            return None
+        cloud_llm = self._build_tongyi_llm(selected_model, max_predict_tokens=max_predict_tokens)
+        if cloud_llm is None:
+            return None
+        try:
+            response = cloud_llm.invoke(messages or prompt_text)
+            return self._extract_message_text(response)
+        except Exception:
+            return None
+
+    def _build_tongyi_llm(self, model_name: str, *, max_predict_tokens: int | None = None):
+        if ChatTongyi is None or not self._settings.qwen_llm_configured:
+            return None
+        cache_key = f"tongyi|{model_name}|{max_predict_tokens or 'default'}"
+        if cache_key in self._local_llms:
+            return self._local_llms[cache_key]
+        try:
+            kwargs: dict[str, Any] = {
+                "model": model_name,
+                "api_key": self._settings.qwen_api_key,
+                "streaming": False,
+            }
+            if max_predict_tokens is not None:
+                kwargs["max_tokens"] = max_predict_tokens
+            llm = ChatTongyi(**kwargs)
+            self._local_llms[cache_key] = llm
+            return llm
+        except Exception:
+            return None
 
     def _build_local_llm(self, model_name: str, *, max_predict_tokens: int | None = None):
         if ChatOllama is None:
@@ -1240,6 +1972,41 @@ class HealthAgentService:
             return llm
         except Exception:
             return None
+
+    def _call_qwen_compatible_http(
+        self,
+        prompt_text: str,
+        *,
+        selected_model: str,
+        system_prompt: str = "",
+        user_prompt: str = "",
+        max_predict_tokens: int | None = None,
+    ) -> str | None:
+        if not self._settings.qwen_llm_configured:
+            return None
+        base = self._settings.qwen_api_base.rstrip("/")
+        url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if user_prompt:
+            messages.append({"role": "user", "content": user_prompt})
+        if not messages:
+            messages.append({"role": "user", "content": prompt_text})
+        body: dict[str, Any] = {
+            "model": selected_model,
+            "messages": messages,
+            "temperature": 0.2,
+            "stream": False,
+        }
+        if max_predict_tokens is not None:
+            body["max_tokens"] = max_predict_tokens
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._settings.qwen_api_key}",
+        }
+        return self._post_json(url, payload, headers, parser=self._extract_openai_compatible_content)
 
     def _call_ollama_http(
         self,
@@ -1739,7 +2506,8 @@ class HealthAgentService:
             {
                 "scope": scope,
                 "mode": str(result.get("selected_mode", "local")),
-                "network_online": False,
+                "network_online": bool(result.get("network_online", False)),
+                "selected_provider": str(result.get("selected_provider", self._settings.preferred_llm_provider)),
                 "selected_model": str(result.get("selected_model", self._settings.local_default_model)),
                 "answer": answer,
                 "references": list(result.get("knowledge_hits", [])),
@@ -1752,6 +2520,14 @@ class HealthAgentService:
             "### Analysis",
             str(state.get("analysis_context", "{}")),
         ]
+        conversation_history = state.get("conversation_history", [])
+        if conversation_history:
+            sections.extend(
+                [
+                    "### Conversation History",
+                    json.dumps(conversation_history, ensure_ascii=False, indent=2, default=str),
+                ]
+            )
         dialogue_events = state.get("dialogue_events", [])
         if dialogue_events:
             sections.extend(
@@ -2013,4 +2789,30 @@ class HealthAgentService:
         if isinstance(message, str):
             value = message.strip()
             return value or None
+        return None
+
+    @classmethod
+    def _extract_openai_compatible_content(cls, body: dict[str, Any]) -> str | None:
+        choices = body.get("choices", [])
+        if not isinstance(choices, list) or not choices:
+            return None
+        first = choices[0]
+        if not isinstance(first, dict):
+            return None
+        message = first.get("message", {})
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                value = content.strip()
+                if value:
+                    return value
+            if isinstance(content, list):
+                parts: list[str] = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text")
+                        if isinstance(text, str) and text.strip():
+                            parts.append(text.strip())
+                if parts:
+                    return "\n".join(parts)
         return None

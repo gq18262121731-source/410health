@@ -1,23 +1,39 @@
-﻿# Windows 本地部署与启动指南
+# Windows 本地部署与启动指南
 
-这份文档面向第一次在 Windows 上跑通本项目的同学，重点说明本机环境准备、依赖安装、Redis 启动、后端启动、前端启动和常见问题处理。
+这份文档面向第一次在 Windows 上跑通本项目的同学，重点说明本机环境准备、依赖安装、Redis 启动、后端启动、前端启动、验证方式和常见问题处理。
 
-如果你只是想快速了解项目结构和整体功能，请优先看 `README.md`；如果你现在的目标是把项目在自己电脑上跑起来，请按本文步骤执行。
+如果你只是想快速了解项目结构和整体功能，请优先看 `README.md`；如果你现在的目标是把项目在自己电脑上稳定跑起来，请按本文步骤执行。
 
-## 1. 推荐运行方式
+补充说明：
+
+- 当前实际文件名是 `setup.md`，不是 `set_up.md`
+- 本文档和 `README.md` 保持一致，以项目当前标准命令为准
+
+## 1. 项目标准运行规则
+
+本项目禁止混用 Python 环境。默认规则如下：
+
+- 所有 Python 命令都优先使用 `conda run -n helth python ...`
+- 所有 pytest 命令都优先使用 `conda run -n helth pytest ...`
+- 后端启动优先使用仓库内脚本，而不是手写裸命令
+- 当前仓库支持 `--reload` 快速热重载
+
+因此，本文不会把裸 `python`、裸 `pytest` 作为正式推荐入口。
+
+## 2. 推荐运行方式
 
 当前仓库推荐使用下面这套本地开发组合：
 
 - Docker Desktop：用于启动 Redis
-- Python 本地环境：用于运行后端
+- conda 环境 `helth`：用于运行后端和测试
 - Node.js 本地环境：用于运行前端
 - ChromaDB：默认使用 `pip` 安装后的本地持久化模式，不强制使用 Docker 容器
 
-这套方式的优点是依赖更少、排错更直接，也更适合日常联调。
+这套方式依赖更少、排错更直接，也更适合日常联调。
 
-## 2. 环境准备
+## 3. 环境准备
 
-### 2.1 Windows 和 WSL 2
+### 3.1 Windows 和 WSL 2
 
 建议先将系统更新到 Windows 10 22H2 或更新版本。这样更容易兼容 Docker Desktop 和 WSL 2。
 
@@ -35,11 +51,11 @@ wsl --version
 
 如果能够看到版本号，说明 WSL 已经安装成功。
 
-### 2.2 安装 Docker Desktop
+### 3.2 安装 Docker Desktop
 
 Docker Desktop 官方下载地址：
 
-https://docs.docker.com/desktop/setup/install/windows-install/
+[Docker Desktop for Windows](https://docs.docker.com/desktop/setup/install/windows-install/)
 
 安装时建议保持 `Use WSL 2 instead of Hyper-V` 勾选。安装完成后启动 Docker Desktop，确认左下角显示 Engine running。
 
@@ -62,22 +78,29 @@ https://docs.docker.com/desktop/setup/install/windows-install/
 
 如果你平时通过本地代理上网，例如 `http://127.0.0.1:7890`，更推荐在 Docker Desktop 的 `Settings -> Resources -> Proxies` 中配置 `HTTP Proxy` 和 `HTTPS Proxy`，通常会比公共镜像源更稳定。
 
-### 2.3 Python 和 Node.js
+### 3.3 Python 和 Node.js
 
-项目的 Python 版本要求见 `pyproject.toml`，当前为 `>=3.10`。推荐使用 conda 创建一个独立环境，避免污染已有环境。
+项目的 Python 版本要求见 `pyproject.toml`，当前为 `>=3.10`。推荐使用 conda 创建独立环境，避免污染已有环境。
 
 示例：
 
 ```powershell
 conda create -n helth python=3.11 -y
+```
+
+如果你喜欢交互式切换环境，也可以执行：
+
+```powershell
 conda activate helth
 ```
 
+但本文后续所有标准命令都默认写成 `conda run -n helth ...`，这样更不容易因为终端状态混乱而跑错解释器。
+
 前端使用 Vite，建议本机准备 Node.js 18 或更高版本。
 
-## 3. 安装项目依赖
+## 4. 安装项目依赖
 
-### 3.1 初始化环境变量
+### 4.1 初始化环境变量
 
 先在项目根目录复制一份本地环境文件：
 
@@ -85,9 +108,9 @@ conda activate helth
 Copy-Item .env.example .env
 ```
 
-这样做的原因是：`.env.example` 用于提供示例配置，真正的本地配置应写在 `.env` 中，便于你按需修改且不影响示例文件。
+`.env.example` 用于提供示例配置，真正的本地配置应写在 `.env` 中，便于你按需修改且不影响示例文件。
 
-### 3.2 切换到真实串口采集模式
+### 4.2 切换到真实串口采集模式
 
 如果你当前不是只想跑前后端演示，而是要把 T10 手环通过蓝牙采集器真正接进系统，建议把 `.env` 切到真实串口模式。
 
@@ -159,22 +182,21 @@ USE_MOCK_DATA=true
 SERIAL_ENABLED=false
 ```
 
-### 3.3 安装 Python 依赖
+### 4.3 安装 Python 依赖
 
 默认请安装 `requirements.txt`：
 
 ```powershell
-python -m pip install -r requirements.txt
+conda run -n helth python -m pip install -r requirements.txt
 ```
 
 这里的 `requirements.txt` 是完整开发依赖，适合本地开发、调试和联调使用。
 
 项目里还有一个 `requirements-runtime.txt`，它是精简运行依赖，只适合“尽快把服务跑起来”的场景，不建议把它当作默认安装入口。
 
+## 5. 启动基础服务
 
-## 4. 启动基础服务
-
-### 4.1 启动 Redis
+### 5.1 启动 Redis
 
 当前本地开发最少需要先把 Redis 启动起来。进入 `docker` 目录后执行：
 
@@ -191,7 +213,7 @@ docker compose up -d redis
 docker ps
 ```
 
-### 4.2 关于 PostgreSQL、Ollama 和 ChromaDB
+### 5.2 关于 PostgreSQL、Ollama 和 ChromaDB
 
 这些服务在仓库里都有预留，但不是你第一次本地跑通时的硬性前置条件。
 
@@ -201,27 +223,85 @@ docker ps
 
 如果你后续确实需要这些服务，再单独补启会更稳。
 
-## 5. 启动后端
+## 6. 启动后端
 
-回到项目根目录后，启动 FastAPI 后端：
+### 6.1 主推荐方式：使用项目脚本
 
-```powershell
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-如果你不需要热重载，也可以去掉 `--reload`。在 OneDrive 目录下开发时，不开热重载有时会更稳定。
-
-后端启动成功后，可以用下面的命令做一次健康检查：
+回到项目根目录后，优先使用下面的标准命令启动 FastAPI 后端：
 
 ```powershell
-curl http://127.0.0.1:8000/healthz
+conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_server.ps1
 ```
 
-如果接口正常返回，说明后端已经启动成功。
+这个脚本会调用项目里的 `scripts/start_server.ps1`，默认监听 `0.0.0.0:8000`，适合局域网真机直接访问。
 
-## 6. 启动前端
+### 6.2 备选方式：手动启动 Uvicorn
 
-新开一个终端，进入前端目录：
+如果你暂时不想走脚本，也可以使用下面的手动命令：
+
+```powershell
+conda run -n helth python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+```
+
+如果你确实需要热重载，再额外追加 `--reload`：
+
+```powershell
+conda run -n helth python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+注意：之前项目在 OneDrive 目录下建议关闭 `--reload`，现在移动到本地目录后可放心开启。
+
+## 7. 启动前端
+
+### 7.1 主推荐方式：使用项目脚本
+
+新开一个终端，优先使用下面的标准命令启动前端：
+
+```powershell
+conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1
+```
+
+## 12. GPU 与稳定化补充
+
+### 12.1 推荐的 PyTorch GPU 环境
+
+如果现场演示机器带 NVIDIA GPU，推荐把 `helth` 环境切到 `torch 2.2.2 + cu121`：
+
+```powershell
+conda run -n helth python -m pip uninstall -y torch torchvision torchaudio
+conda run -n helth python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
+```
+
+安装后验证：
+
+```powershell
+conda run -n helth python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
+```
+
+项目当前支持：
+- `MODEL_DEVICE=auto`：优先 CUDA，失败时回退 CPU
+- `MODEL_DEVICE=cpu`：强制使用 CPU
+- `MODEL_DEVICE=cuda`：强制使用 GPU，不可用时直接报错
+
+### 12.2 现场演示的稳定化输出
+
+新的健康评分链路已经加入“稳定值判分 + 去抖 + 事件聚合”，现场高频采样时建议重点查看这些返回字段：
+- `stabilized_vitals`
+- `active_events`
+- `score_adjustment_reason`
+
+对应接口：
+- `POST /api/v1/health/score`
+- `POST /api/v1/health/warning/check`
+- `POST /api/v1/agent/health/explain`
+
+当前 `window_data` 已经不再只看最后一个点，而是会返回 `window_mode=event_aggregated_window`，用于抑制边界抖动造成的误报。
+
+这个脚本会调用项目里的 `scripts/start_frontend.ps1`，默认监听 `127.0.0.1:5173`。如果本地还没有 `node_modules`，脚本会先执行安装。
+
+### 7.2 备选方式：手动进入前端目录启动
+
+如果你想手动启动，也可以执行：
 
 ```powershell
 cd frontend\vue-dashboard
@@ -229,7 +309,7 @@ npm install
 npm run dev
 ```
 
-前端是标准的 Vite 开发服务。启动成功后，终端通常会给出一个本地访问地址，例如：
+前端是标准的 Vite 开发服务。启动成功后，终端通常会给出本地访问地址，例如：
 
 ```text
 http://127.0.0.1:5173/
@@ -237,7 +317,7 @@ http://127.0.0.1:5173/
 
 这时用浏览器打开该地址即可。
 
-### 6.1 登录与角色页面
+### 7.3 登录与角色页面
 
 新版前端已按角色分成“社区端”和“子女端”，启动后先进入登录页。默认演示账号和密码由后端接口生成，密码统一为：
 
@@ -256,21 +336,55 @@ http://127.0.0.1:5173/
 curl http://127.0.0.1:8000/api/v1/auth/mock-accounts
 ```
 
-## 7. 推荐启动顺序
+## 8. 验证运行成功
+
+后端启动成功后，建议至少做下面三步检查。
+
+### 8.1 后端健康检查
+
+```powershell
+curl http://127.0.0.1:8000/healthz
+```
+
+如果接口正常返回，说明后端已经启动成功。
+
+### 8.1.1 局域网联调补充
+
+如果要让 Android 真机访问服务端，再额外做下面几步：
+
+1. 在服务端电脑执行 `ipconfig`，记下局域网 IP。
+2. 放行 Windows 防火墙中的 `8000` 端口。
+3. 保证手机和电脑连接到同一 Wi-Fi。
+4. 在 Flutter 家庭端的“服务器设置”页面填入 `http://<服务器IP>:8000`。
+5. 先点“测试连接”，通过后再保存。
+
+### 8.2 后端 HTTP smoke 检查
+
+```powershell
+conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\smoke_backend_http.ps1
+```
+
+### 8.3 联调整体验证
+
+```powershell
+conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\run_smoke_tests.ps1 -BuildFrontend
+```
+
+## 9. 推荐启动顺序
 
 如果你想按最稳妥的顺序执行，建议按下面的步骤来：
 
-1. 复制 `.env.example` 为 `.env`
-2. 激活 Python 环境
-3. 安装 `requirements.txt`
+1. 创建 conda 环境：`conda create -n helth python=3.11 -y`
+2. 复制 `.env.example` 为 `.env`
+3. 安装依赖：`conda run -n helth python -m pip install -r requirements.txt`
 4. 启动 Redis：`docker compose up -d redis`
-5. 启动后端：`uvicorn backend.main:app ...`
-6. 启动前端：`npm run dev`
-7. 验证后端健康检查和前端页面是否正常打开
+5. 启动后端：`conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_server.ps1`
+6. 启动前端：`conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1`
+7. 验证后端健康检查、HTTP smoke 和前端页面是否正常打开
 
-## 8. 常见问题
+## 10. 常见问题
 
-### 8.1 `docker-compose.yml` 提示 `version is obsolete`
+### 10.1 `docker-compose.yml` 提示 `version is obsolete`
 
 如果你看到类似下面的警告：
 
@@ -278,9 +392,9 @@ curl http://127.0.0.1:8000/api/v1/auth/mock-accounts
 the attribute `version` is obsolete, it will be ignored
 ```
 
-这是新版 Docker Compose 的兼容性提示，不会阻止容器启动。可以暂时忽略。
+这是新版 Docker Compose 的兼容性提示，不会阻止容器启动，可以暂时忽略。
 
-### 8.2 Docker 拉取镜像失败
+### 10.2 Docker 拉取镜像失败
 
 如果 Redis、PostgreSQL、Ollama 或 ChromaDB 拉取镜像失败，通常是网络、镜像源或代理问题，而不是项目代码问题。
 
@@ -293,7 +407,7 @@ the attribute `version` is obsolete, it will be ignored
 
 如果只是 ChromaDB 容器拉取失败，可以先跳过，因为本项目默认不强制依赖 Docker 版 ChromaDB。
 
-### 8.3 PowerShell 报脚本执行策略错误
+### 10.3 PowerShell 报脚本执行策略错误
 
 如果你看到类似下面的提示：
 
@@ -301,16 +415,14 @@ the attribute `version` is obsolete, it will be ignored
 无法加载文件 ... profile.ps1，因为在此系统上禁止运行脚本
 ```
 
-这通常表示 PowerShell 的执行策略较严格。它会影响某些 `.ps1` 脚本直接运行，但不一定影响你手动执行 `python`、`npm`、`docker` 等命令。
+这通常表示 PowerShell 的执行策略较严格。项目标准脚本已经通过 `-ExecutionPolicy Bypass` 调用，如果你仍然报错，优先确认你执行的是否就是本文里的完整命令。
 
-如果你当前只是想先把项目跑起来，可以优先使用本文中的直接命令，而不是依赖 `scripts/*.ps1`。
-
-### 8.4 不知道该装哪个 requirements 文件
+### 10.4 不知道该装哪个 requirements 文件
 
 默认安装：
 
 ```powershell
-python -m pip install -r requirements.txt
+conda run -n helth python -m pip install -r requirements.txt
 ```
 
 原因很简单：
@@ -320,36 +432,92 @@ python -m pip install -r requirements.txt
 
 如果你没有特别明确的精简需求，就以 `requirements.txt` 为准。
 
-### 8.5 前端能打开，但接口报错
+### 10.5 前端能打开，但接口报错
 
 这种情况通常说明前端已经正常启动，但后端没有启动、端口不对，或者 Redis 没起来。
 
 建议按下面顺序检查：
 
 1. 后端终端是否仍在运行
-2. `http://127.0.0.1:8000/healthz` 是否可访问
+2. `http://127.0.0.1:8000/healthz` 是否可访问；真机联调时还要确认 `http://<局域网IP>:8000/healthz` 可访问
 3. Redis 容器是否在运行
 4. `.env` 中的配置是否被错误修改
 
-## 9. 最小可用命令清单
+## 11. 最小可用命令清单
 
 如果你只想快速抄一份最短命令流程，可以直接用下面这组：
 
 ```powershell
 conda create -n helth python=3.11 -y
-conda activate helth
 Copy-Item .env.example .env
-python -m pip install -r requirements.txt
+conda run -n helth python -m pip install -r requirements.txt
 cd docker
 docker compose up -d redis
 cd ..
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+conda run -n helth 
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-然后新开一个终端执行：
+然后新开一个终端进入前端目录执行：
 
 ```powershell
 cd frontend\vue-dashboard
 npm install
 npm run dev
 ```
+
+## 13. 启动移动端
+
+本项目提供了基于 Flutter 开发的移动端应用（如老人端/子女端）。启动前请确保：
+
+1.  本机已安装并配置好 Flutter 环境。
+2.  **开启 Windows 开发人员模式 (Developer Mode)**：Flutter 在 Windows 上构建（特别是使用插件时）需要符号链接 (Symlink) 支持。
+    -   您可以运行以下命令快速打开设置页面：
+        ```powershell
+        start ms-settings:developers
+        ```
+    -   在打开的页面中，将“开发人员模式”开关切至“开”。
+
+新开一个终端，进入移动端目录执行：
+
+```powershell
+cd mobile\flutter_app
+flutter pub get
+flutter run
+```
+
+如果连接了多个设备，可以用下面命令查看设备列表：
+
+```powershell
+flutter devices
+```
+
+然后指定设备运行：
+
+```powershell
+flutter run -d <device_id>
+```
+
+
+以下账号已绑定到对应的虚拟设备，登录后要求实时显示 mock data；老人端账号与家庭端账号联动，并为每位老人分配演示姓名。
+
+| 账号 | 角色 | 姓名 | 默认密码 | 联动家庭账号 | 备注 |
+| --- | --- | --- | --- | --- | --- |
+| `community_admin` | 社区端 | 社区管理员 | `123456` | - | 社区总入口 |
+| `family01` | 家庭端 | 家属 01 | `123456` | `family01` | 绑定对应虚拟设备组，登录后实时显示 mock data |
+| `elder01_01` | 老人端 | 王秀英 | `123456` | `family01` | 与 `family01` 联动，登录后实时显示 mock data |
+| `elder01_02` | 老人端 | 李建国 | `123456` | `family01` | 与 `family01` 联动，登录后实时显示 mock data |
+| `family02` | 家庭端 | 家属 02 | `123456` | `family02` | 绑定对应虚拟设备组，登录后实时显示 mock data |
+| `elder02_01` | 老人端 | 张桂兰 | `123456` | `family02` | 与 `family02` 联动，登录后实时显示 mock data |
+| `elder02_02` | 老人端 | 陈德福 | `123456` | `family02` | 与 `family02` 联动，登录后实时显示 mock data |
+| `family03` | 家庭端 | 家属 03 | `123456` | `family03` | 绑定对应虚拟设备组，登录后实时显示 mock data |
+| `elder03_01` | 老人端 | 刘春梅 | `123456` | `family03` | 与 `family03` 联动，登录后实时显示 mock data |
+| `elder03_02` | 老人端 | 赵志强 | `123456` | `family03` | 与 `family03` 联动，登录后实时显示 mock data |
+| `family04` | 家庭端 | 家属 04 | `123456` | `family04` | 绑定对应虚拟设备组，登录后实时显示 mock data |
+| `elder04_01` | 老人端 | 黄玉兰 | `123456` | `family04` | 与 `family04` 联动，登录后实时显示 mock data |
+| `elder04_02` | 老人端 | 周永顺 | `123456` | `family04` | 与 `family04` 联动，登录后实时显示 mock data |
+| `family05` | 家庭端 | 家属 05 | `123456` | `family05` | 绑定对应虚拟设备组，登录后实时显示 mock data |
+| `elder05_01` | 老人端 | 吴淑芬 | `123456` | `family05` | 与 `family05` 联动，登录后实时显示 mock data |
+| `elder05_02` | 老人端 | 郑国华 | `123456` | `family05` | 与 `family05` 联动，登录后实时显示 mock data |
+| `family06` | 家庭端 | 家属 06 | `123456` | `family06` | 绑定对应虚拟设备组，登录后实时显示 mock data |
+| `elder06_01` | 老人端 | 孙美玲 | `123456` | `family06` | 与 `family06` 联动，登录后实时显示 mock data |

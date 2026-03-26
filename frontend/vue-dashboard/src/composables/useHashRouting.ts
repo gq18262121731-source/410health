@@ -1,17 +1,37 @@
 import { computed, ref, type Ref } from "vue";
 import type { SessionUser } from "../api/client";
 
-export type PageKey = "community" | "family" | "relation" | "debug" | "none";
+export type PageKey = "overview" | "topology" | "members" | "agent" | "family" | "debug" | "none";
 
 const pageHash: Record<Exclude<PageKey, "none">, string> = {
-  community: "#/community",
+  overview: "#/overview",
+  topology: "#/topology",
+  members: "#/members",
+  agent: "#/agent",
   family: "#/family",
-  relation: "#/relation",
   debug: "#/debug",
 };
 
+const legacyHashes: Record<string, PageKey> = {
+  "#/community": "overview",
+  "#/relation": "members",
+};
+
+function resolveHash(hash: string): PageKey | undefined {
+  if (!hash) return undefined;
+
+  const modern = Object.entries(pageHash).find(([, value]) => value === hash)?.[0] as PageKey | undefined;
+  if (modern) return modern;
+  return legacyHashes[hash];
+}
+
 export function useHashRouting(sessionUser: Ref<SessionUser | null>) {
   const activePage = ref<PageKey>("none");
+  /**
+   * Used to trigger "re-enter page" refresh behavior even when the hash
+   * doesn't change (e.g. clicking the same nav item repeatedly).
+   */
+  const routeToNonce = ref(0);
   const canAccessDebug = computed(
     () => sessionUser.value?.role === "community" || sessionUser.value?.role === "admin",
   );
@@ -19,7 +39,7 @@ export function useHashRouting(sessionUser: Ref<SessionUser | null>) {
     if (!sessionUser.value) return [];
     if (sessionUser.value.role === "family") return ["family"];
     if (sessionUser.value.role === "community" || sessionUser.value.role === "admin") {
-      return ["community", "relation"];
+      return ["overview", "topology", "members", "agent"];
     }
     return [];
   });
@@ -31,17 +51,16 @@ export function useHashRouting(sessionUser: Ref<SessionUser | null>) {
     if (page === "debug" && !canAccessDebug.value) return;
     if (page !== "debug" && !allowedPages.value.includes(page)) return;
     activePage.value = page;
+    routeToNonce.value += 1;
     window.location.hash = pageHash[page];
   }
 
   function initHashRouting() {
-    const requested = window.location.hash
-      ? (Object.entries(pageHash).find(([, hash]) => hash === window.location.hash)?.[0] as PageKey | undefined)
-      : undefined;
+    const requested = resolveHash(window.location.hash);
     const fallback = sessionUser.value?.role === "family"
       ? "family"
       : sessionUser.value?.role === "community" || sessionUser.value?.role === "admin"
-        ? "community"
+        ? "overview"
         : "none";
     const nextPage = requested && (requested === "debug" ? canAccessDebug.value : allowedPages.value.includes(requested))
       ? requested
@@ -50,7 +69,7 @@ export function useHashRouting(sessionUser: Ref<SessionUser | null>) {
     activePage.value = nextPage;
     window.location.hash = nextPage === "none" ? "" : pageHash[nextPage];
     hashListener = () => {
-      const found = Object.entries(pageHash).find(([, hash]) => hash === window.location.hash)?.[0] as PageKey | undefined;
+      const found = resolveHash(window.location.hash);
       if (!found) return;
       if (found === "debug") {
         if (canAccessDebug.value) activePage.value = found;
@@ -79,5 +98,6 @@ export function useHashRouting(sessionUser: Ref<SessionUser | null>) {
     initHashRouting,
     resetToDefaultPage,
     routeTo,
+    routeToNonce,
   };
 }

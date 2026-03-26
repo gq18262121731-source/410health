@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ApiError, api, type AgentResponse } from "../api/client";
+import { ApiError, api, type CommunityAgentSummaryResponse, type WindowKind } from "../api/client";
+import { riskLevelToChinese } from "../utils/riskLevel";
 
 const props = defineProps<{
   elderCount: number;
@@ -18,18 +19,15 @@ const quickQuestions = [
 ];
 
 const question = ref("");
+const selectedWindow = ref<WindowKind>("day");
 const loading = ref(false);
 const errorText = ref("");
-const resultMeta = ref<AgentResponse | null>(null);
+const resultMeta = ref<CommunityAgentSummaryResponse | null>(null);
 
 function formatError(error: unknown): string {
   if (error instanceof ApiError) return error.detail;
   if (error instanceof Error) return error.message;
   return String(error);
-}
-
-function asList(value: unknown): string[] {
-  return Array.isArray(value) ? value.map((item) => String(item)) : [];
 }
 
 function cleanText(value: unknown): string {
@@ -39,23 +37,23 @@ function cleanText(value: unknown): string {
     .trim();
 }
 
-const analysis = computed<Record<string, unknown>>(() => {
-  const payload = resultMeta.value?.analysis;
-  return payload && typeof payload === "object" ? payload : {};
-});
+const analysis = computed(() => resultMeta.value?.analysis ?? null);
 
-const answer = computed(() => cleanText(resultMeta.value?.answer || "智能体会基于当前设备状态和风险分布，生成一份面向值守人员的交接结论。"));
-const references = computed(() => asList(resultMeta.value?.references));
-const recommendations = computed(() => asList(analysis.value.recommendations));
-
-const priorityDevices = computed<Array<Record<string, unknown>>>(() => {
-  const payload = analysis.value.priority_devices;
-  return Array.isArray(payload) ? payload.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
-});
+const answer = computed(() =>
+  cleanText(resultMeta.value?.summary_text || "智能体会基于当前设备状态和风险分布，生成一份面向值守人员的交接结论。"),
+);
+const references = computed(() =>
+  (resultMeta.value?.sources ?? []).map((item) => {
+    const snippet = cleanText(item.snippet);
+    return snippet ? `${item.title}：${snippet}` : item.title;
+  }),
+);
+const recommendations = computed(() => resultMeta.value?.advice ?? []);
+const degradedNotes = computed(() => resultMeta.value?.agent_meta.degraded_notes ?? []);
+const priorityDevices = computed(() => analysis.value?.high_risk_entities ?? []);
 
 const riskDistribution = computed<Record<string, number>>(() => {
-  const payload = analysis.value.risk_distribution;
-  return payload && typeof payload === "object" ? (payload as Record<string, number>) : {};
+  return analysis.value?.risk_distribution ?? {};
 });
 
 const summaryCards = computed(() => [
@@ -69,9 +67,9 @@ const focusQueue = computed(() => {
   if (priorityDevices.value.length) {
     return priorityDevices.value.slice(0, 4).map((item, index) => ({
       order: index + 1,
-      label: String(item.device_mac ?? "--"),
-      risk: String(item.risk_level ?? "待分析"),
-      summary: asList(item.notable_events)[0] ?? "建议优先核查当前对象状态与现场响应情况。",
+      label: item.elder_name || item.device_mac || "--",
+      risk: riskLevelToChinese(item.risk_level || "待分析"),
+      summary: item.reasons?.[0] ?? "建议优先核查当前对象状态与现场响应情况。",
     }));
   }
 
@@ -115,13 +113,12 @@ async function analyzeCommunity() {
   loading.value = true;
   errorText.value = "";
   try {
-    resultMeta.value = await api.analyzeCommunity({
+    resultMeta.value = await api.getCommunityAgentSummary({
+      window: selectedWindow.value,
       question: finalQuestion,
-      role: "community",
-      mode: "local",
-      history_minutes: 1440,
-      per_device_limit: 240,
       device_macs: props.deviceMacs,
+      include_web_search: true,
+      include_charts: false,
     });
   } catch (error) {
     resultMeta.value = null;
@@ -224,6 +221,24 @@ async function analyzeCommunity() {
               <h3>问问智能体</h3>
             </div>
           </div>
+          <div class="window-toggle">
+            <button
+              type="button"
+              class="window-chip"
+              :class="{ 'window-chip--active': selectedWindow === 'day' }"
+              @click="selectedWindow = 'day'"
+            >
+              过去一天
+            </button>
+            <button
+              type="button"
+              class="window-chip"
+              :class="{ 'window-chip--active': selectedWindow === 'week' }"
+              @click="selectedWindow = 'week'"
+            >
+              过去一周
+            </button>
+          </div>
           <div class="chip-row">
             <button v-for="item in quickQuestions" :key="item" type="button" class="prompt-chip" @click="question = item">
               {{ item }}
@@ -250,6 +265,18 @@ async function analyzeCommunity() {
           </div>
           <ul class="list-copy">
             <li v-for="item in references" :key="item">{{ item }}</li>
+          </ul>
+        </article>
+
+        <article v-if="degradedNotes.length" class="card">
+          <div class="card-head compact">
+            <div>
+              <p class="section-kicker">Runtime</p>
+              <h3>降级说明</h3>
+            </div>
+          </div>
+          <ul class="list-copy">
+            <li v-for="item in degradedNotes" :key="item">{{ item }}</li>
           </ul>
         </article>
       </aside>
@@ -347,7 +374,8 @@ async function analyzeCommunity() {
 }
 
 .hero-badges,
-.chip-row {
+.chip-row,
+.window-toggle {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -469,6 +497,23 @@ async function analyzeCommunity() {
   font-size: 0.84rem;
   font-weight: 500;
   transition: background 150ms ease, border-color 150ms ease;
+}
+
+.window-chip {
+  border: 1.5px solid rgba(15, 118, 110, 0.14);
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--text-sub);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.window-chip--active {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--brand);
 }
 
 .prompt-chip:hover {

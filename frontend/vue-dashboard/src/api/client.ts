@@ -2,9 +2,16 @@ export interface DeviceRecord {
   id?: string;
   mac_address: string;
   device_name: string;
+  model_code?: string;
+  ingest_mode?: "serial" | "mqtt" | "ble" | "mock";
+  service_uuid?: string;
+  device_uuid?: string;
   user_id?: string | null;
   status: string;
+  activation_state?: "pending" | "active";
   bind_status?: "unbound" | "bound" | "disabled";
+  last_seen_at?: string | null;
+  last_packet_type?: string | null;
   created_at?: string;
 }
 
@@ -25,6 +32,7 @@ export interface HealthSample {
   heart_rate: number;
   temperature: number;
   blood_oxygen: number;
+  source?: "serial" | "mock" | "mqtt" | "ble";
   ambient_temperature?: number | null;
   surface_temperature?: number | null;
   blood_pressure?: string;
@@ -33,6 +41,8 @@ export interface HealthSample {
   device_uuid?: string | null;
   packet_type?: string | null;
   sos_flag?: boolean;
+  sos_value?: number | null;
+  sos_trigger?: "double_click" | "long_press" | null;
   health_score?: number | null;
 }
 
@@ -46,6 +56,7 @@ export interface AlarmRecord {
   acknowledged: boolean;
   created_at: string;
   anomaly_probability?: number | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AlarmQueueItem {
@@ -68,7 +79,186 @@ export interface AgentResponse {
   answer: string;
   references: string[];
   analysis?: Record<string, unknown>;
+  attachments?: AgentAttachment[];
+  citations?: AgentCitation[];
+  artifact_ids?: string[];
+  scope?: AnalysisScope | "device";
+  window?: WindowKind;
+  subject?: Record<string, unknown> | null;
 }
+
+export type CommunityWorkflow =
+  | "overview"
+  | "risk_ranking"
+  | "alert_digest"
+  | "device_focus"
+  | "elder_focus"
+  | "community_report"
+  | "elder_report"
+  | "report_generation"
+  | "free_chat";
+export type AgentAttachmentRenderType = "metric_cards" | "table" | "echarts" | "report_document";
+export type AnalysisScope = "elder" | "community";
+export type AgentProvider = "qwen" | "tongyi" | "ollama" | "auto";
+
+export interface AgentAttachment {
+  id: string;
+  title: string;
+  summary?: string;
+  render_type: AgentAttachmentRenderType;
+  render_payload: Record<string, unknown>;
+  source_tool?: string;
+}
+
+export interface AgentCitation {
+  id: string;
+  title: string;
+  source_path: string;
+  chunk_id: string;
+  snippet: string;
+  score: number;
+}
+
+export interface AgentElderSubject {
+  elder_id: string;
+  elder_name: string;
+  apartment: string;
+  device_macs: string[];
+  has_realtime_device: boolean;
+  latest_timestamp?: string | null;
+  risk_level: string;
+  is_demo_subject: boolean;
+}
+
+export interface CommunityAnalysisPayload {
+  question: string;
+  role: string;
+  mode: string;
+  history_minutes?: number;
+  per_device_limit?: number;
+  device_macs?: string[];
+  workflow?: CommunityWorkflow;
+  focus_device_mac?: string;
+  history?: Array<{
+    role: "user" | "assistant";
+    content: string;
+  }>;
+  scope?: AnalysisScope;
+  subject_elder_id?: string | null;
+  window?: WindowKind;
+  provider?: AgentProvider;
+  include_report?: boolean;
+}
+
+export type AgentStreamEventType =
+  | "session.started"
+  | "stage.changed"
+  | "trace.note"
+  | "tool.started"
+  | "tool.finished"
+  | "answer.delta"
+  | "answer.completed"
+  | "session.completed"
+  | "session.error";
+
+export interface AgentStreamEventBase {
+  type: AgentStreamEventType;
+  timestamp?: string;
+}
+
+export interface AgentSessionStartedEvent extends AgentStreamEventBase {
+  type: "session.started";
+  session_id: string;
+  scope: string;
+  selected_model?: string;
+  degraded_notes?: string[];
+}
+
+export interface AgentStageEvent extends AgentStreamEventBase {
+  type: "stage.changed";
+  stage: string;
+  status: "running" | "completed" | "error";
+  label?: string;
+  detail?: string;
+  summary?: string;
+  elapsed_ms?: number | null;
+  group?: "trace";
+}
+
+export interface AgentTraceEvent extends AgentStreamEventBase {
+  type: "trace.note";
+  stage: string;
+  note: string;
+  level?: "info" | "warning" | "error";
+}
+
+export interface AgentToolEvent extends AgentStreamEventBase {
+  type: "tool.started" | "tool.finished";
+  stage: string;
+  tool_name: string;
+  request_id: string;
+  source?: string;
+  status?: string;
+  success?: boolean;
+  summary?: string;
+  error_message?: string | null;
+  title?: string;
+  tool_kind?: "data_query" | "analysis" | "report" | "recommendation";
+  input_preview?: string;
+  output_preview?: string;
+  child_tools?: Array<{
+    name: string;
+    title?: string;
+    summary?: string;
+    status?: string;
+  }>;
+  render_type?: AgentAttachmentRenderType;
+  render_payload?: Record<string, unknown>;
+  attachments?: AgentAttachment[];
+}
+
+export interface AgentAnswerDeltaEvent extends AgentStreamEventBase {
+  type: "answer.delta";
+  session_id: string;
+  delta: string;
+}
+
+export interface AgentAnswerCompletedEvent extends AgentStreamEventBase {
+  type: "answer.completed";
+  session_id: string;
+  answer: string;
+  references?: string[];
+  analysis?: Record<string, unknown>;
+  attachments?: AgentAttachment[];
+  citations?: AgentCitation[];
+  artifact_ids?: string[];
+  scope?: AnalysisScope;
+  window?: WindowKind;
+  subject?: Record<string, unknown> | null;
+}
+
+export interface AgentSessionCompletedEvent extends AgentStreamEventBase {
+  type: "session.completed";
+  session_id: string;
+  selected_model?: string;
+  degraded_notes?: string[];
+}
+
+export interface AgentSessionErrorEvent extends AgentStreamEventBase {
+  type: "session.error";
+  session_id?: string;
+  error: string;
+}
+
+export type AgentStreamEvent =
+  | AgentSessionStartedEvent
+  | AgentStageEvent
+  | AgentTraceEvent
+  | AgentToolEvent
+  | AgentAnswerDeltaEvent
+  | AgentAnswerCompletedEvent
+  | AgentSessionCompletedEvent
+  | AgentSessionErrorEvent;
 
 export interface AgentReportPeriod {
   start_at: string;
@@ -261,6 +451,313 @@ export interface CareAccessProfile {
   health_reports: CareHealthReportSummary[];
 }
 
+export interface CommunityDashboardMetrics {
+  elder_count: number;
+  family_count: number;
+  device_total: number;
+  device_pending: number;
+  device_online: number;
+  device_offline: number;
+  active_alarm_count: number;
+  unacknowledged_alarm_count: number;
+  sos_alarm_count: number;
+  health_alert_count: number;
+  device_alert_count: number;
+  high_risk_elder_count: number;
+  average_health_score: number;
+  average_blood_oxygen: number;
+  today_alarm_count: number;
+  last_sync_at?: string | null;
+}
+
+export interface CommunityDashboardTrendPoint {
+  timestamp: string;
+  average_health_score: number;
+  alert_count: number;
+  high_risk_count: number;
+}
+
+export interface StructuredHealthInsight {
+  evaluated_at?: string | null;
+  health_score?: number | null;
+  rule_health_score?: number | null;
+  model_health_score?: number | null;
+  risk_level?: string | null;
+  abnormal_tags: string[];
+  trigger_reasons: string[];
+  active_event_count: number;
+  recommendation_code?: string | null;
+  score_adjustment_reason?: string | null;
+}
+
+export interface CommunityDashboardElderItem {
+  elder_id: string;
+  elder_name: string;
+  apartment: string;
+  device_mac?: string | null;
+  family_names: string[];
+  risk_level: "high" | "medium" | "low";
+  risk_score: number;
+  risk_reasons: string[];
+  device_status: string;
+  latest_timestamp?: string | null;
+  latest_health_score?: number | null;
+  heart_rate?: number | null;
+  blood_oxygen?: number | null;
+  blood_pressure?: string | null;
+  temperature?: number | null;
+  active_alarm_count: number;
+  structured_health?: StructuredHealthInsight | null;
+}
+
+export interface CommunityDashboardDeviceItem {
+  device_mac: string;
+  device_name: string;
+  model_code?: string | null;
+  ingest_mode?: string | null;
+  service_uuid?: string | null;
+  device_uuid?: string | null;
+  elder_id?: string | null;
+  elder_name?: string | null;
+  apartment?: string | null;
+  device_status: string;
+  activation_state?: string | null;
+  bind_status: string;
+  risk_level: "high" | "medium" | "low";
+  risk_reasons: string[];
+  latest_timestamp?: string | null;
+  last_seen_at?: string | null;
+  last_packet_type?: string | null;
+  latest_health_score?: number | null;
+  heart_rate?: number | null;
+  blood_oxygen?: number | null;
+  blood_pressure?: string | null;
+  temperature?: number | null;
+  battery?: number | null;
+  steps?: number | null;
+  active_alarm_count: number;
+  sos_active?: boolean;
+  active_sos_alarm_id?: string | null;
+  active_sos_trigger?: "double_click" | "long_press" | null;
+  structured_health?: StructuredHealthInsight | null;
+}
+
+export interface CommunityDashboardAlertItem {
+  alarm_id: string;
+  device_mac: string;
+  elder_name?: string | null;
+  apartment?: string | null;
+  alarm_type: string;
+  alarm_layer: string;
+  alarm_level: number;
+  message: string;
+  created_at: string;
+  acknowledged: boolean;
+}
+
+export interface RelationTopologyNode {
+  id: string;
+  kind: "community" | "elder" | "family" | "device";
+  label: string;
+  subtitle?: string | null;
+  status?: string | null;
+  risk_level?: string | null;
+}
+
+export interface RelationTopologyLane {
+  elder: RelationTopologyNode;
+  families: RelationTopologyNode[];
+  devices: RelationTopologyNode[];
+}
+
+export interface CommunityRelationTopology {
+  community: RelationTopologyNode;
+  lanes: RelationTopologyLane[];
+  unassigned_devices: RelationTopologyNode[];
+}
+
+export interface CommunityDashboardSummary {
+  community: CommunityProfile;
+  metrics: CommunityDashboardMetrics;
+  top_risk_elders: CommunityDashboardElderItem[];
+  device_statuses: CommunityDashboardDeviceItem[];
+  recent_alerts: CommunityDashboardAlertItem[];
+  trend: CommunityDashboardTrendPoint[];
+  relation_topology?: CommunityRelationTopology | null;
+}
+
+export interface SystemInfoResponse {
+  runtime_mode?: "mock" | "serial" | "mqtt";
+  bootstrap_source?: string;
+  bootstrap_status?: string;
+  bootstrap_reason?: string;
+  competition_stack: Record<string, unknown>;
+  configured: Record<string, unknown>;
+  serial_runtime?: {
+    enabled: boolean;
+    port: string;
+    baudrate: number;
+    collection_strategy?: string;
+    packet_type: number;
+    mac_filter: string;
+    auto_configure: boolean;
+    broadcast_sos_overlay: boolean;
+    response_cycle_seconds: number;
+    broadcast_cycle_seconds: number;
+    active_target_mac?: string | null;
+    active_target_device_name?: string | null;
+    target_locked?: boolean;
+    merge_mode?: string;
+    runtime_mode?: string;
+    bootstrap_source?: string;
+    bootstrap_status?: string;
+    bootstrap_reason?: string;
+  };
+  demo_data?: DemoDataStatus;
+}
+
+export interface DemoDataStatus {
+  enabled: boolean;
+  device_count: number;
+  subject_count: number;
+  latest_sample_at?: string | null;
+  seed_profiles: string[];
+}
+
+export interface SerialTargetSwitchResponse {
+  active_target_mac?: string | null;
+  active_target_device_name?: string | null;
+  previous_target_mac?: string | null;
+  switched_at: string;
+}
+
+export interface ChatProviderCapability {
+  chat_configured?: boolean;
+  configured?: boolean;
+  chat_model?: string;
+  embedding_model?: string;
+  rerank_model?: string;
+  base_url?: string;
+  model?: string;
+}
+
+export interface ChatRetrievalCapability {
+  retrieval_mode: string;
+  document_count: number;
+  chunk_count: number;
+  docs_hash: string;
+  vector_enabled: boolean;
+  bm25_enabled: boolean;
+  rerank_enabled: boolean;
+  embedding_model?: string;
+  rerank_model?: string;
+}
+
+export interface AgentToolSpec {
+  name: string;
+  description: string;
+  source?: string;
+}
+
+export interface ChatCapabilities {
+  runtime: string;
+  providers: {
+    tongyi: ChatProviderCapability;
+    ollama: ChatProviderCapability;
+  };
+  retrieval: ChatRetrievalCapability;
+  analysis_tools: string[];
+  tool_specs: AgentToolSpec[];
+  extensions: {
+    mcp_connected: boolean;
+    demo_data?: DemoDataStatus;
+  };
+}
+
+export type WindowKind = "day" | "week";
+export type HistoryBucket = "raw" | "hour" | "day";
+
+export interface SensorHistoryPoint {
+  bucket_start: string;
+  bucket_end?: string | null;
+  heart_rate?: number | null;
+  temperature?: number | null;
+  blood_oxygen?: number | null;
+  health_score?: number | null;
+  battery?: number | null;
+  steps?: number | null;
+  sos_count: number;
+  sample_count: number;
+  risk_level?: string | null;
+}
+
+export interface DeviceHistoryResponse {
+  device_mac: string;
+  window: WindowKind;
+  bucket: HistoryBucket;
+  points: SensorHistoryPoint[];
+}
+
+export interface ChartPayload {
+  id: string;
+  title: string;
+  type: string;
+  echarts_option: Record<string, unknown>;
+  summary: string;
+}
+
+export interface HighRiskEntity {
+  device_mac: string;
+  elder_name?: string | null;
+  risk_level: string;
+  latest_health_score?: number | null;
+  active_alert_count: number;
+  reasons: string[];
+}
+
+export interface CommunityWindowAnalysis {
+  key_metrics: Record<string, unknown>;
+  risk_distribution: Record<string, number>;
+  alert_breakdown: Record<string, number>;
+  device_status_distribution: Record<string, number>;
+  high_risk_entities: HighRiskEntity[];
+  trend_findings: string[];
+  chart_payloads: ChartPayload[];
+}
+
+export interface CommunityWindowReportResponse {
+  window: WindowKind;
+  generated_at: string;
+  analysis: CommunityWindowAnalysis;
+}
+
+export interface AgentSourceItem {
+  source_type: string;
+  title: string;
+  url?: string | null;
+  snippet: string;
+}
+
+export interface CommunityAgentMeta {
+  llm_model: string;
+  embedding_model: string;
+  rerank_model: string;
+  used_tavily: boolean;
+  used_rerank: boolean;
+  degraded_notes: string[];
+}
+
+export interface CommunityAgentSummaryResponse {
+  window: WindowKind;
+  generated_at: string;
+  summary_text: string;
+  advice: string[];
+  analysis: CommunityWindowAnalysis;
+  charts: ChartPayload[];
+  sources: AgentSourceItem[];
+  agent_meta: CommunityAgentMeta;
+}
+ 
 export interface FamilyRelationCreateRequest {
   elder_user_id: string;
   family_user_id: string;
@@ -293,6 +790,16 @@ export class ApiError extends Error {
   }
 }
 
+function humanizeApiDetail(detail: string): string {
+  if (detail.includes("INVALID_MAC_ADDRESS")) return "设备 MAC 格式错误，请使用 AA:BB:CC:DD:EE:FF。";
+  if (detail.includes("INVALID_MAC_PREFIX")) return "当前服务尚未完成更新，请刷新页面或重启后端后重试。";
+  if (detail.includes("DEVICE_ALREADY_EXISTS")) return "该设备已经登记在台账中。";
+  if (detail.includes("TARGET_USER_ALREADY_HAS_DEVICE_OF_SAME_MODEL")) {
+    return "该老人已经绑定了同型号手环。若本次只是演示新设备，请选择“暂不绑定，先登记设备”。";
+  }
+  return detail;
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
@@ -306,12 +813,11 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
       };
       const detailPayload = payload.detail;
       if (typeof detailPayload === "string") {
-        detail = detailPayload;
+        detail = humanizeApiDetail(detailPayload);
       } else if (Array.isArray(detailPayload) && detailPayload.length) {
         const first = detailPayload[0];
         const message = String(first.msg ?? "");
         if (message.includes("INVALID_MAC_ADDRESS")) detail = "设备 MAC 格式错误，请使用 AA:BB:CC:DD:EE:FF。";
-        else if (message.includes("INVALID_MAC_PREFIX")) detail = "设备 MAC 前缀不在允许范围内。";
         else if (message.includes("question")) detail = "请输入更具体的问题后再试。";
         else if (message.includes("mode")) detail = "请求模式无效，请联系开发人员检查前端参数。";
         else if (message.includes("role")) detail = "请求角色无效，请联系开发人员检查前端参数。";
@@ -341,10 +847,92 @@ function jsonHeaders(token?: string): HeadersInit {
   };
 }
 
+async function throwApiError(response: Response): Promise<never> {
+  let detail = `Request failed: ${response.status}`;
+  try {
+    const payload = (await response.json()) as {
+      detail?: string | { message?: string; code?: string };
+    };
+    if (typeof payload.detail === "string") {
+      detail = humanizeApiDetail(payload.detail);
+    } else if (payload.detail?.message) {
+      detail = humanizeApiDetail(payload.detail.message);
+    } else if (payload.detail?.code) {
+      detail = humanizeApiDetail(payload.detail.code);
+    }
+  } catch {
+    // ignore non-json errors
+  }
+  throw new ApiError(response.status, detail);
+}
+
+export async function streamCommunityAnalysis(
+  payload: CommunityAnalysisPayload,
+  handlers: {
+    signal?: AbortSignal;
+    onEvent?: (event: AgentStreamEvent) => void;
+  } = {},
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/chat/analyze/community/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: handlers.signal,
+  });
+
+  if (!response.ok) {
+    await throwApiError(response);
+  }
+
+  if (!response.body) {
+    throw new ApiError(500, "Stream body is not available");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n");
+      buffer = chunks.pop() ?? "";
+
+      for (const line of chunks) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const event = JSON.parse(trimmed) as AgentStreamEvent;
+        handlers.onEvent?.(event);
+      }
+    }
+
+    const tail = `${buffer}${decoder.decode()}`.trim();
+    if (tail) {
+      handlers.onEvent?.(JSON.parse(tail) as AgentStreamEvent);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export const api = {
   listDevices: () => requestJson<DeviceRecord[]>(`${API_BASE}/devices`),
   getDevice: (mac: string) => requestJson<DeviceRecord>(`${API_BASE}/devices/${mac}`),
-  registerDevice: (payload: { mac_address: string; device_name?: string; user_id?: string | null }, token?: string) =>
+  registerDevice: (
+    payload: {
+      mac_address: string;
+      device_name?: string;
+      user_id?: string | null;
+      model_code?: string;
+      ingest_mode?: "serial" | "mqtt" | "ble" | "mock";
+      service_uuid?: string;
+      device_uuid?: string;
+    },
+    token?: string,
+  ) =>
     requestJson<DeviceRecord>(`${API_BASE}/devices/register`, {
       method: "POST",
       headers: jsonHeaders(token),
@@ -377,6 +965,12 @@ export const api = {
     requestJson<DeviceRecord>(`${API_BASE}/devices/${mac}`, {
       method: "DELETE",
       headers: withBearer(token),
+    }),
+  switchSerialTarget: (payload: { mac_address: string }, token?: string) =>
+    requestJson<SerialTargetSwitchResponse>(`${API_BASE}/devices/serial-target`, {
+      method: "POST",
+      headers: jsonHeaders(token),
+      body: JSON.stringify(payload),
     }),
   listDeviceBindLogs: (mac: string) =>
     requestJson<DeviceBindLogRecord[]>(`${API_BASE}/devices/${mac}/bind-logs`),
@@ -424,14 +1018,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  analyzeCommunity: (payload: {
-    question: string;
-    role: string;
-    mode: string;
-    history_minutes?: number;
-    per_device_limit?: number;
-    device_macs?: string[];
-  }) =>
+  analyzeCommunity: (payload: CommunityAnalysisPayload) =>
     requestJson<AgentResponse>(`${API_BASE}/chat/analyze/community`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -493,10 +1080,69 @@ export const api = {
     requestJson<SessionUser>(`${API_BASE}/auth/me`, {
       headers: withBearer(token),
     }),
+  getSystemInfo: () => requestJson<SystemInfoResponse>(`${API_BASE}/system/info`),
+  getDemoDataStatus: () => requestJson<DemoDataStatus>(`${API_BASE}/system/demo-data/status`),
+  refreshDemoData: () =>
+    requestJson<{ status: string; message: string; data: DemoDataStatus }>(`${API_BASE}/system/demo-data/refresh`, {
+      method: "POST",
+    }),
+  getChatCapabilities: () => requestJson<ChatCapabilities>(`${API_BASE}/chat/capabilities`),
   getCareAccessProfile: (token: string) =>
     requestJson<CareAccessProfile>(`${API_BASE}/care/access-profile/me`, {
       headers: withBearer(token),
     }),
+  getCommunityDashboard: (token: string) =>
+    requestJson<CommunityDashboardSummary>(`${API_BASE}/care/community/dashboard`, {
+      headers: withBearer(token),
+    }),
+  getDeviceHistory: (mac: string, window: WindowKind = "day", bucket?: HistoryBucket) =>
+    requestJson<DeviceHistoryResponse>(
+      `${API_BASE}/health/devices/${mac}/history?window=${window}${bucket ? `&bucket=${bucket}` : ""}`,
+    ),
+  getCommunityWindowReport: (payload: { window: WindowKind; device_macs?: string[] }) =>
+    requestJson<CommunityWindowReportResponse>(`${API_BASE}/health/community/window-report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  exportCommunityWindowReport: (window: WindowKind = "day", deviceMacs?: string[]) =>
+    requestJson<CommunityWindowReportResponse>(
+      `${API_BASE}/health/community/window-report/export?window=${window}${
+        deviceMacs?.length ? `&${deviceMacs.map((item) => `device_macs=${encodeURIComponent(item)}`).join("&")}` : ""
+      }`,
+    ),
+  getCommunityAgentSummary: (payload: {
+    window: WindowKind;
+    question: string;
+    device_macs?: string[];
+    include_web_search?: boolean;
+    include_charts?: boolean;
+  }) =>
+    requestJson<CommunityAgentSummaryResponse>(`${API_BASE}/agent/community/summary`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  getAgentElders: (token: string) =>
+    requestJson<AgentElderSubject[]>(`${API_BASE}/agent/elders`, {
+      headers: withBearer(token),
+    }),
   healthSocket: (mac: string) => new WebSocket(`${WS_BASE}/ws/health/${mac}`),
   alarmSocket: () => new WebSocket(`${WS_BASE}/ws/alarms`),
+
+  // Voice API
+  voiceStatus: () => requestJson<{ configured: boolean; asr_model: string | null; tts_model: string | null; tts_voices: string[]; provider: string; note: string }>(`${API_BASE}/voice/status`),
+  voiceAsr: async (audioBlob: Blob): Promise<{ ok: boolean; text: string; provider: string; error?: string }> => {
+    const form = new FormData();
+    form.append("file", audioBlob, "recording.wav");
+    const res = await fetch(`${API_BASE}/voice/asr`, { method: "POST", body: form });
+    if (!res.ok) throw new Error(`ASR HTTP ${res.status}`);
+    return res.json();
+  },
+  voiceTts: (text: string, voice = "longyingtian", fmt: "mp3" | "wav" = "mp3") =>
+    requestJson<{ ok: boolean; audio_b64: string; fmt: string; provider: string; error?: string }>(`${API_BASE}/voice/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voice, fmt }),
+    }),
 };

@@ -1,4 +1,4 @@
-﻿name: ai_health_iot_flutter
+name: ai_health_iot_flutter
 description: Flutter mobile client for the AIoT elder-care competition project.
 publish_to: none
 version: 0.1.0+1
@@ -10,8 +10,11 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  http: ^1.3.0
+  dio: ^5.7.0
+  shared_preferences: ^2.3.5
+  provider: ^6.1.2
   web_socket_channel: ^3.0.3
+  fl_chart: ^1.2.0
 
 dev_dependencies:
   flutter_test:

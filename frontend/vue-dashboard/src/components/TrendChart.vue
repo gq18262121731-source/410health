@@ -88,13 +88,13 @@ function renderChart() {
     animationDuration: 600,
     tooltip: {
       trigger: "axis",
-      backgroundColor: "rgba(255, 255, 255, 0.96)",
-      borderColor: "rgba(15, 118, 110, 0.16)",
-      textStyle: { color: "#0f172a" },
+      backgroundColor: "rgba(8, 16, 30, 0.96)",
+      borderColor: "rgba(34, 211, 238, 0.20)",
+      textStyle: { color: "#e2f0ff" },
     },
     legend: {
       top: 4,
-      textStyle: { color: "#475569" },
+      textStyle: { color: "#7eb8d4" },
     },
     grid: { left: 42, right: 72, top: 52, bottom: 42 },
     xAxis: {
@@ -107,8 +107,8 @@ function renderChart() {
           minute: "2-digit",
         }),
       ),
-      axisLine: { lineStyle: { color: "rgba(148, 163, 184, 0.24)" } },
-      axisLabel: { color: "#64748b" },
+      axisLine: { lineStyle: { color: "rgba(56, 189, 248, 0.18)" } },
+      axisLabel: { color: "#6ea8c8" },
     },
     yAxis: [
       {
@@ -116,8 +116,8 @@ function renderChart() {
         name: "心率",
         min: 40,
         max: 180,
-        axisLabel: { color: "#64748b" },
-        splitLine: { lineStyle: { color: "rgba(148, 163, 184, 0.14)" } },
+        axisLabel: { color: "#6ea8c8" },
+        splitLine: { lineStyle: { color: "rgba(56, 189, 248, 0.10)" } },
       },
       {
         type: "value",
@@ -125,16 +125,16 @@ function renderChart() {
         min: 34,
         max: 42,
         position: "right",
-        axisLabel: { color: "#64748b" },
+        axisLabel: { color: "#6ea8c8" },
       },
       {
         type: "value",
-        name: "血氧 / 健康分",
+        name: "血氧 / 评分",
         min: 0,
         max: 100,
         position: "right",
         offset: 54,
-        axisLabel: { color: "#64748b" },
+        axisLabel: { color: "#6ea8c8" },
       },
     ],
     dataZoom: [
@@ -144,8 +144,8 @@ function renderChart() {
         height: 18,
         bottom: 10,
         borderColor: "transparent",
-        backgroundColor: "rgba(148, 163, 184, 0.1)",
-        fillerColor: "rgba(15, 118, 110, 0.18)",
+        backgroundColor: "rgba(56, 189, 248, 0.08)",
+        fillerColor: "rgba(34, 211, 238, 0.16)",
       },
     ],
     series: [
@@ -182,7 +182,7 @@ function renderChart() {
         lineStyle: { width: 2, color: "#22c55e" },
       },
       {
-        name: "健康分",
+        name: "健康评分",
         type: "bar",
         yAxisIndex: 2,
         barMaxWidth: 10,
@@ -218,8 +218,8 @@ onUnmounted(() => {
   <section class="panel trend-panel">
     <div class="panel-head">
       <div>
-        <h2>设备近时段趋势图</h2>
-        <p class="panel-subtitle">这里展示的是低频健康指标趋势，不是医疗级 ECG 实时波形。</p>
+        <h2>设备趋势图</h2>
+        <p class="panel-subtitle">按时间窗查看单台设备最近一段时间的心率、体温、血氧和健康评分变化。</p>
       </div>
       <span>{{ deviceMac || "请选择设备" }}</span>
     </div>

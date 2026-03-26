@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, toRef, watch } from "vue";
-import type { DeviceBindLogRecord, SessionUser } from "../api/client";
+import { computed, onMounted, ref, toRef, watch } from "vue";
+import type { DeviceBindLogRecord, SessionUser, SystemInfoResponse } from "../api/client";
 import { ApiError, api } from "../api/client";
 import PageHeader from "../components/layout/PageHeader.vue";
 import { useCareDirectoryDashboard } from "../composables/useCareDirectoryDashboard";
 import { useRelationActions } from "../composables/useRelationActions";
+import { SELECTED_DEVICE_STORAGE_KEY } from "../composables/useCommunityWorkspace";
 
 const props = defineProps<{
   sessionUser: SessionUser;
@@ -31,34 +32,18 @@ const bindHistoryLoading = ref(false);
 const bindHistoryError = ref("");
 const deletingMac = ref("");
 const lastDeletedDeviceMac = ref("");
-
-const deviceModes = ["register", "bind", "rebind", "unbind"] as const;
-const syncLabel = computed(() =>
-  lastSyncAt.value ? lastSyncAt.value.toLocaleTimeString("zh-CN", { hour12: false }) : "尚未同步",
-);
-const pageMeta = computed(() => [
-  `社区 ${community.value?.name || "未分配"}`,
-  `老人 ${elders.value.length}`,
-  `家属 ${allFamilies.value.length}`,
-  `设备 ${devices.value.length}`,
-  `同步 ${syncLabel.value}`,
-]);
-const selectedHistoryDevice = computed(
-  () => devices.value.find((device) => device.mac_address === deviceHistoryMac.value) ?? null,
-);
+const systemInfo = ref<SystemInfoResponse | null>(null);
+const systemInfoError = ref("");
 
 const {
   deviceForm,
   elderForm,
-  familyForm,
+  lastRegisteredDeviceMac,
   relationBusy,
   relationError,
-  relationForm,
   relationStatus,
   submitDeviceAction,
   submitElderRegistration,
-  submitFamilyRegistration,
-  submitRelationBinding,
 } = useRelationActions({
   sessionUser,
   refreshDashboardData,
@@ -73,6 +58,81 @@ function formatUiError(error: unknown, fallback: string) {
   if (error instanceof ApiError && error.detail) return error.detail;
   if (error instanceof Error && error.message) return error.message;
   return fallback;
+}
+
+function describeBootstrapReason(reason: string | undefined) {
+  if (!reason) return "采集器暂未接入";
+  if (reason === "shouhuan_missing") return "等待采集器接入";
+  if (reason.startsWith("shouhuan_parse_failed")) return "采集配置待检查";
+  if (reason === "pyserial_missing") return "采集组件未就绪";
+  if (reason.startsWith("serial_open_failed")) return "采集器暂未连接";
+  if (reason === "serial_port_available") return "采集器已就绪";
+  return "采集器状态待确认";
+}
+
+const syncLabel = computed(() =>
+  lastSyncAt.value ? lastSyncAt.value.toLocaleTimeString("zh-CN", { hour12: false }) : "尚未同步",
+);
+const pageMeta = computed(() => [
+  `社区 ${community.value?.name || "未分配"}`,
+  `老人 ${elders.value.length}`,
+  `家属 ${allFamilies.value.length}`,
+  `设备 ${devices.value.length}`,
+  `同步 ${syncLabel.value}`,
+]);
+const selectedHistoryDevice = computed(
+  () => devices.value.find((device) => device.mac_address === deviceHistoryMac.value) ?? null,
+);
+const serialRuntime = computed(() => systemInfo.value?.serial_runtime ?? null);
+const runtimeMode = computed(() => systemInfo.value?.runtime_mode ?? serialRuntime.value?.runtime_mode ?? "mock");
+const serialRuntimeSummary = computed(() => {
+  const runtime = serialRuntime.value;
+  if (!runtime) return "当前未读取到串口采集配置。";
+  const collectionStrategy = runtime.collection_strategy ?? "single_target";
+  const targetLabel = runtime.active_target_mac ?? "未锁定目标";
+  if (runtimeMode.value === "serial") {
+    return `串口已启用 · ${runtime.port} · ${runtime.baudrate} baud · ${collectionStrategy} · ${targetLabel}`;
+  }
+  const fallbackReason = describeBootstrapReason(runtime.bootstrap_reason ?? systemInfo.value?.bootstrap_reason);
+  return `社区样本链路 · ${fallbackReason}`;
+});
+const collectorPortLabel = computed(() => {
+  if (runtimeMode.value !== "serial") return "待识别";
+  return serialRuntime.value?.port || "auto-detect";
+});
+const collectorStatusLabel = computed(() => {
+  if (runtimeMode.value === "serial") return "串口已启用，等待完整 A/B 双包";
+  return `${describeBootstrapReason(serialRuntime.value?.bootstrap_reason ?? systemInfo.value?.bootstrap_reason)}，可先完成台账登记`;
+});
+const activeTargetLabel = computed(() => {
+  if (runtimeMode.value !== "serial") return "采集器接入后自动锁定";
+  const runtime = serialRuntime.value;
+  if (!runtime?.active_target_mac) return "未锁定";
+  return runtime.active_target_device_name
+    ? `${runtime.active_target_device_name} / ${runtime.active_target_mac}`
+    : runtime.active_target_mac;
+});
+const packetMergeLabel = computed(() =>
+  serialRuntime.value?.merge_mode === "wait_for_ab" ? "等待 A+B 完整双包" : "未识别",
+);
+const macInputExamples = computed(() => ["5410260100DF", "54:10:26:01:00:DF"]);
+const pendingDeviceCount = computed(() => devices.value.filter((device) => device.status === "pending").length);
+const hasElders = computed(() => elders.value.length > 0);
+const selectedTargetElder = computed(
+  () => elders.value.find((elder) => elder.id === deviceForm.value.targetUserId) ?? null,
+);
+const lastRegisteredDevice = computed(
+  () => devices.value.find((device) => device.mac_address === lastRegisteredDeviceMac.value) ?? null,
+);
+
+async function loadSystemInfo() {
+  systemInfoError.value = "";
+  try {
+    systemInfo.value = await api.getSystemInfo();
+  } catch (error) {
+    systemInfo.value = null;
+    systemInfoError.value = formatUiError(error, "系统运行配置读取失败，请稍后重试。");
+  }
 }
 
 async function refreshBindHistory(mac: string) {
@@ -94,6 +154,7 @@ async function deleteDeviceRecord(mac: string) {
     await api.deleteDevice(mac, sessionToken());
     lastDeletedDeviceMac.value = mac;
     await refreshDashboardData();
+    await loadSystemInfo();
     if (deviceHistoryMac.value === mac) {
       deviceHistoryMac.value = "";
       bindHistory.value = [];
@@ -105,28 +166,32 @@ async function deleteDeviceRecord(mac: string) {
   }
 }
 
-function relationFamiliesText(ids: string[]) {
-  return ids
-    .map((id) => allFamilies.value.find((family) => family.id === id)?.name)
-    .filter(Boolean)
-    .join(" / ");
+function goToOverviewForRegisteredDevice() {
+  if (!lastRegisteredDeviceMac.value) return;
+  if (typeof window !== "undefined") {
+    window.sessionStorage.setItem(SELECTED_DEVICE_STORAGE_KEY, lastRegisteredDeviceMac.value);
+    window.location.hash = "#/overview";
+  }
+}
+
+function dismissRegisteredDevicePrompt() {
+  lastRegisteredDeviceMac.value = "";
+}
+
+function submitPrimaryRegisterAction() {
+  deviceForm.value.mode = "register";
+  void submitDeviceAction();
 }
 
 watch(
   elders,
   (list) => {
-    if (!list.length) return;
-    if (!relationForm.value.elderUserId) relationForm.value.elderUserId = list[0].id;
-    if (!deviceForm.value.targetUserId) deviceForm.value.targetUserId = list[0].id;
-  },
-  { immediate: true },
-);
-
-watch(
-  allFamilies,
-  (list) => {
-    if (list.length && !relationForm.value.familyUserId) {
-      relationForm.value.familyUserId = list[0].id;
+    if (!list.length) {
+      deviceForm.value.targetUserId = "";
+      return;
+    }
+    if (deviceForm.value.targetUserId && !list.some((elder) => elder.id === deviceForm.value.targetUserId)) {
+      deviceForm.value.targetUserId = "";
     }
   },
   { immediate: true },
@@ -160,198 +225,202 @@ watch(deviceHistoryMac, (mac) => {
   }
   void refreshBindHistory(mac);
 });
+
+watch(lastRegisteredDeviceMac, (mac) => {
+  if (mac) void loadSystemInfo();
+});
+
+onMounted(() => {
+  deviceForm.value.mode = "register";
+  void loadSystemInfo();
+});
 </script>
 
 <template>
   <section class="page-stack">
     <PageHeader
       eyebrow="Member & Device"
-      title="成员与设备"
-      description="页面级头部只负责展示当前社区、成员规模和同步状态，具体注册、绑定、删除与历史都在页面内部处理。"
+      title="成员设备"
+      description="先登记真实 T10 手环，可选择立即绑定老人，也可以先空挂设备台账；采集器收到完整 A/B 双包后，设备会从 pending 自动切到在线监控。"
       :meta="pageMeta"
     />
 
     <p v-if="dashboardLoadError" class="feedback-banner feedback-error">{{ dashboardLoadError }}</p>
 
-    <section class="panel-grid relation-grid">
-      <article class="panel relation-intro member-device-hero">
-        <p class="section-eyebrow">Operation Guide</p>
-        <h2>当前操作顺序</h2>
-        <p class="subtle-copy">
-          本页承接成员注册、家属关系绑定和设备归属操作。页面状态已经下沉，所有局部反馈、历史记录和删除结果都在本页内部处理。
-        </p>
-        <ul class="rule-list">
-          <li data-step="1">先注册老人和家属账号，再建立家属关系。</li>
-          <li data-step="2">完成关系绑定后，再为老人注册或绑定设备。</li>
-          <li data-step="3">换绑、解绑和删除设备都在同一页面完成，便于统一核对。</li>
-          <li data-step="4">设备绑定历史独立展示，方便复查设备归属变更。</li>
-        </ul>
-        <div v-if="relationStatus" class="status-banner status-success">{{ relationStatus }}</div>
-        <div v-if="relationError" class="status-banner status-error">{{ relationError }}</div>
-      </article>
-
-      <article class="panel relation-action-card operator-card">
-        <p class="section-eyebrow">Member Registration</p>
-        <h2>1. 注册老人</h2>
-        <div class="form-grid">
-          <label class="form-field"><span>姓名</span><input v-model="elderForm.name" class="text-input" type="text" placeholder="请输入老人姓名" /></label>
-          <label class="form-field"><span>手机号</span><input v-model="elderForm.phone" class="text-input" type="text" placeholder="请输入手机号" /></label>
-          <label class="form-field"><span>年龄</span><input v-model="elderForm.age" class="text-input" type="number" min="1" /></label>
-          <label class="form-field"><span>房间号</span><input v-model="elderForm.apartment" class="text-input" type="text" placeholder="例如 A-302" /></label>
-          <label class="form-field relation-span-2"><span>初始密码</span><input v-model="elderForm.password" class="text-input" type="text" /></label>
+    <section class="member-device-grid">
+      <article class="panel member-device-panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-eyebrow">T10 Device Onboarding</p>
+            <h2>注册真实 T10 手环</h2>
+            <p class="subtle-copy">
+              运营人员只需要输入手环 MAC。你可以直接绑定老人，也可以先登记到设备台账，后续再补绑定关系。
+            </p>
+          </div>
+          <div class="badge-row">
+            <span class="summary-badge">{{ serialRuntimeSummary }}</span>
+            <span class="summary-badge">待激活设备 {{ pendingDeviceCount }}</span>
+            <span v-if="selectedTargetElder" class="summary-badge">默认老人 {{ selectedTargetElder.name }}</span>
+          </div>
         </div>
-        <button type="button" class="primary-btn" :disabled="relationBusy === 'elder'" @click="submitElderRegistration">
-          {{ relationBusy === "elder" ? "提交中..." : "注册老人" }}
-        </button>
-      </article>
 
-      <article class="panel relation-action-card operator-card">
-        <p class="section-eyebrow">Family Registration</p>
-        <h2>2. 注册家属</h2>
-        <div class="form-grid">
-          <label class="form-field"><span>姓名</span><input v-model="familyForm.name" class="text-input" type="text" placeholder="请输入家属姓名" /></label>
-          <label class="form-field"><span>手机号</span><input v-model="familyForm.phone" class="text-input" type="text" placeholder="请输入手机号" /></label>
-          <label class="form-field">
-            <span>关系</span>
-            <select v-model="familyForm.relationship" class="inline-select relation-select">
-              <option value="daughter">女儿</option>
-              <option value="son">儿子</option>
-              <option value="spouse">配偶</option>
-              <option value="granddaughter">孙女</option>
-              <option value="grandson">孙子</option>
-              <option value="relative">亲属</option>
-            </select>
-          </label>
-          <label class="form-field"><span>登录账号</span><input v-model="familyForm.loginUsername" class="text-input" type="text" placeholder="留空则自动生成" /></label>
-          <label class="form-field relation-span-2"><span>初始密码</span><input v-model="familyForm.password" class="text-input" type="text" /></label>
-        </div>
-        <button type="button" class="primary-btn" :disabled="relationBusy === 'family'" @click="submitFamilyRegistration">
-          {{ relationBusy === "family" ? "提交中..." : "注册家属" }}
-        </button>
-      </article>
-
-      <article class="panel relation-action-card operator-card">
-        <p class="section-eyebrow">Relation Binding</p>
-        <h2>3. 绑定家属关系</h2>
-        <div class="form-grid">
-          <label class="form-field">
-            <span>老人</span>
-            <select v-model="relationForm.elderUserId" class="inline-select relation-select">
-              <option v-for="elder in elders" :key="elder.id" :value="elder.id">{{ elder.name }} / {{ elder.apartment }}</option>
-            </select>
-          </label>
-          <label class="form-field">
-            <span>家属</span>
-            <select v-model="relationForm.familyUserId" class="inline-select relation-select">
-              <option v-for="family in allFamilies" :key="family.id" :value="family.id">{{ family.name }} / {{ family.relationship }}</option>
-            </select>
-          </label>
-          <label class="form-field">
-            <span>关系类型</span>
-            <select v-model="relationForm.relationType" class="inline-select relation-select">
-              <option value="daughter">女儿</option>
-              <option value="son">儿子</option>
-              <option value="spouse">配偶</option>
-              <option value="granddaughter">孙女</option>
-              <option value="grandson">孙子</option>
-              <option value="relative">亲属</option>
-            </select>
-          </label>
-          <label class="form-field checkbox-field"><input v-model="relationForm.isPrimary" type="checkbox" /><span>设为主家属</span></label>
-        </div>
-        <button type="button" class="primary-btn" :disabled="relationBusy === 'relation'" @click="submitRelationBinding">
-          {{ relationBusy === "relation" ? "提交中..." : "绑定关系" }}
-        </button>
-      </article>
-
-      <article class="panel relation-action-card operator-card">
-        <p class="section-eyebrow">Device Ownership</p>
-        <h2>4. 管理设备归属</h2>
-        <div class="mode-switch">
-          <button
-            v-for="mode in deviceModes"
-            :key="mode"
-            type="button"
-            class="switch-btn mini-switch"
-            :class="{ active: deviceForm.mode === mode }"
-            @click="deviceForm.mode = mode"
-          >
-            {{ mode === "register" ? "注册设备" : mode === "bind" ? "绑定设备" : mode === "rebind" ? "换绑设备" : "解绑设备" }}
-          </button>
-        </div>
         <div class="form-grid">
           <label class="form-field">
             <span>设备 MAC</span>
-            <input v-if="deviceForm.mode === 'register'" v-model="deviceForm.macAddress" class="text-input" type="text" placeholder="请输入设备 MAC" />
-            <select v-else v-model="deviceForm.macAddress" class="inline-select relation-select">
-              <option v-for="device in devices" :key="device.mac_address" :value="device.mac_address">
-                {{ device.device_name }} / {{ device.mac_address }}
-              </option>
-            </select>
+            <input
+              v-model="deviceForm.macAddress"
+              class="text-input"
+              type="text"
+              placeholder="例如 5410260100DF 或 54:10:26:01:00:DF"
+            />
           </label>
-          <label v-if="deviceForm.mode === 'register'" class="form-field"><span>设备名称</span><input v-model="deviceForm.deviceName" class="text-input" type="text" placeholder="请输入设备名称" /></label>
-          <label v-if="deviceForm.mode !== 'unbind'" class="form-field">
-            <span>目标老人</span>
-            <select v-model="deviceForm.targetUserId" class="inline-select relation-select">
+          <label class="form-field">
+            <span>目标老人（可选）</span>
+            <select v-model="deviceForm.targetUserId" class="inline-select relation-select" :disabled="!hasElders">
+              <option value="">暂不绑定，先登记设备</option>
               <option v-for="elder in elders" :key="elder.id" :value="elder.id">{{ elder.name }} / {{ elder.apartment }}</option>
             </select>
           </label>
-          <label v-if="deviceForm.mode === 'rebind' || deviceForm.mode === 'unbind'" class="form-field relation-span-2"><span>操作原因</span><input v-model="deviceForm.reason" class="text-input" type="text" placeholder="请输入换绑或解绑原因" /></label>
         </div>
-        <button type="button" class="primary-btn" :disabled="relationBusy === 'device'" @click="submitDeviceAction">
-          {{ relationBusy === "device" ? "提交中..." : "提交设备操作" }}
-        </button>
-      </article>
 
-      <article class="panel relation-table dashboard-section-panel">
-        <div class="dashboard-section-head">
-          <div>
-            <p class="section-eyebrow">Member Ledger</p>
-            <h2>成员与关系台账</h2>
+        <div class="readout-grid">
+          <div class="readout-card">
+            <span>采集器串口</span>
+            <strong>{{ collectorPortLabel }}</strong>
           </div>
-          <span class="meta-pill">展示当前成员绑定结果</span>
+          <div class="readout-card">
+            <span>串口状态</span>
+            <strong>{{ collectorStatusLabel }}</strong>
+          </div>
+          <div class="readout-card">
+            <span>当前采集目标</span>
+            <strong>{{ activeTargetLabel }}</strong>
+          </div>
+          <div class="readout-card">
+            <span>合并模式</span>
+            <strong>{{ packetMergeLabel }}</strong>
+          </div>
+          <div class="readout-card">
+            <span>设备名称</span>
+            <strong>{{ deviceForm.deviceName }}</strong>
+          </div>
+          <div class="readout-card">
+            <span>型号编码</span>
+            <strong>{{ deviceForm.modelCode }}</strong>
+          </div>
+          <div class="readout-card">
+            <span>接入方式</span>
+            <strong>{{ deviceForm.ingestMode }}</strong>
+          </div>
+          <div class="readout-card wide">
+            <span>服务 UUID</span>
+            <strong>{{ deviceForm.serviceUuid }}</strong>
+          </div>
+          <div class="readout-card wide">
+            <span>设备 UUID</span>
+            <strong>{{ deviceForm.deviceUuid }}</strong>
+          </div>
+          <div class="readout-card wide">
+            <span>MAC 输入格式</span>
+            <strong>{{ macInputExamples.join(" / ") }}</strong>
+          </div>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>老人</th>
-                <th>设备</th>
-                <th>社区</th>
-                <th>家属关系</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="elder in elders" :key="elder.id">
-                <td>{{ elder.name }}</td>
-                <td>{{ elder.device_mac || "未绑定" }}</td>
-                <td>{{ community?.name || "-" }}</td>
-                <td>{{ relationFamiliesText(elder.family_ids) || "暂无关系" }}</td>
-              </tr>
-              <tr v-if="!elders.length">
-                <td colspan="4">当前社区还没有成员台账数据。</td>
-              </tr>
-            </tbody>
-          </table>
+
+        <div class="tips-block">
+          <strong>接入说明</strong>
+          <p>
+            当前串口链路对齐 `shouhuan.py`：采集器锁定一个目标 MAC，并等待两个响应包都到达。只有 A/B 双包合并成功后，系统才会推送实时心率、血氧、血压和体温。
+          </p>
+        </div>
+
+        <div class="action-row">
+          <button
+            type="button"
+            class="primary-btn"
+            :disabled="relationBusy === 'device'"
+            @click="submitPrimaryRegisterAction"
+          >
+            {{ relationBusy === "device" ? "正在注册..." : "注册手环并等待接入" }}
+          </button>
+          <p class="helper-copy">
+            注册成功后设备会先显示为 <code>pending</code>。可以先空挂到设备台账，后续再补绑定；真实串口接入后，采集器收到完整 A/B 双包就会刷新实时面板。
+          </p>
+        </div>
+
+        <p v-if="systemInfoError" class="error-copy">{{ systemInfoError }}</p>
+        <div v-if="relationStatus" class="status-banner status-success">{{ relationStatus }}</div>
+        <div v-if="relationError" class="status-banner status-error">{{ relationError }}</div>
+
+        <div v-if="lastRegisteredDeviceMac" class="register-prompt">
+          <div>
+            <strong>{{ lastRegisteredDevice?.device_name ?? "T10-WATCH" }} 已注册</strong>
+            <p>
+              {{ lastRegisteredDeviceMac }} 已进入设备台账，当前状态为 {{ lastRegisteredDevice?.status ?? "pending" }}。
+              {{ lastRegisteredDevice?.user_id ? "该设备已写入成员关系。" : "该设备当前处于未归属状态，后续可再补绑定。" }}
+              采集器接入后，这台设备会被自动锁定为当前采集目标，待完整 A/B 双包到达后即可进入实时监控。
+            </p>
+          </div>
+          <div class="table-actions">
+            <button type="button" class="primary-btn" @click="goToOverviewForRegisteredDevice">前往总览监控</button>
+            <button type="button" class="ghost-btn" @click="dismissRegisteredDevicePrompt">留在当前页面</button>
+          </div>
         </div>
       </article>
 
-      <article class="panel relation-table dashboard-section-panel">
+      <article class="panel member-device-panel" v-if="!hasElders">
         <div class="panel-head">
           <div>
-            <h2>设备清单</h2>
-            <p class="subtle-copy">设备归属与删除操作都在这里完成，同时支持切换下方的绑定历史查看对象。</p>
+            <p class="section-eyebrow">Elder Registration</p>
+            <h2>先补一位老人账号</h2>
+            <p class="subtle-copy">如果当前社区还没有老人资料，可以先在这里补一位老人，再回来绑定手环。</p>
           </div>
         </div>
+
+        <div class="form-grid">
+          <label class="form-field">
+            <span>姓名</span>
+            <input v-model="elderForm.name" class="text-input" type="text" placeholder="请输入老人姓名" />
+          </label>
+          <label class="form-field">
+            <span>手机号</span>
+            <input v-model="elderForm.phone" class="text-input" type="text" placeholder="请输入手机号" />
+          </label>
+          <label class="form-field">
+            <span>年龄</span>
+            <input v-model="elderForm.age" class="text-input" type="number" min="1" />
+          </label>
+          <label class="form-field">
+            <span>房间</span>
+            <input v-model="elderForm.apartment" class="text-input" type="text" placeholder="例如 A-302" />
+          </label>
+        </div>
+
+        <div class="action-row">
+          <button type="button" class="primary-btn" :disabled="relationBusy === 'elder'" @click="submitElderRegistration">
+            {{ relationBusy === "elder" ? "正在提交..." : "登记老人" }}
+          </button>
+        </div>
+      </article>
+
+      <article class="panel member-device-panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-eyebrow">Device Ledger</p>
+            <h2>设备清单</h2>
+            <p class="subtle-copy">新注册的 T10 会先以 pending 展示；收到完整双包后自动变为 online。</p>
+          </div>
+          <span v-if="lastDeletedDeviceMac" class="meta-pill">最近删除 {{ lastDeletedDeviceMac }}</span>
+        </div>
+
         <p v-if="dashboardLoading && !devices.length" class="helper-copy">正在加载设备清单...</p>
-        <p v-else-if="lastDeletedDeviceMac" class="helper-copy">最近删除的设备：{{ lastDeletedDeviceMac }}</p>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>设备</th>
                 <th>状态</th>
-                <th>绑定状态</th>
+                <th>激活</th>
+                <th>绑定</th>
                 <th>当前归属</th>
                 <th>操作</th>
               </tr>
@@ -368,34 +437,46 @@ watch(deviceHistoryMac, (mac) => {
                   <small>{{ device.mac_address }}</small>
                 </td>
                 <td>{{ device.status }}</td>
+                <td>{{ device.activation_state ?? "-" }}</td>
                 <td>{{ device.bind_status ?? "-" }}</td>
                 <td>{{ elders.find((elder) => elder.id === device.user_id)?.name ?? "未归属" }}</td>
                 <td>
                   <div class="table-actions">
                     <button type="button" class="ghost-btn" @click.stop="deviceHistoryMac = device.mac_address">查看历史</button>
-                    <button type="button" class="ghost-btn danger-btn" :disabled="deletingMac === device.mac_address" @click.stop="deleteDeviceRecord(device.mac_address)">
+                    <button
+                      type="button"
+                      class="ghost-btn danger-btn"
+                      :disabled="deletingMac === device.mac_address"
+                      @click.stop="deleteDeviceRecord(device.mac_address)"
+                    >
                       {{ deletingMac === device.mac_address ? "删除中..." : "删除设备" }}
                     </button>
                   </div>
                 </td>
               </tr>
               <tr v-if="!devices.length">
-                <td colspan="5">当前还没有设备清单。</td>
+                <td colspan="6">当前还没有设备清单。</td>
               </tr>
             </tbody>
           </table>
         </div>
       </article>
 
-      <article class="panel relation-table dashboard-section-panel">
+      <article class="panel member-device-panel">
         <div class="panel-head">
           <div>
+            <p class="section-eyebrow">Bind Timeline</p>
             <h2>绑定历史</h2>
             <p class="subtle-copy">
-              {{ selectedHistoryDevice ? `当前查看 ${selectedHistoryDevice.device_name} / ${selectedHistoryDevice.mac_address}` : "请选择一个设备查看绑定历史。" }}
+              {{
+                selectedHistoryDevice
+                  ? `当前查看 ${selectedHistoryDevice.device_name} / ${selectedHistoryDevice.mac_address}`
+                  : "请选择一台设备查看绑定历史。"
+              }}
             </p>
           </div>
         </div>
+
         <p v-if="bindHistoryError" class="error-copy">{{ bindHistoryError }}</p>
         <div class="table-wrap">
           <table>
@@ -420,7 +501,7 @@ watch(deviceHistoryMac, (mac) => {
                 <td>{{ item.reason ?? "-" }}</td>
               </tr>
               <tr v-if="!bindHistoryLoading && !bindHistory.length">
-                <td colspan="5">{{ deviceHistoryMac ? "当前设备还没有绑定历史。" : "请选择一个设备查看绑定历史。" }}</td>
+                <td colspan="5">{{ deviceHistoryMac ? "当前设备还没有绑定历史。" : "请选择一台设备查看绑定历史。" }}</td>
               </tr>
             </tbody>
           </table>
@@ -429,3 +510,134 @@ watch(deviceHistoryMac, (mac) => {
     </section>
   </section>
 </template>
+
+<style scoped>
+.member-device-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.member-device-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.panel-head,
+.badge-row,
+.action-row,
+.table-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.panel-head {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.panel-head h2 {
+  margin: 0;
+  color: var(--text-main);
+  font-family: var(--font-display);
+}
+
+.badge-row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.form-grid,
+.readout-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.readout-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.readout-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(12, 20, 34, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.10);
+}
+
+.readout-card.wide {
+  grid-column: span 2;
+}
+
+.readout-card span {
+  color: var(--text-sub);
+  font-size: 0.8rem;
+}
+
+.readout-card strong {
+  color: var(--text-main);
+  word-break: break-all;
+}
+
+.tips-block,
+.register-prompt {
+  padding: 16px 18px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(34, 211, 238, 0.12), transparent 34%),
+    rgba(13, 24, 38, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  color: var(--text-sub);
+}
+
+.tips-block p,
+.register-prompt p {
+  margin: 8px 0 0;
+  line-height: 1.7;
+}
+
+.tips-block strong,
+.register-prompt strong {
+  color: var(--text-main);
+}
+
+.action-row {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.helper-copy,
+.subtle-copy,
+.meta-pill {
+  color: var(--text-sub);
+}
+
+.table-wrap small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-sub);
+}
+
+@media (max-width: 960px) {
+  .form-grid,
+  .readout-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .readout-card.wide {
+    grid-column: span 1;
+  }
+
+  .panel-head {
+    flex-direction: column;
+  }
+
+  .badge-row {
+    justify-content: flex-start;
+  }
+}
+</style>

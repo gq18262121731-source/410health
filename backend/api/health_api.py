@@ -1,14 +1,33 @@
 ﻿from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from backend.dependencies import (
     get_community_clusterer,
+    get_community_insight_service,
+    get_device_service,
+    get_display_latest_sample,
+    get_display_trend_samples,
     get_intelligent_scorer,
+    get_structured_health_score_service,
     get_stream_service,
+    get_warning_evaluation_service,
     ingest_sample,
 )
+from backend.models.analytics_model import (
+    CommunityWindowReportRequest,
+    CommunityWindowReportResponse,
+    DeviceHistoryResponse,
+    HistoryBucket,
+    WindowKind,
+)
 from backend.models.health_model import HealthSample, HealthTrendPoint, IngestResponse
+from backend.schemas.common import build_error_response, build_success_response
+from backend.schemas.health import HealthScoreApiResponse, HealthScoreRequest
+from backend.schemas.warning import WarningCheckApiResponse, WarningCheckRequest
+from backend.services.health_score_service import ServiceError
 
 
 router = APIRouter(prefix="/health", tags=["health"])
@@ -21,7 +40,8 @@ async def ingest_health_sample(payload: HealthSample) -> IngestResponse:
 
 @router.get("/realtime/{device_mac}", response_model=HealthSample)
 async def get_realtime_sample(device_mac: str) -> HealthSample:
-    sample = get_stream_service().latest(device_mac)
+    device = get_device_service().get_device(device_mac)
+    sample = get_display_latest_sample(device_mac, device.ingest_mode if device else None)
     if not sample:
         raise HTTPException(status_code=404, detail="No realtime sample available")
     return sample
@@ -33,7 +53,39 @@ async def get_health_trend(
     minutes: int = Query(default=60, ge=5, le=10080),
     limit: int = Query(default=120, ge=10, le=1000),
 ) -> list[HealthTrendPoint]:
-    return get_stream_service().trend(device_mac, minutes=minutes, limit=limit)
+    device = get_device_service().get_device(device_mac)
+    samples = get_display_trend_samples(
+        device_mac,
+        device.ingest_mode if device else None,
+        minutes=minutes,
+        limit=limit,
+    )
+    return [
+        HealthTrendPoint(
+            timestamp=sample.timestamp,
+            heart_rate=sample.heart_rate,
+            temperature=sample.temperature,
+            blood_oxygen=sample.blood_oxygen,
+            blood_pressure=sample.blood_pressure,
+            steps=sample.steps,
+            health_score=sample.health_score,
+        )
+        for sample in samples
+    ]
+
+
+@router.get("/devices/{device_mac}/history", response_model=DeviceHistoryResponse)
+async def get_device_history(
+    device_mac: str,
+    window: WindowKind = Query(default=WindowKind.DAY),
+    bucket: HistoryBucket | None = Query(default=None),
+) -> DeviceHistoryResponse:
+    selected_bucket = bucket or (HistoryBucket.HOUR if window == WindowKind.DAY else HistoryBucket.DAY)
+    return get_community_insight_service().get_device_history(
+        device_mac=device_mac,
+        window=window,
+        bucket=selected_bucket,
+    )
 
 
 @router.get("/community/overview")
@@ -62,6 +114,27 @@ async def get_community_overview() -> dict[str, object]:
     }
 
 
+@router.post("/community/window-report", response_model=CommunityWindowReportResponse)
+async def build_community_window_report(
+    payload: CommunityWindowReportRequest,
+) -> CommunityWindowReportResponse:
+    return get_community_insight_service().build_window_report(
+        window=payload.window,
+        device_macs=payload.device_macs,
+    )
+
+
+@router.get("/community/window-report/export", response_model=CommunityWindowReportResponse)
+async def export_community_window_report(
+    window: WindowKind = Query(default=WindowKind.DAY),
+    device_macs: list[str] | None = Query(default=None),
+) -> CommunityWindowReportResponse:
+    return get_community_insight_service().build_window_report(
+        window=window,
+        device_macs=device_macs or [],
+    )
+
+
 @router.get("/intelligent/{device_mac}")
 async def get_intelligent_device_analysis(device_mac: str) -> dict[str, object]:
     history = get_stream_service().recent_in_window(device_mac, minutes=60, limit=360)
@@ -79,3 +152,23 @@ async def get_intelligent_device_analysis(device_mac: str) -> dict[str, object]:
         "reconstruction_score": result.reconstruction_score,
         "reason": result.reason,
     }
+
+
+@router.post("/score", response_model=HealthScoreApiResponse)
+async def score_health_snapshot(payload: HealthScoreRequest):
+    try:
+        result = get_structured_health_score_service().score(payload)
+        return build_success_response(result)
+    except ServiceError as exc:
+        error = build_error_response(exc.code, exc.message, exc.details)
+        return JSONResponse(status_code=exc.status_code, content=jsonable_encoder(error))
+
+
+@router.post("/warning/check", response_model=WarningCheckApiResponse)
+async def check_health_warning(payload: WarningCheckRequest):
+    try:
+        result = get_warning_evaluation_service().check(payload)
+        return build_success_response(result)
+    except ServiceError as exc:
+        error = build_error_response(exc.code, exc.message, exc.details)
+        return JSONResponse(status_code=exc.status_code, content=jsonable_encoder(error))

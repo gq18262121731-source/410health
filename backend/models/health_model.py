@@ -17,7 +17,7 @@ class HealthSample(BaseModel):
     device_mac: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     heart_rate: int = Field(ge=0, le=240)
-    temperature: float = Field(ge=30.0, le=45.0)
+    temperature: float = Field(ge=0.0, le=45.0)
     blood_oxygen: int = Field(ge=0, le=100)
     blood_pressure: str | None = None
     battery: int = Field(default=0, ge=0, le=100)
@@ -28,6 +28,8 @@ class HealthSample(BaseModel):
     surface_temperature: float | None = None
     steps: int | None = None
     packet_type: str | None = None
+    sos_value: int | None = None
+    sos_trigger: str | None = None
     raw_packet_a: str | None = None
     raw_packet_b: str | None = None
     anomaly_score: float | None = None
@@ -39,11 +41,14 @@ class HealthSample(BaseModel):
         return value.upper()
 
     @property
-    def blood_pressure_pair(self) -> tuple[int, int] | None:
+    def blood_pressure_pair(self) -> tuple[int, int]:
         if not self.blood_pressure:
-            return None
-        systolic, diastolic = self.blood_pressure.split("/")
-        return int(systolic), int(diastolic)
+            return 120, 80
+        try:
+            systolic, diastolic = self.blood_pressure.split("/", maxsplit=1)
+            return int(systolic), int(diastolic)
+        except (TypeError, ValueError):
+            return 120, 80
 
 
 class HealthTrendPoint(BaseModel):
@@ -51,6 +56,8 @@ class HealthTrendPoint(BaseModel):
     heart_rate: int
     temperature: float
     blood_oxygen: int
+    blood_pressure: str | None = None
+    steps: int | None = None
     health_score: int | None = None
 
 

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import type { AlarmRecord } from "../api/client";
 
 defineProps<{ alarms: AlarmRecord[] }>();
@@ -26,11 +26,12 @@ function alarmLabel(level: number) {
   <section class="panel alarm-panel">
     <div class="panel-head">
       <div>
-        <h2>优先级告警</h2>
-        <p class="panel-subtitle">按优先级汇总实时告警，帮助值守人员优先处理 SOS 和严重异常。</p>
+        <h2>活动告警</h2>
+        <p class="panel-subtitle">按优先级展示当前仍需跟进的告警，帮助社区值守人员快速完成分诊、联系与闭环。</p>
       </div>
-      <span>{{ alarms.length }} 条活动告警</span>
+      <span>{{ alarms.length }} 条</span>
     </div>
+
     <div class="alarm-list">
       <article
         v-for="alarm in alarms"
@@ -47,11 +48,11 @@ function alarmLabel(level: number) {
           <small>{{ new Date(alarm.created_at).toLocaleString("zh-CN", { hour12: false }) }}</small>
         </div>
         <div class="alarm-actions">
-          <span>等级 {{ alarm.alarm_level }}</span>
-          <button @click="$emit('ack', alarm.id)">处置完成</button>
+          <span>优先级 {{ alarm.alarm_level }}</span>
+          <button @click="$emit('ack', alarm.id)">标记已处理</button>
         </div>
       </article>
-      <p v-if="!alarms.length" class="empty-copy">当前没有活动告警，系统处于平稳监测状态。</p>
+      <p v-if="!alarms.length" class="empty-copy">当前没有活动告警，系统运行状态平稳。</p>
     </div>
   </section>
 </template>

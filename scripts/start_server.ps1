@@ -1,6 +1,6 @@
 param(
     [string]$CondaEnv = 'helth',
-    [string]$ListenHost = '127.0.0.1',
+    [string]$ListenHost = '0.0.0.0',
     [int]$Port = 8000,
     [switch]$Reload
 )
@@ -14,7 +14,6 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 $args = @('-m', 'uvicorn', 'backend.main:app', '--host', $ListenHost, '--port', "$Port")
 if ($Reload) {
-    Write-Warning 'The project lives in OneDrive. Use --reload only when you really need hot reloading.'
     $args += '--reload'
 }
 

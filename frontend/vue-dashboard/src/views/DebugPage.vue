@@ -57,7 +57,7 @@ watch(
     >
       <template #actions>
         <button type="button" class="ghost-btn" @click="refreshDebugData">刷新数据</button>
-        <button v-if="canGoCommunity" type="button" class="ghost-btn" @click="emit('navigate', 'community')">返回社区总览</button>
+        <button v-if="canGoCommunity" type="button" class="ghost-btn" @click="emit('navigate', 'overview')">返回社区总览</button>
       </template>
     </PageHeader>
 

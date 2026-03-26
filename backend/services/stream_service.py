@@ -74,6 +74,7 @@ class StreamService:
                 heart_rate=sample.heart_rate,
                 temperature=sample.temperature,
                 blood_oxygen=sample.blood_oxygen,
+                blood_pressure=sample.blood_pressure,
                 health_score=sample.health_score,
             )
             for sample in values

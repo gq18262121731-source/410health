@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 import sqlite3
 from threading import RLock
@@ -12,7 +13,14 @@ from backend.models.device_bind_model import (
     DeviceRebindRequest,
     DeviceUnbindRequest,
 )
-from backend.models.device_model import DeviceBindStatus, DeviceRecord, DeviceRegisterRequest, DeviceStatus
+from backend.models.device_model import (
+    DeviceActivationState,
+    DeviceBindStatus,
+    DeviceIngestMode,
+    DeviceRecord,
+    DeviceRegisterRequest,
+    DeviceStatus,
+)
 from backend.models.user_model import UserRole
 from backend.services.user_service import UserService
 
@@ -23,6 +31,7 @@ class DeviceService:
     def __init__(self, user_service: UserService | None = None, *, database_url: str | None = None) -> None:
         self._devices: OrderedDict[str, DeviceRecord] = OrderedDict()
         self._bind_logs: list[DeviceBindLogRecord] = []
+        self._active_serial_target_mac: str | None = None
         self._user_service = user_service
         self._database_path = self._resolve_sqlite_path(database_url)
         self._lock = RLock()
@@ -45,6 +54,35 @@ class DeviceService:
         with self._lock:
             return self._devices.get(mac_address.upper())
 
+    def get_active_serial_target(self) -> DeviceRecord | None:
+        with self._lock:
+            if not self._active_serial_target_mac:
+                return None
+            return self._devices.get(self._active_serial_target_mac)
+
+    def get_active_serial_target_mac(self) -> str | None:
+        with self._lock:
+            return self._active_serial_target_mac
+
+    def refresh_active_serial_target(self) -> DeviceRecord | None:
+        with self._lock:
+            return self._refresh_active_serial_target_locked()
+
+    def set_active_serial_target(self, mac_address: str) -> tuple[DeviceRecord, str | None]:
+        with self._lock:
+            device = self.get_device(mac_address)
+            if device is None:
+                raise ValueError("DEVICE_NOT_FOUND")
+            if device.ingest_mode != DeviceIngestMode.SERIAL:
+                raise ValueError("DEVICE_NOT_SERIAL")
+            if device.bind_status == DeviceBindStatus.DISABLED:
+                raise ValueError("DEVICE_DISABLED")
+            previous_target_mac = self._active_serial_target_mac
+            target = self._set_active_serial_target_locked(device.mac_address)
+            if target is None:
+                raise ValueError("DEVICE_NOT_SERIAL")
+            return target, previous_target_mac
+
     def register_device(self, payload: DeviceRegisterRequest, *, operator_id: str | None = None) -> DeviceRecord:
         with self._lock:
             existing = self.get_device(payload.mac_address)
@@ -53,6 +91,13 @@ class DeviceService:
             device_name = payload.device_name.strip() or "T10-WATCH"
             if payload.user_id:
                 self._validate_binding_target(payload.user_id)
+                if payload.ingest_mode == DeviceIngestMode.SERIAL:
+                    self._detach_conflicting_mock_devices(
+                        user_id=payload.user_id,
+                        device_name=device_name,
+                        operator_id=operator_id,
+                        reason="serial_device_override",
+                    )
                 self._ensure_unique_model_per_target_user(payload.user_id, device_name)
                 bind_status = DeviceBindStatus.BOUND
                 user_id = payload.user_id
@@ -62,12 +107,19 @@ class DeviceService:
             record = DeviceRecord(
                 mac_address=payload.mac_address,
                 device_name=device_name,
+                model_code=payload.model_code,
+                ingest_mode=payload.ingest_mode,
+                service_uuid=payload.service_uuid,
+                device_uuid=payload.device_uuid,
                 user_id=user_id,
-                status=DeviceStatus.OFFLINE,
+                status=DeviceStatus.PENDING,
+                activation_state=DeviceActivationState.PENDING,
                 bind_status=bind_status,
             )
             self._devices[record.mac_address] = record
             self._upsert_device(record)
+            if record.ingest_mode == DeviceIngestMode.SERIAL:
+                self._set_active_serial_target_locked(record.mac_address)
             if payload.user_id:
                 log = DeviceBindLogRecord(
                     device_id=record.id,
@@ -80,12 +132,22 @@ class DeviceService:
                 self._insert_bind_log(log)
             return self._devices[record.mac_address]
 
-    def ensure_device(self, mac_address: str, device_name: str = "T10-WATCH") -> DeviceRecord:
+    def ensure_device(
+        self,
+        mac_address: str,
+        device_name: str = "T10-WATCH",
+        *,
+        ingest_mode: DeviceIngestMode = DeviceIngestMode.SERIAL,
+    ) -> DeviceRecord:
         with self._lock:
             existing = self.get_device(mac_address)
             if existing:
                 return existing
-            request = DeviceRegisterRequest(mac_address=mac_address, device_name=device_name)
+            request = DeviceRegisterRequest(
+                mac_address=mac_address,
+                device_name=device_name,
+                ingest_mode=ingest_mode,
+            )
             return self.register_device(request)
 
     def update_status(self, mac_address: str, status: DeviceStatus) -> DeviceRecord | None:
@@ -93,8 +155,35 @@ class DeviceService:
             device = self.get_device(mac_address)
             if not device:
                 return None
-            updated = device.model_copy(update={"status": status})
+            activation_state = device.activation_state
+            if status in {DeviceStatus.ONLINE, DeviceStatus.WARNING}:
+                activation_state = DeviceActivationState.ACTIVE
+            updated = device.model_copy(update={"status": status, "activation_state": activation_state})
             self._devices[mac_address.upper()] = updated
+            self._upsert_device(updated)
+            return updated
+
+    def mark_seen(
+        self,
+        mac_address: str,
+        *,
+        seen_at: datetime,
+        packet_type: str | None,
+        status: DeviceStatus = DeviceStatus.ONLINE,
+    ) -> DeviceRecord | None:
+        with self._lock:
+            device = self.get_device(mac_address)
+            if not device:
+                return None
+            updated = device.model_copy(
+                update={
+                    "status": status,
+                    "activation_state": DeviceActivationState.ACTIVE,
+                    "last_seen_at": seen_at,
+                    "last_packet_type": packet_type or device.last_packet_type,
+                }
+            )
+            self._devices[updated.mac_address] = updated
             self._upsert_device(updated)
             return updated
 
@@ -108,6 +197,14 @@ class DeviceService:
                 raise ValueError("DEVICE_ALREADY_BOUND")
             if device.user_id == payload.target_user_id and device.bind_status == DeviceBindStatus.BOUND:
                 raise ValueError("DEVICE_ALREADY_BOUND_TO_TARGET")
+            if device.ingest_mode == DeviceIngestMode.SERIAL:
+                self._detach_conflicting_mock_devices(
+                    user_id=payload.target_user_id,
+                    device_name=device.device_name,
+                    operator_id=payload.operator_id,
+                    reason="serial_device_override",
+                    current_device_id=device.id,
+                )
             self._ensure_unique_model_per_target_user(
                 payload.target_user_id,
                 device.device_name,
@@ -116,6 +213,8 @@ class DeviceService:
             updated = device.model_copy(update={"user_id": payload.target_user_id, "bind_status": DeviceBindStatus.BOUND})
             self._devices[updated.mac_address] = updated
             self._upsert_device(updated)
+            if updated.ingest_mode == DeviceIngestMode.SERIAL:
+                self._refresh_active_serial_target_locked()
             log = DeviceBindLogRecord(
                 device_id=updated.id,
                 old_user_id=device.user_id,
@@ -137,6 +236,8 @@ class DeviceService:
             updated = device.model_copy(update={"user_id": None, "bind_status": DeviceBindStatus.UNBOUND})
             self._devices[updated.mac_address] = updated
             self._upsert_device(updated)
+            if updated.ingest_mode == DeviceIngestMode.SERIAL:
+                self._refresh_active_serial_target_locked()
             log = DeviceBindLogRecord(
                 device_id=updated.id,
                 old_user_id=device.user_id,
@@ -159,6 +260,14 @@ class DeviceService:
             self._validate_binding_target(payload.new_user_id)
             if device.user_id == payload.new_user_id:
                 raise ValueError("DEVICE_ALREADY_BOUND_TO_TARGET")
+            if device.ingest_mode == DeviceIngestMode.SERIAL:
+                self._detach_conflicting_mock_devices(
+                    user_id=payload.new_user_id,
+                    device_name=device.device_name,
+                    operator_id=payload.operator_id,
+                    reason="serial_device_override",
+                    current_device_id=device.id,
+                )
             self._ensure_unique_model_per_target_user(
                 payload.new_user_id,
                 device.device_name,
@@ -167,6 +276,8 @@ class DeviceService:
             updated = device.model_copy(update={"user_id": payload.new_user_id, "bind_status": DeviceBindStatus.BOUND})
             self._devices[updated.mac_address] = updated
             self._upsert_device(updated)
+            if updated.ingest_mode == DeviceIngestMode.SERIAL:
+                self._refresh_active_serial_target_locked()
             log = DeviceBindLogRecord(
                 device_id=updated.id,
                 old_user_id=device.user_id,
@@ -193,16 +304,20 @@ class DeviceService:
             device = self.get_device(mac_address)
             if device is None:
                 raise ValueError("DEVICE_NOT_FOUND")
+            active_target_deleted = device.mac_address == self._active_serial_target_mac
             self._devices.pop(device.mac_address, None)
             self._bind_logs = [log for log in self._bind_logs if log.device_id != device.id]
             self._delete_device(device.id)
             self._delete_bind_logs(device.id)
+            if active_target_deleted:
+                self._refresh_active_serial_target_locked()
             return device
 
     def reset(self) -> None:
         with self._lock:
             self._devices.clear()
             self._bind_logs.clear()
+            self._active_serial_target_mac = None
             with self._connection() as connection:
                 connection.execute("DELETE FROM device_bind_logs")
                 connection.execute("DELETE FROM devices")
@@ -233,6 +348,41 @@ class DeviceService:
             if self._normalize_device_name(device.device_name) == normalized_name:
                 raise ValueError("TARGET_USER_ALREADY_HAS_DEVICE_OF_SAME_MODEL")
 
+    def _detach_conflicting_mock_devices(
+        self,
+        *,
+        user_id: str,
+        device_name: str,
+        operator_id: str | None,
+        reason: str,
+        current_device_id: str | None = None,
+    ) -> None:
+        normalized_name = self._normalize_device_name(device_name)
+        for device in list(self._devices.values()):
+            if device.user_id != user_id or device.bind_status != DeviceBindStatus.BOUND:
+                continue
+            if current_device_id and device.id == current_device_id:
+                continue
+            if device.ingest_mode != DeviceIngestMode.MOCK:
+                continue
+            if self._normalize_device_name(device.device_name) != normalized_name:
+                continue
+            updated = device.model_copy(update={"user_id": None, "bind_status": DeviceBindStatus.UNBOUND})
+            self._devices[updated.mac_address] = updated
+            self._upsert_device(updated)
+            if updated.ingest_mode == DeviceIngestMode.SERIAL:
+                self._refresh_active_serial_target_locked()
+            log = DeviceBindLogRecord(
+                device_id=updated.id,
+                old_user_id=device.user_id,
+                new_user_id=None,
+                action_type="unbind",
+                operator_id=operator_id,
+                reason=reason,
+            )
+            self._bind_logs.append(log)
+            self._insert_bind_log(log)
+
     @staticmethod
     def _normalize_device_name(device_name: str) -> str:
         return device_name.strip().upper()
@@ -245,12 +395,32 @@ class DeviceService:
                     id TEXT PRIMARY KEY,
                     mac_address TEXT NOT NULL UNIQUE,
                     device_name TEXT NOT NULL,
+                    model_code TEXT NOT NULL DEFAULT 't10_v3',
+                    ingest_mode TEXT NOT NULL DEFAULT 'serial',
+                    service_uuid TEXT NOT NULL DEFAULT '',
+                    device_uuid TEXT NOT NULL DEFAULT '',
                     user_id TEXT,
                     status TEXT NOT NULL,
+                    activation_state TEXT NOT NULL DEFAULT 'pending',
                     bind_status TEXT NOT NULL,
+                    last_seen_at TEXT,
+                    last_packet_type TEXT,
                     created_at TEXT NOT NULL
                 )
                 """
+            )
+            self._ensure_table_columns(
+                connection,
+                "devices",
+                {
+                    "model_code": "TEXT NOT NULL DEFAULT 't10_v3'",
+                    "ingest_mode": "TEXT NOT NULL DEFAULT 'serial'",
+                    "service_uuid": "TEXT NOT NULL DEFAULT ''",
+                    "device_uuid": "TEXT NOT NULL DEFAULT ''",
+                    "activation_state": "TEXT NOT NULL DEFAULT 'pending'",
+                    "last_seen_at": "TEXT",
+                    "last_packet_type": "TEXT",
+                },
             )
             connection.execute(
                 """
@@ -272,7 +442,21 @@ class DeviceService:
         with self._lock, self._connection() as connection:
             device_rows = connection.execute(
                 """
-                SELECT id, mac_address, device_name, user_id, status, bind_status, created_at
+                SELECT
+                    id,
+                    mac_address,
+                    device_name,
+                    model_code,
+                    ingest_mode,
+                    service_uuid,
+                    device_uuid,
+                    user_id,
+                    status,
+                    activation_state,
+                    bind_status,
+                    last_seen_at,
+                    last_packet_type,
+                    created_at
                 FROM devices
                 ORDER BY created_at ASC
                 """
@@ -284,9 +468,16 @@ class DeviceService:
                         id=row["id"],
                         mac_address=row["mac_address"],
                         device_name=row["device_name"],
+                        model_code=row["model_code"] or "t10_v3",
+                        ingest_mode=row["ingest_mode"] or "serial",
+                        service_uuid=row["service_uuid"] or "",
+                        device_uuid=row["device_uuid"] or "",
                         user_id=row["user_id"],
                         status=DeviceStatus(row["status"]),
+                        activation_state=DeviceActivationState(row["activation_state"] or "pending"),
                         bind_status=DeviceBindStatus(row["bind_status"]),
+                        last_seen_at=row["last_seen_at"],
+                        last_packet_type=row["last_packet_type"],
                         created_at=row["created_at"],
                     ),
                 )
@@ -313,28 +504,90 @@ class DeviceService:
                 )
                 for row in bind_rows
             ]
+            self._refresh_active_serial_target_locked()
+
+    def _set_active_serial_target_locked(self, mac_address: str | None) -> DeviceRecord | None:
+        if not mac_address:
+            self._active_serial_target_mac = None
+            return None
+        device = self._devices.get(mac_address.upper())
+        if (
+            device is None
+            or device.ingest_mode != DeviceIngestMode.SERIAL
+            or device.bind_status == DeviceBindStatus.DISABLED
+        ):
+            self._active_serial_target_mac = None
+            return None
+        self._active_serial_target_mac = device.mac_address
+        return device
+
+    def _refresh_active_serial_target_locked(self) -> DeviceRecord | None:
+        candidates = sorted(
+            (
+                device
+                for device in self._devices.values()
+                if device.ingest_mode == DeviceIngestMode.SERIAL
+                and device.bind_status != DeviceBindStatus.DISABLED
+            ),
+            key=lambda item: (item.created_at, item.mac_address),
+        )
+        if not candidates:
+            self._active_serial_target_mac = None
+            return None
+        target = candidates[-1]
+        self._active_serial_target_mac = target.mac_address
+        return target
 
     def _upsert_device(self, device: DeviceRecord) -> None:
         with self._connection() as connection:
             connection.execute(
                 """
-                INSERT INTO devices (id, mac_address, device_name, user_id, status, bind_status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO devices (
+                    id,
+                    mac_address,
+                    device_name,
+                    model_code,
+                    ingest_mode,
+                    service_uuid,
+                    device_uuid,
+                    user_id,
+                    status,
+                    activation_state,
+                    bind_status,
+                    last_seen_at,
+                    last_packet_type,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(mac_address) DO UPDATE SET
                     id = excluded.id,
                     device_name = excluded.device_name,
+                    model_code = excluded.model_code,
+                    ingest_mode = excluded.ingest_mode,
+                    service_uuid = excluded.service_uuid,
+                    device_uuid = excluded.device_uuid,
                     user_id = excluded.user_id,
                     status = excluded.status,
+                    activation_state = excluded.activation_state,
                     bind_status = excluded.bind_status,
+                    last_seen_at = excluded.last_seen_at,
+                    last_packet_type = excluded.last_packet_type,
                     created_at = excluded.created_at
                 """,
                 (
                     device.id,
                     device.mac_address,
                     device.device_name,
+                    device.model_code,
+                    device.ingest_mode.value,
+                    device.service_uuid,
+                    device.device_uuid,
                     device.user_id,
                     device.status.value,
+                    device.activation_state.value,
                     device.bind_status.value,
+                    device.last_seen_at.isoformat() if device.last_seen_at else None,
+                    device.last_packet_type,
                     device.created_at.isoformat(),
                 ),
             )
@@ -370,6 +623,18 @@ class DeviceService:
         with self._connection() as connection:
             connection.execute("DELETE FROM device_bind_logs WHERE device_id = ?", (device_id,))
             connection.commit()
+
+    @staticmethod
+    def _ensure_table_columns(connection: sqlite3.Connection, table_name: str, columns: dict[str, str]) -> None:
+        existing_columns = {
+            row["name"]
+            for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        for column_name, definition in columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+        connection.commit()
 
     @contextmanager
     def _connection(self):

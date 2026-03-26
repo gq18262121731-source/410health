@@ -146,6 +146,46 @@ def _sanitize_risk_distribution(value: Any) -> dict[str, int]:
     return cleaned
 
 
+def _sanitize_attachment_payload(value: Any) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): item
+        for key, item in value.items()
+        if isinstance(key, str)
+    }
+
+
+def sanitize_attachments(value: Any) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+
+    items: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        attachment_id = sanitize_text(raw.get("id")) or sanitize_text(raw.get("title"))
+        render_type = sanitize_text(raw.get("render_type"))
+        title = sanitize_text(raw.get("title"))
+        if not attachment_id or not render_type or not title:
+            continue
+        if attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        items.append(
+            {
+                "id": attachment_id,
+                "title": title,
+                "summary": sanitize_text(raw.get("summary")),
+                "render_type": render_type,
+                "render_payload": _sanitize_attachment_payload(raw.get("render_payload")),
+                "source_tool": sanitize_text(raw.get("source_tool")),
+            }
+        )
+    return items
+
+
 def normalize_analysis(payload: Any) -> dict[str, object]:
     if not isinstance(payload, dict):
         return {
@@ -205,9 +245,11 @@ def sanitize_agent_response(payload: dict[str, Any]) -> dict[str, object]:
         answer = "当前没有可展示的智能体结论。"
 
     return {
+        "scope": sanitize_text(payload.get("scope")) or "community",
         "answer": answer,
         "analysis": analysis,
         "references": sanitize_list(payload.get("references")),
+        "attachments": sanitize_attachments(payload.get("attachments")),
     }
 
 

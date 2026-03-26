@@ -91,6 +91,96 @@ class UserService:
         )
         return self._to_response(record)
 
+    def seed_elder(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        phone: str,
+        password: str,
+        age: int,
+        apartment: str,
+        community_id: str = "community-haitang",
+    ) -> UserRecord:
+        record = self._seed_user(
+            user_id=user_id,
+            name=name,
+            role=UserRole.ELDER,
+            phone=phone,
+            password=password,
+        )
+        self._elder_profiles[record.id] = ElderDirectoryProfile(
+            user_id=record.id,
+            age=age,
+            apartment=apartment.strip(),
+            community_id=community_id.strip(),
+        )
+        return record
+
+    def seed_family(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        phone: str,
+        password: str,
+        relationship: str,
+        login_username: str,
+        community_id: str = "community-haitang",
+    ) -> UserRecord:
+        normalized_login = self._normalize_login_username(login_username)
+        self._ensure_seed_login_username_available(normalized_login, user_id)
+        record = self._seed_user(
+            user_id=user_id,
+            name=name,
+            role=UserRole.FAMILY,
+            phone=phone,
+            password=password,
+        )
+        self._family_profiles[record.id] = FamilyDirectoryProfile(
+            user_id=record.id,
+            relationship=relationship.strip(),
+            community_id=community_id.strip(),
+            login_username=normalized_login,
+        )
+        self._sync_sequence_from_seeded_username(
+            prefix="family",
+            username=normalized_login,
+            sequence_attr="_family_sequence",
+        )
+        return record
+
+    def seed_community(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        phone: str,
+        password: str,
+        login_username: str,
+        community_id: str = "community-haitang",
+    ) -> UserRecord:
+        normalized_login = self._normalize_login_username(login_username)
+        self._ensure_seed_login_username_available(normalized_login, user_id)
+        record = self._seed_user(
+            user_id=user_id,
+            name=name,
+            role=UserRole.COMMUNITY,
+            phone=phone,
+            password=password,
+        )
+        self._community_profiles[record.id] = CommunityStaffProfile(
+            user_id=record.id,
+            community_id=community_id.strip(),
+            login_username=normalized_login,
+        )
+        self._sync_sequence_from_seeded_username(
+            prefix="community",
+            username=normalized_login,
+            sequence_attr="_community_sequence",
+        )
+        return record
+
     def get_user(self, user_id: str) -> UserRecord | None:
         return self._users.get(user_id)
 
@@ -103,6 +193,9 @@ class UserService:
         if role is None:
             return users
         return [user for user in users if user.role == role]
+
+    def list_seeded_users(self, role: UserRole | None = None) -> list[UserRecord]:
+        return [user for user in self.list_users(role=role) if user.is_seeded]
 
     def get_elder_profile(self, user_id: str) -> ElderDirectoryProfile | None:
         return self._elder_profiles.get(user_id)
@@ -171,6 +264,57 @@ class UserService:
     def _login_username_taken(self, username: str) -> bool:
         normalized = self._normalize_login_username(username)
         return self.get_user_by_login_username(normalized) is not None
+
+    def _seed_user(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        role: UserRole,
+        phone: str,
+        password: str,
+    ) -> UserRecord:
+        normalized_phone = phone.strip()
+        self._ensure_seed_phone_available(normalized_phone, user_id)
+        existing = self._users.get(user_id)
+        if existing is not None:
+            record = existing.model_copy(
+                update={
+                    "name": name.strip(),
+                    "role": role,
+                    "phone": normalized_phone,
+                    "password_hash": self._hash_password(password),
+                    "is_seeded": True,
+                }
+            )
+        else:
+            record = UserRecord(
+                id=user_id,
+                name=name.strip(),
+                role=role,
+                phone=normalized_phone,
+                password_hash=self._hash_password(password),
+                is_seeded=True,
+            )
+        self._users[record.id] = record
+        return record
+
+    def _ensure_seed_phone_available(self, phone: str, user_id: str) -> None:
+        existing = self.get_user_by_phone(phone)
+        if existing and existing.id != user_id:
+            raise ValueError("PHONE_ALREADY_EXISTS")
+
+    def _ensure_seed_login_username_available(self, username: str, user_id: str) -> None:
+        existing = self.get_user_by_login_username(username)
+        if existing and existing.id != user_id:
+            raise ValueError("LOGIN_USERNAME_ALREADY_EXISTS")
+
+    def _sync_sequence_from_seeded_username(self, *, prefix: str, username: str, sequence_attr: str) -> None:
+        match = re.fullmatch(rf"{re.escape(prefix)}(\d+)", username)
+        if not match:
+            return
+        current = getattr(self, sequence_attr)
+        setattr(self, sequence_attr, max(current, int(match.group(1))))
 
     @staticmethod
     def _normalize_login_username(value: str) -> str:

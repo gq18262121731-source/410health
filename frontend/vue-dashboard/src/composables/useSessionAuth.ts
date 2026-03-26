@@ -1,7 +1,11 @@
-import { computed, ref } from "vue";
+﻿import { computed, ref } from "vue";
 import { ApiError, api, type SessionUser } from "../api/client";
 
-const SESSION_KEY = "ai_health_demo_session_token";
+export const SESSION_KEY = "ai_health_demo_session_token";
+
+export function getStoredSessionToken() {
+  return localStorage.getItem(SESSION_KEY) ?? "";
+}
 
 function formatAuthError(error: unknown, fallback: string) {
   if (error instanceof ApiError && error.detail) return error.detail;
@@ -49,7 +53,7 @@ export function useSessionAuth() {
   }
 
   async function restoreSession() {
-    const token = localStorage.getItem(SESSION_KEY) ?? "";
+    const token = getStoredSessionToken();
     if (!token) return;
 
     const user = await api.me(token).catch(() => null);
