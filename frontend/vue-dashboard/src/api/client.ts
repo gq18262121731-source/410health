@@ -85,6 +85,10 @@ export interface AgentResponse {
   scope?: AnalysisScope | "device";
   window?: WindowKind;
   subject?: Record<string, unknown> | null;
+  mode?: string;
+  selected_provider?: string;
+  selected_model?: string;
+  degraded?: string[];
 }
 
 export type CommunityWorkflow =

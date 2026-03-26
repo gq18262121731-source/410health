@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Header, Query
 
-from backend.dependencies import get_alarm_service, get_health_data_repository, get_websocket_manager
+from backend.dependencies import (
+    get_alarm_service,
+    get_care_service,
+    get_health_data_repository,
+    get_websocket_manager,
+    require_session_user,
+)
 from backend.models.alarm_model import AlarmQueueItem, AlarmRecord, MobilePushRecord
+from backend.models.user_model import UserRole
 
 
 router = APIRouter(prefix="/alarms", tags=["alarms"])
@@ -28,8 +35,44 @@ async def get_alarm_queue_snapshot() -> dict[str, object]:
 
 
 @router.get("/mobile-pushes", response_model=list[MobilePushRecord])
-async def list_mobile_pushes(limit: int = Query(default=20, ge=1, le=100)) -> list[MobilePushRecord]:
-    return get_alarm_service().list_mobile_pushes(limit=limit)
+async def list_mobile_pushes(
+    limit: int = Query(default=20, ge=1, le=100),
+    authorization: str | None = Header(default=None),
+) -> list[MobilePushRecord]:
+    pushes = get_alarm_service().list_mobile_pushes(limit=limit)
+    if not authorization:
+        return pushes
+
+    try:
+        user = require_session_user(authorization)
+    except ValueError:
+        return pushes
+
+    if user.role in {UserRole.COMMUNITY, UserRole.ADMIN}:
+        return pushes
+
+    if user.role == UserRole.FAMILY:
+        family_id = user.family_id or user.id
+        directory = get_care_service().get_family_directory(family_id)
+        allowed_macs = {
+            mac.upper()
+            for elder in directory.elders
+            for mac in (elder.device_macs or ([elder.device_mac] if elder.device_mac else []))
+            if mac
+        }
+        return [record for record in pushes if record.device_mac.upper() in allowed_macs]
+
+    if user.role == UserRole.ELDER:
+        directory = get_care_service().get_directory()
+        elder = next((item for item in directory.elders if item.id == user.id), None)
+        allowed_macs = {
+            mac.upper()
+            for mac in ((elder.device_macs if elder else []) or ([elder.device_mac] if elder and elder.device_mac else []))
+            if mac
+        }
+        return [record for record in pushes if record.device_mac.upper() in allowed_macs]
+
+    return pushes
 
 
 @router.post("/{alarm_id}/acknowledge", response_model=AlarmRecord)

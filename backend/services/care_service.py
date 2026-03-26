@@ -290,7 +290,17 @@ class CareService:
         return None
 
     def _build_demo_directory(self, devices: list[DeviceRecord]) -> CareDirectory:
-        sorted_devices = sorted(devices, key=lambda item: item.mac_address)
+        # mock 设备排前面，serial 设备排后面，各自内部按 MAC 排序
+        # 避免真实手环插入导致人名偏移
+        mock_devices = sorted(
+            [d for d in devices if str(getattr(d, "ingest_mode", "")) in ("mock", "DeviceIngestMode.MOCK", "")],
+            key=lambda item: item.mac_address,
+        )
+        serial_devices = sorted(
+            [d for d in devices if str(getattr(d, "ingest_mode", "")) in ("serial", "DeviceIngestMode.SERIAL")],
+            key=lambda item: item.mac_address,
+        )
+        sorted_devices = serial_devices + mock_devices
         community = self._community_profile()
         elders: list[ElderProfile] = []
         family_map: dict[str, FamilyProfile] = {}

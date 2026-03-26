@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+logger = logging.getLogger(__name__)
 _serial_logger = logging.getLogger("serial_runtime")
 
 from backend.api.alarm_api import router as alarm_router
@@ -20,7 +23,9 @@ from backend.api.relation_api import router as relation_router
 from backend.api.user_api import router as user_router
 from backend.api.voice_api import router as voice_router
 from backend.config import get_settings
+from backend.models.device_model import DeviceIngestMode
 from backend.dependencies import (
+    ensure_demo_overlay_history_window,
     get_alarm_service,
     get_data_generator,
     get_demo_data_status,
@@ -38,10 +43,32 @@ from iot.serial_reader import SerialGatewayReader
 
 settings = get_settings()
 
+_active_mock_watchers: dict[str, int] = defaultdict(int)
+_active_mock_lock = asyncio.Lock()
+
+
+async def _update_mock_watcher(device_mac: str, delta: int) -> None:
+    normalized = device_mac.strip().upper()
+    if not normalized:
+        return
+    async with _active_mock_lock:
+        current = _active_mock_watchers.get(normalized, 0) + delta
+        if current <= 0:
+            _active_mock_watchers.pop(normalized, None)
+        else:
+            _active_mock_watchers[normalized] = current
+
+
+async def _list_active_mock_macs() -> list[str]:
+    async with _active_mock_lock:
+        return [mac for mac, count in _active_mock_watchers.items() if count > 0]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    # 启动即保证虚拟设备至少有 24h 可分析历史
+    ensure_demo_overlay_history_window(hours=24, step_minutes=10)
     tasks: list[asyncio.Task] = []
     if settings.mock_runtime_enabled:
         tasks.append(asyncio.create_task(_mock_stream_loop()))
@@ -71,7 +98,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -178,12 +205,20 @@ async def refresh_demo_data() -> dict[str, object]:
 @app.websocket("/ws/health/{device_mac}")
 async def health_stream(device_mac: str, websocket: WebSocket) -> None:
     manager = get_websocket_manager()
-    await manager.connect_health(device_mac, websocket)
+    normalized_mac = device_mac.strip().upper()
+    device = get_device_service().get_device(normalized_mac)
+    is_mock_device = bool(device and device.ingest_mode == DeviceIngestMode.MOCK)
+    await manager.connect_health(normalized_mac, websocket)
+    if is_mock_device:
+        await _update_mock_watcher(normalized_mac, 1)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        await manager.disconnect_health(device_mac, websocket)
+        await manager.disconnect_health(normalized_mac, websocket)
+    finally:
+        if is_mock_device:
+            await _update_mock_watcher(normalized_mac, -1)
 
 
 @app.websocket("/ws/alarms")
@@ -207,14 +242,30 @@ async def alarm_stream(websocket: WebSocket) -> None:
 async def _mock_stream_loop() -> None:
     generator = get_data_generator()
     while True:
-        sample = generator.next_sample()
-        await ingest_sample(sample)
+        now = datetime.now(timezone.utc)
+        for persona in generator.personas:
+            sample = generator.sample_for_device(persona.mac_address, now=now)
+            await ingest_sample(sample)
         await asyncio.sleep(settings.mock_push_interval_seconds)
 
 
 async def _demo_overlay_stream_loop() -> None:
+    last_history_ensure = 0.0
     while True:
+        active_mock_macs = await _list_active_mock_macs()
+        if active_mock_macs:
+            generator = get_data_generator()
+            now = datetime.now(timezone.utc)
+            for mac in active_mock_macs:
+                sample = generator.sample_for_device(mac, now=now)
+                await ingest_sample(sample)
+
         publish_next_demo_overlay_sample()
+        now_monotonic = asyncio.get_running_loop().time()
+        # 每小时补齐一次，保证数据库中始终有至少一天 mock 历史
+        if now_monotonic - last_history_ensure >= 3600:
+            ensure_demo_overlay_history_window(hours=24, step_minutes=10)
+            last_history_ensure = now_monotonic
         await asyncio.sleep(settings.mock_push_interval_seconds)
 
 

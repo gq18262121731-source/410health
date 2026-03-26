@@ -52,14 +52,18 @@ class AgentState(TypedDict, total=False):
     role: UserRole
     question: str
     workflow: str
+    window: str
     conversation_history: list[dict[str, str]]
     history_minutes: int
+    per_device_limit: int
     focus_device_mac: str
     target_device_mac: str
     target_device_macs: list[str]
+    subject_elder_id: str | None
     samples: list[HealthSample]
     community_samples: dict[str, list[HealthSample]]
     route_mode: str
+    include_report: bool
     network_online: bool
     selected_mode: str
     selected_provider: str
@@ -153,23 +157,65 @@ class HealthAgentService:
         per_device_limit: int = 240,
         device_macs: list[str] | None = None,
     ) -> dict[str, object]:
-        samples_by_device = device_samples or {}
+        target_device_macs = self._resolve_target_device_macs(
+            scope=scope,
+            device_macs=device_macs,
+            subject_elder_id=subject_elder_id,
+            focus_device_mac=focus_device_mac,
+        )
+        samples_by_device = self._hydrate_community_samples(
+            device_samples,
+            target_device_macs=target_device_macs,
+            history_minutes=history_minutes,
+            per_device_limit=per_device_limit,
+        )
+        primary_device_mac = target_device_macs[0] if target_device_macs else ""
         state = self._execute(
             {
                 "scope": scope,
                 "role": role,
                 "question": question,
                 "workflow": workflow,
+                "window": window,
                 "conversation_history": self._normalize_conversation_history(history),
                 "history_minutes": history_minutes,
+                "per_device_limit": per_device_limit,
                 "focus_device_mac": str(focus_device_mac or "").strip().upper(),
-                "target_device_macs": sorted(samples_by_device.keys()),
+                "target_device_mac": primary_device_mac,
+                "target_device_macs": target_device_macs or sorted(samples_by_device.keys()),
+                "subject_elder_id": subject_elder_id,
+                "samples": list(samples_by_device.get(primary_device_mac, [])) if primary_device_mac else [],
                 "community_samples": samples_by_device,
-                "route_mode": mode,
+                "route_mode": provider or mode,
                 "include_report": bool(include_report),
             }
         )
         return self._format_result(state)
+
+    def stream_analyze_device(
+        self,
+        *,
+        role: UserRole,
+        question: str,
+        samples: list[HealthSample],
+        mode: str = "local",
+    ) -> Iterator[dict[str, object]]:
+        session_id = str(uuid4())
+        initial_state: AgentState = {
+            "scope": "device",
+            "role": role,
+            "question": question,
+            "target_device_mac": samples[-1].device_mac if samples else "",
+            "samples": samples,
+            "route_mode": mode,
+        }
+        yield {
+            "type": "session.started",
+            "session_id": session_id,
+            "scope": "device",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        yield from self._stream_execute(initial_state, session_id=session_id)
 
     def stream_analyze_community(
         self,
@@ -190,19 +236,36 @@ class HealthAgentService:
         per_device_limit: int = 240,
         device_macs: list[str] | None = None,
     ) -> Iterator[dict[str, object]]:
-        samples_by_device = device_samples or {}
+        target_device_macs = self._resolve_target_device_macs(
+            scope=scope,
+            device_macs=device_macs,
+            subject_elder_id=subject_elder_id,
+            focus_device_mac=focus_device_mac,
+        )
+        samples_by_device = self._hydrate_community_samples(
+            device_samples,
+            target_device_macs=target_device_macs,
+            history_minutes=history_minutes,
+            per_device_limit=per_device_limit,
+        )
         session_id = str(uuid4())
+        primary_device_mac = target_device_macs[0] if target_device_macs else ""
         initial_state: AgentState = {
           "scope": scope,
           "role": role,
           "question": question,
           "workflow": workflow,
+          "window": window,
           "conversation_history": self._normalize_conversation_history(history),
           "history_minutes": history_minutes,
+          "per_device_limit": per_device_limit,
           "focus_device_mac": str(focus_device_mac or "").strip().upper(),
-          "target_device_macs": sorted(samples_by_device.keys()),
+          "target_device_mac": primary_device_mac,
+          "target_device_macs": target_device_macs or sorted(samples_by_device.keys()),
+          "subject_elder_id": subject_elder_id,
+          "samples": list(samples_by_device.get(primary_device_mac, [])) if primary_device_mac else [],
           "community_samples": samples_by_device,
-          "route_mode": mode,
+          "route_mode": provider or mode,
           "include_report": bool(include_report),
         }
         yield {
@@ -412,6 +475,80 @@ class HealthAgentService:
             normalized.append({"role": role, "content": content})
         return normalized[-8:]
 
+    @staticmethod
+    def _normalize_mac_list(device_macs: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for mac in device_macs or []:
+            value = str(mac or "").strip().upper()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        return normalized
+
+    def _resolve_target_device_macs(
+        self,
+        *,
+        scope: str,
+        device_macs: list[str] | None,
+        subject_elder_id: str | None,
+        focus_device_mac: str | None,
+    ) -> list[str]:
+        explicit = self._normalize_mac_list(device_macs)
+        if explicit:
+            return explicit
+
+        focus = str(focus_device_mac or "").strip().upper()
+        if scope != "elder":
+            return [focus] if focus else []
+
+        if self._context_assembler is not None and subject_elder_id:
+            try:
+                directory = self._context_assembler._care.get_directory()
+                elder = next(
+                    (
+                        item
+                        for item in directory.elders
+                        if str(getattr(item, "id", "")).strip() == str(subject_elder_id).strip()
+                    ),
+                    None,
+                )
+                if elder is not None:
+                    elder_device_macs = list(getattr(elder, "device_macs", [])) or (
+                        [getattr(elder, "device_mac", "")]
+                        if getattr(elder, "device_mac", "")
+                        else []
+                    )
+                    resolved = self._normalize_mac_list(elder_device_macs)
+                    if resolved:
+                        return resolved
+            except Exception:
+                pass
+
+        return [focus] if focus else []
+
+    def _hydrate_community_samples(
+        self,
+        device_samples: dict[str, list[HealthSample]] | None,
+        *,
+        target_device_macs: list[str],
+        history_minutes: int,
+        per_device_limit: int,
+    ) -> dict[str, list[HealthSample]]:
+        if device_samples:
+            return {mac.upper(): list(samples) for mac, samples in device_samples.items()}
+        if self._context_assembler is None:
+            return {}
+        try:
+            return self._context_assembler._stream.recent_by_devices(
+                target_device_macs or None,
+                minutes=max(30, int(history_minutes or 1440)),
+                per_device_limit=max(24, int(per_device_limit or 240)),
+            )
+        except Exception:
+            return {}
+
     def _stream_execute(self, initial_state: AgentState, *, session_id: str) -> Iterator[dict[str, object]]:
         state: AgentState = dict(initial_state)
         stages = [
@@ -497,11 +634,14 @@ class HealthAgentService:
         *,
         detail: str = "",
     ) -> dict[str, object]:
+        summary = detail or f"{label}{'进行中' if status == 'running' else '已完成'}"
         payload: dict[str, object] = {
             "type": "stage.changed",
             "stage": stage,
             "label": label,
             "status": status,
+            "group": "trace",
+            "summary": summary,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         if detail:
@@ -661,7 +801,7 @@ class HealthAgentService:
         if scope == "community":
             device_macs = list(state.get("target_device_macs", []))
             focus_device_mac = str(state.get("focus_device_mac", "")).strip().upper()
-            window = self._window_value_from_history(int(state.get("history_minutes", 1440) or 1440))
+            window = str(state.get("window") or self._window_value_from_history(int(state.get("history_minutes", 1440) or 1440)))
             calls = [
                 ToolInvocation(name="get_community_overview", request_id=str(uuid4()), operator_role=role, community_id=community_id),
                 ToolInvocation(name="get_active_alarms", request_id=str(uuid4()), operator_role=role, community_id=community_id, payload={"active_only": True}),
@@ -684,7 +824,7 @@ class HealthAgentService:
                         payload={"scope": "community", "window": window, "device_macs": device_macs},
                     )
                 )
-            if workflow in {"overview", "device_focus", "free_chat", "risk_ranking"}:
+            if workflow in {"overview", "device_focus", "free_chat", "risk_ranking", "community_report", "report_generation"}:
                 calls.append(
                     ToolInvocation(
                         name="build_chart_payloads",
@@ -694,7 +834,7 @@ class HealthAgentService:
                         payload={"window": window, "device_macs": device_macs},
                     )
                 )
-            if workflow in {"alert_digest", "free_chat"}:
+            if workflow in {"alert_digest", "free_chat", "community_report", "report_generation"}:
                 calls.append(
                     ToolInvocation(
                         name="query_alert_history",
@@ -750,15 +890,11 @@ class HealthAgentService:
 
     @staticmethod
     def _should_search(*, question: str, workflow: str) -> bool:
-        health_keywords = ("医学", "健康", "医生", "建议", "治疗", "预防", "症状", "饮食", "吃什么")
-        if any(kw in question.lower() for kw in health_keywords):
-            return True
-        if workflow in {"free_chat", "device_focus"} and any(
-            keyword in question.lower()
-            for keyword in ("搜索", "查找", "检索", "search", "政策", "指南", "天气", "空气", "周边", "假期")
-        ):
-            return True
-        return False
+        if workflow in {"community_report", "report_generation", "elder_report", "overview", "risk_ranking", "alert_digest"}:
+            return False
+        normalized_question = question.lower()
+        explicit_search_terms = ("搜索", "查找", "检索", "search", "政策", "指南", "天气", "空气", "周边", "假期", "网页", "新闻")
+        return workflow in {"free_chat", "device_focus"} and any(term in normalized_question for term in explicit_search_terms)
 
     def _serialize_tool_result(self, call: ToolInvocation, item: Any) -> dict[str, Any]:
         attachments = self._tool_result_attachments(call.name, item.data if isinstance(item.data, dict) else {})
@@ -1770,8 +1906,11 @@ class HealthAgentService:
 
     def _aggregate_node(self, state: AgentState) -> AgentState:
         attachments = self._collect_attachments(list(state.get("tool_results", [])))
+        context_bundle = dict(state.get("context_bundle", {}))
+        subject = context_bundle.get("elder_profile") if str(state.get("scope", "device")) == "elder" else context_bundle.get("community")
         final_payload = {
             "scope": str(state.get("scope", "device")),
+            "window": str(state.get("window") or self._window_value_from_history(int(state.get("history_minutes", 1440) or 1440))),
             "mode": str(state.get("selected_mode", "local")),
             "network_online": bool(state.get("network_online", False)),
             "selected_provider": str(state.get("selected_provider", self._settings.preferred_llm_provider)),
@@ -1779,7 +1918,8 @@ class HealthAgentService:
             "answer": str(state.get("answer", "")).strip(),
             "references": list(state.get("knowledge_hits", [])),
             "analysis": dict(state.get("analysis_payload", {})),
-            "context": dict(state.get("context_bundle", {})),
+            "context": context_bundle,
+            "subject": subject if isinstance(subject, dict) else None,
             "tool_results": list(state.get("tool_results", [])),
             "attachments": attachments,
             "model_results": dict(state.get("model_results", {})),

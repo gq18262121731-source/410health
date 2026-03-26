@@ -35,6 +35,10 @@ const lastDeletedDeviceMac = ref("");
 const systemInfo = ref<SystemInfoResponse | null>(null);
 const systemInfoError = ref("");
 
+const unbindingMac = ref("");
+const unbindError = ref("");
+const unbindReason = ref("");
+
 const {
   deviceForm,
   elderForm,
@@ -52,6 +56,18 @@ const {
 
 function sessionToken() {
   return localStorage.getItem("ai_health_demo_session_token") ?? "";
+}
+
+async function unbindDeviceRecord(mac: string) {
+  unbindingMac.value = mac;
+  unbindError.value = "";
+  deviceForm.value.mode = "unbind";
+  deviceForm.value.macAddress = mac;
+  deviceForm.value.reason = unbindReason.value;
+  await submitDeviceAction();
+  unbindReason.value = "";
+  unbindingMac.value = "";
+  deviceForm.value.mode = "register";
 }
 
 function formatUiError(error: unknown, fallback: string) {
@@ -349,6 +365,7 @@ onMounted(() => {
 
         <p v-if="systemInfoError" class="error-copy">{{ systemInfoError }}</p>
         <div v-if="relationStatus" class="status-banner status-success">{{ relationStatus }}</div>
+        <div v-if="unbindError" class="status-banner status-error">{{ unbindError }}</div>
         <div v-if="relationError" class="status-banner status-error">{{ relationError }}</div>
 
         <div v-if="lastRegisteredDeviceMac" class="register-prompt">
@@ -443,6 +460,15 @@ onMounted(() => {
                 <td>
                   <div class="table-actions">
                     <button type="button" class="ghost-btn" @click.stop="deviceHistoryMac = device.mac_address">查看历史</button>
+                    <button
+                      v-if="device.bind_status === 'bound'"
+                      type="button"
+                      class="ghost-btn"
+                      :disabled="unbindingMac === device.mac_address || relationBusy === 'device'"
+                      @click.stop="unbindDeviceRecord(device.mac_address)"
+                    >
+                      {{ unbindingMac === device.mac_address ? "解绑中..." : "解绑设备" }}
+                    </button>
                     <button
                       type="button"
                       class="ghost-btn danger-btn"

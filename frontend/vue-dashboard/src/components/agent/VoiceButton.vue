@@ -26,8 +26,7 @@ let audioChunks: Blob[] = [];
 let audioEl: HTMLAudioElement | null = null;
 let stream: MediaStream | null = null;
 
-// ── TTS: speak text aloud ─────────────────────────────────────────────
-export async function speakText(text: string, voice = props.voice) {
+async function speakText(text: string, voice = props.voice) {
   if (!text.trim()) return;
   try {
     state.value = "speaking";
@@ -108,7 +107,7 @@ async function startRecording() {
     mediaRecorder.start(200);
     state.value = "recording";
     isListening.value = true;
-  } catch (err) {
+  } catch {
     errorMsg.value = "麦克风权限被拒绝";
     state.value = "error";
   }
@@ -122,12 +121,27 @@ function stopRecording() {
 }
 
 function useBrowserASR() {
-  const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+  type SpeechRecognitionResultEventLike = Event & {
+    results: ArrayLike<ArrayLike<{ transcript?: string }>>;
+  };
+  type SpeechRecognitionCtor = new () => {
+    lang: string;
+    interimResults: boolean;
+    onresult: ((event: SpeechRecognitionResultEventLike) => void) | null;
+    onerror: (() => void) | null;
+    onend: (() => void) | null;
+    start: () => void;
+  };
+  const speechWindow = window as Window & {
+    SpeechRecognition?: SpeechRecognitionCtor;
+    webkitSpeechRecognition?: SpeechRecognitionCtor;
+  };
+  const SR = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
   if (!SR) { state.value = "error"; errorMsg.value = "语音识别不可用"; return; }
   const recog = new SR();
   recog.lang = "zh-CN";
   recog.interimResults = false;
-  recog.onresult = (e: any) => {
+  recog.onresult = (e: SpeechRecognitionResultEventLike) => {
     const text = e.results[0]?.[0]?.transcript ?? "";
     if (text) emit("transcript", text);
     state.value = "idle";

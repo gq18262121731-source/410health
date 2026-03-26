@@ -94,7 +94,9 @@ class AlarmService:
                 continue
             if existing.device_mac != alarm.device_mac or existing.acknowledged:
                 continue
+            # Only dedupe within a short SOS window; outside window create a new alarm id
+            # so community/family clients can receive a fresh alert event.
             if alarm.created_at - existing.created_at <= self._sos_dedupe_window:
                 return index
-            return index
+            return None
         return None

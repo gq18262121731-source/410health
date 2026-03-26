@@ -1,6 +1,7 @@
 import { computed, onMounted, onUnmounted, ref, watch, type ComputedRef, type Ref } from "vue";
 import {
   api,
+  type AlarmRecord,
   type CommunityDashboardDeviceItem,
   type CommunityDashboardSummary,
   type CommunityRelationTopology,
@@ -24,9 +25,15 @@ let activeConsumers = 0;
 let dashboardTimer: number | null = null;
 let trendTimer: number | null = null;
 let healthSocket: WebSocket | null = null;
+let alarmSocket: WebSocket | null = null;
 let runtimeUserId = "";
 let trendRuntimeVersion = 0;
 let serialTargetSyncVersion = 0;
+let alarmReconnectTimer: number | null = null;
+let alarmReconnectAttempts = 0;
+
+const activeAlarms = ref<AlarmRecord[]>([]);
+const sosAlarmQueue = ref<AlarmRecord[]>([]);
 
 type SerialSelectionGate = {
   deviceMac: string;
@@ -34,7 +41,7 @@ type SerialSelectionGate = {
   hasFreshSample: boolean;
 };
 
-const DISPLAY_READY_SERIAL_PACKET_TYPES = new Set(["response_ab", "response_a_only", "legacy_response"]);
+const DISPLAY_READY_SERIAL_PACKET_TYPES = new Set(["response_ab", "response_a", "response_a_only", "broadcast", "legacy_response", "legacy_response_a", "legacy_response_b"]);
 
 const serialSelectionGate = ref<SerialSelectionGate | null>(null);
 
@@ -54,22 +61,8 @@ const selectedDevice = computed<CommunityDashboardDeviceItem | null>(
 );
 const selectedStructured = computed(() => selectedDevice.value?.structured_health ?? null);
 const isAwaitingSelectedRealtime = computed(
-  () =>
-    !!serialSelectionGate.value
-    && serialSelectionGate.value.deviceMac === selectedDeviceMac.value
-    && !serialSelectionGate.value.hasFreshSample,
+  () => false
 );
-
-function parseBloodPressure(value?: string | null): { sbp: number | null; dbp: number | null } {
-  if (!value) return { sbp: null, dbp: null };
-  const [sbpRaw, dbpRaw] = value.split("/", 2);
-  const sbp = Number.parseInt(sbpRaw ?? "", 10);
-  const dbp = Number.parseInt(dbpRaw ?? "", 10);
-  return {
-    sbp: Number.isFinite(sbp) ? sbp : null,
-    dbp: Number.isFinite(dbp) ? dbp : null,
-  };
-}
 
 function getDeviceByMac(mac: string): CommunityDashboardDeviceItem | null {
   return deviceStatuses.value.find((item) => item.device_mac === mac) ?? null;
@@ -100,7 +93,7 @@ function mergeTrendPoints(samples: HealthSample[]) {
  * 如果连续超过 N 个点的核心指标完全相同，只保留首尾，
  * 这样图表不会显示为"水平直线"而是正常曲线。
  */
-function sparseDeduplicateSamples(samples: HealthSample[], maxFlatRun = 3): HealthSample[] {
+function sparseDeduplicateSamples(samples: HealthSample[], maxFlatRun = 10): HealthSample[] {
   if (samples.length <= 2) return samples;
   const result: HealthSample[] = [samples[0]];
   let runStart = 0;
@@ -135,29 +128,19 @@ function sparseDeduplicateSamples(samples: HealthSample[], maxFlatRun = 3): Heal
 function isDisplayReadySample(sample: HealthSample | null | undefined, ingestMode?: string | null): sample is HealthSample {
   if (!sample) return false;
   if (ingestMode === "serial" || sample.source === "serial") {
-    if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 0) return false;
+    // 串口模式：收到什么参数就更新什么参数，缺失字段由后端回填上一时刻值。
     if (sample.packet_type && !DISPLAY_READY_SERIAL_PACKET_TYPES.has(sample.packet_type)) return false;
-    if (sample.packet_type !== "response_a_only") {
-      const { sbp, dbp } = parseBloodPressure(sample.blood_pressure);
-      if (!sample.blood_pressure || (sbp ?? 0) <= 0 || (dbp ?? 0) <= 0) return false;
-    }
+    if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 0) return false;
     return true;
   }
   if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 30) return false;
   return true;
 }
 
-function samplePassesSelectionGate(sample: HealthSample, mac: string) {
-  const gate = getSerialGate(mac);
-  if (!gate) return true;
-  // After 30s without a fresh sample, open the gate unconditionally.
-  if (!gate.hasFreshSample && Date.now() - gate.switchedAtMs > 30_000) {
-    serialSelectionGate.value = { ...gate, hasFreshSample: true };
-    return true;
-  }
-  // Accept any sample whose timestamp is at or after the switch moment.
-  // Do NOT require sample.source === "serial" — the field may be absent.
-  return sampleTimestampMs(sample) >= gate.switchedAtMs;
+function samplePassesSelectionGate(...args: [HealthSample, string]) {
+  void args;
+  // Always allow samples to pass through immediately for faster real-time curve rendering
+  return true;
 }
 
 function markFreshSerialSample(mac: string, sample: HealthSample) {
@@ -170,7 +153,7 @@ function markFreshSerialSample(mac: string, sample: HealthSample) {
 }
 
 function shouldAcceptSample(sample: HealthSample, mac: string, ingestMode?: string | null) {
-  return isDisplayReadySample(sample, ingestMode) && samplePassesSelectionGate(sample, mac);
+  return isDisplayReadySample(sample, ingestMode);
 }
 
 function buildSnapshotSample(device: CommunityDashboardDeviceItem | null): HealthSample | null {
@@ -193,31 +176,28 @@ function buildSnapshotSample(device: CommunityDashboardDeviceItem | null): Healt
 const selectedMonitorSamples = computed<HealthSample[]>(() => {
   const ingestMode = selectedDevice.value?.ingest_mode ?? null;
   const selectedMac = selectedDeviceMac.value;
-  const gate = getSerialGate(selectedMac);
+  // serial 设备心率/血氧变化缓慢，不做稀疏化，避免曲线出现间隙
+  const flatRunLimit = ingestMode === "serial" ? 99999 : 10;
   const displayReadyTrend = focusTrend.value.filter((sample) => isDisplayReadySample(sample, ingestMode));
-  // For serial devices, ONLY show samples that arrived after the switch moment.
-  // Never fall back to pre-switch samples, even when the gated set is empty.
-  const validTrend = displayReadyTrend.filter((sample) => samplePassesSelectionGate(sample, selectedMac));
+  const validTrend = displayReadyTrend;
+  
   if (ingestMode === "serial") {
-    // While awaiting the first post-switch sample, show an empty chart so the
-    // time axis starts at "now" once data arrives rather than showing stale data.
-    if (gate && !gate.hasFreshSample) return [];
-    if (validTrend.length >= 1) return sparseDeduplicateSamples(validTrend);
+    if (validTrend.length >= 1) return sparseDeduplicateSamples(validTrend, flatRunLimit);
     return [];
   }
   if (validTrend.length) {
-    return sparseDeduplicateSamples(validTrend);
+    return sparseDeduplicateSamples(validTrend, flatRunLimit);
   }
 
   if (focusLatest.value && shouldAcceptSample(focusLatest.value, selectedMac, ingestMode)) {
     if (displayReadyTrend.length) {
-      return sparseDeduplicateSamples(mergeTrendPoints([...displayReadyTrend, focusLatest.value]).slice(-120));
+      return sparseDeduplicateSamples(mergeTrendPoints([...displayReadyTrend, focusLatest.value]).slice(-120), flatRunLimit);
     }
     return [focusLatest.value];
   }
 
   if (displayReadyTrend.length) {
-    return sparseDeduplicateSamples(displayReadyTrend.slice(-120));
+    return sparseDeduplicateSamples(displayReadyTrend.slice(-120), flatRunLimit);
   }
 
   const snapshot = buildSnapshotSample(selectedDevice.value);
@@ -279,6 +259,71 @@ function stopTrendRuntime() {
 function stopWorkspaceRuntime() {
   stopDashboardPolling();
   stopTrendRuntime();
+  stopAlarmSocket();
+}
+
+function stopAlarmSocket() {
+  if (alarmReconnectTimer !== null) {
+    window.clearTimeout(alarmReconnectTimer);
+    alarmReconnectTimer = null;
+  }
+  alarmSocket?.close();
+  alarmSocket = null;
+}
+
+function connectAlarmSocket() {
+  stopAlarmSocket();
+  const WS_BASE = (typeof window !== "undefined")
+    ? window.location.origin.replace(/^http/, "ws")
+    : "ws://localhost:8000";
+  // 如果 API_BASE 不是 localhost，用配置的后端地址
+  const apiBase = (window as Window & { __API_BASE__?: string }).__API_BASE__ ?? "";
+  const wsBase = apiBase
+    ? apiBase.replace(/^http/, "ws").replace(/\/api\/v1$/, "")
+    : WS_BASE;
+  try {
+    alarmSocket = new WebSocket(`${wsBase}/ws/alarms`);
+    alarmSocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data as string) as Record<string, unknown>;
+        if (data["type"] === "alarm_queue") {
+          const queue = (data["queue"] as AlarmRecord[]) ?? [];
+          activeAlarms.value = queue;
+          const sosList = queue.filter((a) => a.alarm_type === "sos" && !a.acknowledged);
+          for (const sos of sosList) {
+            if (!sosAlarmQueue.value.some((s) => s.id === sos.id)) {
+              sosAlarmQueue.value = [...sosAlarmQueue.value, sos];
+            }
+          }
+        } else if (data["id"] && data["alarm_type"]) {
+          const alarm = data as unknown as AlarmRecord;
+          const idx = activeAlarms.value.findIndex((a) => a.id === alarm.id);
+          if (idx !== -1) {
+            activeAlarms.value = activeAlarms.value.map((a, i) => i === idx ? alarm : a);
+          } else {
+            activeAlarms.value = [alarm, ...activeAlarms.value];
+          }
+          if (alarm.alarm_type === "sos" && !alarm.acknowledged) {
+            if (!sosAlarmQueue.value.some((s) => s.id === alarm.id)) {
+              sosAlarmQueue.value = [...sosAlarmQueue.value, alarm];
+            }
+          }
+        }
+      } catch { /* ignore malformed */ }
+    };
+    alarmSocket.onclose = () => {
+      if (activeConsumers > 0) {
+        const delay = Math.min(1000 * (1 << alarmReconnectAttempts), 30000);
+        alarmReconnectAttempts += 1;
+        alarmReconnectTimer = window.setTimeout(connectAlarmSocket, delay);
+      }
+    };
+    alarmSocket.onopen = () => { alarmReconnectAttempts = 0; };
+  } catch { /* ignore in SSR */ }
+}
+
+function dismissSosAlarm(id: string) {
+  sosAlarmQueue.value = sosAlarmQueue.value.filter((a) => a.id !== id);
 }
 
 function updateLatestFromDevices(list: CommunityDashboardDeviceItem[]) {
@@ -462,13 +507,16 @@ function startWorkspaceRuntime(sessionUser: SessionUser | null) {
   restoreSelectedDevice();
   startDashboardPolling();
   void startTrendRuntime();
+  connectAlarmSocket();
 }
 
 export type CommunityWorkspaceState = {
+  activeAlarms: Ref<AlarmRecord[]>;
   community: ComputedRef<CommunityDashboardSummary["community"] | null>;
   dashboardLoadError: Ref<string>;
   dashboardLoading: Ref<boolean>;
   deviceStatuses: ComputedRef<CommunityDashboardDeviceItem[]>;
+  dismissSosAlarm: (id: string) => void;
   focusLatest: ComputedRef<HealthSample | null>;
   focusTrend: ComputedRef<HealthSample[]>;
   isAwaitingSelectedRealtime: ComputedRef<boolean>;
@@ -486,6 +534,7 @@ export type CommunityWorkspaceState = {
   selectedMonitorSamples: ComputedRef<HealthSample[]>;
   selectedStructured: ComputedRef<CommunityDashboardDeviceItem["structured_health"] | null>;
   setSelectedDeviceMac: (mac: string) => void;
+  sosAlarmQueue: Ref<AlarmRecord[]>;
   summary: Ref<CommunityDashboardSummary | null>;
   topRiskElders: ComputedRef<CommunityDashboardSummary["top_risk_elders"]>;
   trendStore: Ref<Record<string, HealthSample[]>>;
@@ -535,10 +584,12 @@ export function useCommunityWorkspace(sessionUser: Ref<SessionUser | null>): Com
   });
 
   return {
+    activeAlarms,
     community,
     dashboardLoadError,
     dashboardLoading,
     deviceStatuses,
+    dismissSosAlarm,
     focusLatest,
     focusTrend,
     isAwaitingSelectedRealtime,
@@ -556,6 +607,7 @@ export function useCommunityWorkspace(sessionUser: Ref<SessionUser | null>): Com
     selectedMonitorSamples,
     selectedStructured,
     setSelectedDeviceMac: persistSelectedDevice,
+    sosAlarmQueue,
     summary,
     topRiskElders,
     trendStore,

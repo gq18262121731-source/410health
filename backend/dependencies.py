@@ -21,8 +21,8 @@ from ai.health_score_model import BaselineTracker, HealthScoreService as DemoHea
 from backend.config import get_settings
 from backend.models.auth_model import SessionUser
 from backend.models.device_model import DeviceIngestMode, DeviceRecord, DeviceStatus, ingest_source_matches_mode
-from backend.models.health_model import HealthSample, IngestResponse
-from backend.models.analytics_model import AgentElderSubject
+from backend.models.health_model import HealthSample, IngestResponse, IngestionSource
+from backend.models.analytics_model import AgentElderSubject, WindowKind
 from backend.models.user_model import UserRole
 from backend.ml.inference import HealthInferenceEngine
 from backend.repositories.score_repo import ScoreRepository
@@ -72,7 +72,7 @@ _data_generator = SyntheticHealthDataGenerator(
     device_count=_settings.mock_device_count,
     mac_prefix=(_settings.allowed_mac_prefixes[0] if _settings.allowed_mac_prefixes else _settings.mock_device_mac_prefix),
 )
-_parser = T10PacketParser(sos_window_seconds=_settings.sos_broadcast_window_seconds)
+_parser = T10PacketParser(sos_window_seconds=_settings.sos_broadcast_window_seconds, merge_timeout_seconds=max(2.0, _settings.serial_packet_merge_timeout_seconds))
 _analysis_service = HealthDataAnalysisService()
 _rag_service = LangChainRAGService(_settings, _settings.data_dir.parent / "docs" / "knowledge-base")
 _care_service = CareService(_device_service, _user_service, _relation_service, _settings)
@@ -139,9 +139,18 @@ _structured_health_score_service = StructuredHealthScoreService(
 _warning_service = WarningService(health_score_service=_structured_health_score_service)
 _last_community_alarm_at: datetime | None = None
 
+# 始终 seed mock 设备，用于 demo overlay 和 AI 模型预热
+# serial/mqtt 模式下 mock 设备以 ingest_mode=mock 标记，与真实串口设备区分
+# mock 设备直接设为 ONLINE，overlay 流会持续推数据，不依赖串口
+_mock_devices_to_seed = _data_generator.build_devices()
+for _mock_dev in _mock_devices_to_seed:
+    if _device_service.get_device(_mock_dev.mac_address) is None:
+        _device_service.seed_devices([_mock_dev])
+    _device_service.update_status(_mock_dev.mac_address, DeviceStatus.ONLINE)
+_intelligent_scorer.warmup(_data_generator.build_training_sequences(hours=24, step_minutes=10))
+
 if _settings.data_mode == "mock" and _settings.use_mock_data:
-    _device_service.seed_devices(_data_generator.build_devices())
-    _intelligent_scorer.warmup(_data_generator.build_training_sequences(hours=24, step_minutes=10))
+    # 纯 mock 模式：预填充历史数据到 stream，让 UI 启动即有数据
     for device_history in _data_generator.build_history(hours=1, step_minutes=10).values():
         for sample in device_history:
             baseline = _baseline_tracker.observe(sample)
@@ -242,6 +251,47 @@ def get_demo_data_status() -> dict[str, object]:
         "device_macs": eligible,
         "last_refresh_at": _demo_overlay_last_refresh_at.isoformat() if _demo_overlay_last_refresh_at else None,
         "last_published_at": _demo_overlay_last_published_at.isoformat() if _demo_overlay_last_published_at else None,
+    }
+
+
+def ensure_demo_overlay_history_window(*, hours: int = 24, step_minutes: int = 10) -> dict[str, int]:
+    """Ensure mock devices keep at least a rolling 24h history in DB."""
+    eligible = _eligible_demo_overlay_device_macs()
+    if not eligible:
+        return {"devices_checked": 0, "devices_backfilled": 0, "inserted_samples": 0}
+
+    now = datetime.now(timezone.utc)
+    start_at = now - timedelta(hours=max(1, hours))
+    expected_points = max(1, int((hours * 60) / max(1, step_minutes)))
+    histories = _data_generator.build_history(hours=max(1, hours), step_minutes=max(1, step_minutes))
+
+    devices_backfilled = 0
+    inserted_samples = 0
+    for mac in eligible:
+        existing = _health_data_repository.list_samples(
+            device_mac=mac,
+            start_at=start_at,
+            end_at=now,
+            limit=max(expected_points * 3, 300),
+        )
+        if len(existing) >= expected_points:
+            continue
+
+        history_samples = histories.get(mac, [])
+        if not history_samples:
+            continue
+
+        for sample in history_samples:
+            baseline = _baseline_tracker.observe(sample)
+            sample.health_score = _health_score_service.score(sample, baseline)
+            _health_data_repository.persist_sample(sample)
+            inserted_samples += 1
+        devices_backfilled += 1
+
+    return {
+        "devices_checked": len(eligible),
+        "devices_backfilled": devices_backfilled,
+        "inserted_samples": inserted_samples,
     }
 
 
@@ -356,13 +406,10 @@ def is_display_ready_sample(sample: HealthSample, ingest_mode: DeviceIngestMode 
     if effective == DeviceIngestMode.MOCK:
         return True
     if effective == DeviceIngestMode.SERIAL:
-        if sample.packet_type == "response_a":
+        # 串口模式：收到即更新，缺失字段由 _merge_with_latest 回填上一时刻值。
+        if sample.heart_rate <= 0 or sample.blood_oxygen <= 0:
             return False
-        if sample.heart_rate <= 0:
-            return False
-        if not sample.blood_pressure or sample.blood_pressure == "0/0":
-            return False
-        if sample.battery <= 0:
+        if sample.temperature <= 0:
             return False
         return True
     return True
@@ -621,28 +668,254 @@ def _tool_holiday_lookup(payload: dict[str, object]) -> dict[str, object]:
 def _tool_generate_analysis_report(payload: dict[str, object]) -> dict[str, object]:
     scope = str(payload.get("scope", "community"))
     window = str(payload.get("window", "day"))
-    title = "社区健康分析报告" if scope == "community" else "老人健康分析报告"
-    summary = "窗口内健康态势结构化报告"
+    if scope != "community":
+        title = "老人健康分析报告"
+        summary = "窗口内健康态势结构化报告"
+        report_payload = {
+            "scope": scope,
+            "window": window,
+            "sections": [
+                {"title": "摘要", "content": "关键指标与事件汇总"},
+                {"title": "风险评估", "content": "风险等级与触发原因"},
+                {"title": "建议动作", "content": "建议的处置与观察措施"},
+            ],
+        }
+        return {
+            "report": report_payload,
+            "attachments": [
+                {
+                    "id": f"analysis-report-{scope}-{window}",
+                    "title": title,
+                    "summary": summary,
+                    "render_type": "report_document",
+                    "render_payload": report_payload,
+                    "source_tool": "generate_analysis_report",
+                }
+            ],
+        }
+
+    window_kind = WindowKind.WEEK if window == "week" else WindowKind.DAY
+    device_macs = [str(item).strip().upper() for item in list(payload.get("device_macs", [])) if str(item).strip()]
+    window_report = _community_insight_service.build_window_report(window=window_kind, device_macs=device_macs)
+    analysis = window_report.analysis.model_dump(mode="json")
+    key_metrics = analysis.get("key_metrics", {})
+    risk_distribution = analysis.get("risk_distribution", {})
+    alert_breakdown = analysis.get("alert_breakdown", {})
+    status_distribution = analysis.get("device_status_distribution", {})
+    high_risk_entities = analysis.get("high_risk_entities", [])
+    trend_findings = analysis.get("trend_findings", [])
+    chart_payloads = analysis.get("chart_payloads", [])
+
+    title = f"社区{('过去一周' if window_kind == WindowKind.WEEK else '过去一天')}健康分析报告"
+
+    metric_rows = [
+        ("覆盖设备数", key_metrics.get("device_count", 0)),
+        ("有效上报设备", key_metrics.get("reported_device_count", 0)),
+        ("离线设备", key_metrics.get("offline_device_count", 0)),
+        ("高风险对象", key_metrics.get("high_risk_device_count", 0)),
+        ("窗口告警数", key_metrics.get("window_alert_count", 0)),
+        ("平均健康分", key_metrics.get("average_health_score", "--")),
+        ("平均血氧", key_metrics.get("average_blood_oxygen", "--")),
+    ]
+    metric_markdown = "\n".join(
+        [
+            "| 指标 | 数值 |",
+            "| --- | --- |",
+            *[f"| {label} | {value} |" for label, value in metric_rows],
+        ]
+    )
+
+    risk_rows = [
+        {
+            "elder_name": str(item.get("elder_name") or "--"),
+            "device_mac": str(item.get("device_mac") or "--"),
+            "risk_level": str(item.get("risk_level") or "--"),
+            "latest_health_score": item.get("latest_health_score") if item.get("latest_health_score") is not None else "--",
+            "active_alert_count": int(item.get("active_alert_count", 0) or 0),
+            "reasons": "；".join(str(reason) for reason in item.get("reasons", [])[:3]) or "--",
+        }
+        for item in high_risk_entities[:8]
+        if isinstance(item, dict)
+    ]
+    risk_markdown = (
+        "\n".join(
+            [
+                "| 老人 | 设备 | 风险 | 健康分 | 活跃告警 | 原因 |",
+                "| --- | --- | --- | --- | --- | --- |",
+                *[
+                    f"| {row['elder_name']} | {row['device_mac']} | {row['risk_level']} | {row['latest_health_score']} | {row['active_alert_count']} | {row['reasons']} |"
+                    for row in risk_rows
+                ],
+            ]
+        )
+        if risk_rows
+        else "当前窗口内暂无可排序的高风险对象。"
+    )
+
+    alert_rows = [
+        {"alarm_type": str(key), "count": int(value or 0)}
+        for key, value in alert_breakdown.items()
+    ]
+    alert_rows.sort(key=lambda item: item["count"], reverse=True)
+    alert_markdown = (
+        "\n".join(
+            [
+                "| 告警类型 | 次数 |",
+                "| --- | --- |",
+                *[f"| {row['alarm_type']} | {row['count']} |" for row in alert_rows[:10]],
+            ]
+        )
+        if alert_rows
+        else "当前窗口内暂无告警热点。"
+    )
+
+    status_rows = [
+        {"status": str(key), "count": int(value or 0)}
+        for key, value in status_distribution.items()
+    ]
+    status_rows.sort(key=lambda item: item["count"], reverse=True)
+    status_markdown = (
+        "\n".join(
+            [
+                "| 设备状态 | 数量 |",
+                "| --- | --- |",
+                *[f"| {row['status']} | {row['count']} |" for row in status_rows[:10]],
+            ]
+        )
+        if status_rows
+        else "当前没有设备状态分布数据。"
+    )
+
+    advice: list[str] = []
+    if risk_rows:
+        focus_names = "、".join(row["elder_name"] for row in risk_rows[:3])
+        advice.append(f"优先复核 {focus_names} 的最新生命体征和现场状态。")
+    if int(key_metrics.get("offline_device_count", 0) or 0) > 0:
+        advice.append("尽快排查离线设备链路、佩戴状态与电量，避免持续缺数。")
+    if int(key_metrics.get("window_alert_count", 0) or 0) > 0:
+        advice.append("结合告警热点安排分级随访，优先处理 SOS、血氧偏低与体温异常。")
+    if float(key_metrics.get("average_health_score", 0) or 0) < 75:
+        advice.append("建议在下一轮巡检中复测健康评分偏低对象的关键指标。")
+    if not advice:
+        advice.append("社区整体态势相对平稳，可维持常规巡检并持续观察异常漂移。")
+
+    summary = (
+        f"覆盖设备 {key_metrics.get('device_count', 0)} 台，"
+        f"有效上报 {key_metrics.get('reported_device_count', 0)} 台，"
+        f"高风险对象 {key_metrics.get('high_risk_device_count', 0)} 台，"
+        f"窗口告警 {key_metrics.get('window_alert_count', 0)} 条。"
+    )
+
+    sections = [
+        {"title": "执行摘要", "content": summary},
+        {"title": "关键指标表", "content": metric_markdown},
+        {"title": "高风险对象表", "content": risk_markdown},
+        {"title": "告警热点表", "content": alert_markdown},
+        {"title": "设备状态表", "content": status_markdown},
+        {"title": "趋势发现", "content": "\n".join(f"- {item}" for item in trend_findings[:8]) or "暂无显著趋势发现。"},
+        {"title": "处置建议", "content": "\n".join(f"- {item}" for item in advice[:6])},
+    ]
+
     report_payload = {
         "scope": scope,
         "window": window,
-        "sections": [
-            {"title": "摘要", "content": "关键指标与事件汇总"},
-            {"title": "风险评估", "content": "风险等级与触发原因"},
-            {"title": "建议动作", "content": "建议的处置与观察措施"},
-        ],
+        "document_title": title,
+        "generated_at": window_report.generated_at.isoformat(),
+        "sections": sections,
+        "charts": chart_payloads,
     }
-    return {
-        "attachments": [
+
+    attachments = [
+        {
+            "id": f"analysis-report-{scope}-{window}",
+            "title": title,
+            "summary": summary,
+            "render_type": "report_document",
+            "render_payload": report_payload,
+            "source_tool": "generate_analysis_report",
+        },
+        {
+            "id": f"analysis-report-metrics-{window}",
+            "title": "社区关键指标",
+            "summary": "窗口内核心监测指标概览",
+            "render_type": "metric_cards",
+            "render_payload": {
+                "items": [
+                    {"label": "覆盖设备数", "value": key_metrics.get("device_count", 0)},
+                    {"label": "有效上报设备", "value": key_metrics.get("reported_device_count", 0)},
+                    {"label": "离线设备", "value": key_metrics.get("offline_device_count", 0)},
+                    {"label": "高风险对象", "value": key_metrics.get("high_risk_device_count", 0)},
+                    {"label": "窗口告警数", "value": key_metrics.get("window_alert_count", 0)},
+                    {"label": "平均健康分", "value": key_metrics.get("average_health_score", "--")},
+                ]
+            },
+            "source_tool": "generate_analysis_report",
+        },
+    ]
+
+    if risk_rows:
+        attachments.append(
             {
-                "id": f"analysis-report-{scope}-{window}",
-                "title": title,
-                "summary": summary,
-                "render_type": "report_document",
-                "render_payload": report_payload,
+                "id": f"analysis-report-risk-table-{window}",
+                "title": "高风险对象明细",
+                "summary": "按风险等级、健康分和活跃告警排序",
+                "render_type": "table",
+                "render_payload": {
+                    "columns": [
+                        {"key": "elder_name", "label": "老人"},
+                        {"key": "device_mac", "label": "设备 MAC"},
+                        {"key": "risk_level", "label": "风险等级"},
+                        {"key": "latest_health_score", "label": "最新健康分"},
+                        {"key": "active_alert_count", "label": "活跃告警"},
+                        {"key": "reasons", "label": "主要原因"},
+                    ],
+                    "rows": risk_rows,
+                },
                 "source_tool": "generate_analysis_report",
             }
-        ]
+        )
+
+    if alert_rows:
+        attachments.append(
+            {
+                "id": f"analysis-report-alert-table-{window}",
+                "title": "告警热点统计",
+                "summary": "窗口内告警类型分布",
+                "render_type": "table",
+                "render_payload": {
+                    "columns": [
+                        {"key": "alarm_type", "label": "告警类型"},
+                        {"key": "count", "label": "次数"},
+                    ],
+                    "rows": alert_rows[:10],
+                },
+                "source_tool": "generate_analysis_report",
+            }
+        )
+
+    for index, chart in enumerate(chart_payloads[:6]):
+        if not isinstance(chart, dict) or not isinstance(chart.get("echarts_option"), dict):
+            continue
+        attachments.append(
+            {
+                "id": str(chart.get("id") or f"analysis-report-chart-{index}"),
+                "title": str(chart.get("title") or f"图表 {index + 1}"),
+                "summary": str(chart.get("summary") or "报告附带图表"),
+                "render_type": "echarts",
+                "render_payload": {
+                    "id": str(chart.get("id") or f"analysis-report-chart-{index}"),
+                    "title": str(chart.get("title") or f"图表 {index + 1}"),
+                    "summary": str(chart.get("summary") or ""),
+                    "echarts_option": chart.get("echarts_option"),
+                },
+                "source_tool": "generate_analysis_report",
+            }
+        )
+
+    return {
+        "summary": summary,
+        "report": report_payload,
+        "attachments": attachments,
     }
 
 def _care_directory_lookup(device_mac: str) -> dict[str, object]:
@@ -674,19 +947,26 @@ def _merge_with_latest(sample: HealthSample) -> HealthSample:
 
     update: dict[str, object] = {}
 
-    if sample.packet_type == "broadcast":
-        update = {
-            "blood_pressure": latest.blood_pressure,
-            "battery": latest.battery,
-            "ambient_temperature": latest.ambient_temperature,
-            "surface_temperature": latest.surface_temperature,
-            "steps": latest.steps,
-            "raw_packet_b": latest.raw_packet_b,
-        }
-        if not sample.device_uuid:
-            update["device_uuid"] = latest.device_uuid
-    elif sample.packet_type in {"response_a", "response_ab"}:
-        update = {"sos_flag": latest.sos_flag}
+    # 收到什么就更新什么；没带到的字段沿用上一时刻值。
+    if sample.heart_rate <= 0 and latest.heart_rate > 0:
+        update["heart_rate"] = latest.heart_rate
+    if sample.blood_oxygen <= 0 and latest.blood_oxygen > 0:
+        update["blood_oxygen"] = latest.blood_oxygen
+    if sample.temperature <= 0 and latest.temperature > 0:
+        update["temperature"] = latest.temperature
+
+    if (not sample.blood_pressure or sample.blood_pressure == "0/0") and latest.blood_pressure:
+        update["blood_pressure"] = latest.blood_pressure
+    if sample.battery <= 0 and latest.battery > 0:
+        update["battery"] = latest.battery
+    if (sample.steps is None or sample.steps <= 0) and (latest.steps is not None and latest.steps > 0):
+        update["steps"] = latest.steps
+    if sample.ambient_temperature is None and latest.ambient_temperature is not None:
+        update["ambient_temperature"] = latest.ambient_temperature
+    if sample.surface_temperature is None and latest.surface_temperature is not None:
+        update["surface_temperature"] = latest.surface_temperature
+    if not sample.device_uuid and latest.device_uuid:
+        update["device_uuid"] = latest.device_uuid
 
     return sample.model_copy(update=update) if update else sample
 
@@ -703,6 +983,9 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
 
     _device_service.update_status(sample.device_mac, DeviceStatus.ONLINE)
     sample = _merge_with_latest(sample)
+
+    alarms = []
+
     baseline = _baseline_tracker.observe(sample)
     sample.health_score = _health_score_service.score(sample, baseline)
     _stream_service.publish(sample)
@@ -730,6 +1013,7 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
             _last_community_alarm_at = now
 
     await _websocket_manager.broadcast_health(sample.device_mac, sample.model_dump(mode="json"))
+
     for alarm in alarms:
         await _websocket_manager.broadcast_alarm(alarm.model_dump(mode="json"))
     if alarms:
@@ -742,3 +1026,5 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
         )
 
     return IngestResponse(sample=sample, triggered_alarm_ids=[alarm.id for alarm in alarms])
+
+

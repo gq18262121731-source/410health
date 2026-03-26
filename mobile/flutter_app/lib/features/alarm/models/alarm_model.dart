@@ -47,24 +47,18 @@ class AlarmRecord {
 }
 
 class AlarmQueueItem {
-  final String alarmId;
-  final String deviceMac;
-  final int priority;
-  final String status;
+  final double score;
+  final AlarmRecord alarm;
 
   AlarmQueueItem({
-    required this.alarmId,
-    required this.deviceMac,
-    required this.priority,
-    required this.status,
+    required this.score,
+    required this.alarm,
   });
 
   factory AlarmQueueItem.fromJson(Map<String, dynamic> json) {
     return AlarmQueueItem(
-      alarmId: json['alarm_id'] as String,
-      deviceMac: json['device_mac'] as String,
-      priority: json['priority'] as int? ?? 0,
-      status: json['status'] as String? ?? 'pending',
+      score: (json['score'] as num?)?.toDouble() ?? 0.0,
+      alarm: AlarmRecord.fromJson(json['alarm'] as Map<String, dynamic>),
     );
   }
 }

@@ -65,8 +65,8 @@ class LangChainRAGService:
             separators=["\n## ", "\n### ", "\n", "。", "！", "？", ".", " "],
         )
         
-        # Stable collection name to allow incremental updates to the same DB
-        self._vector_collection_name = "health_knowledge_base"
+        knowledge_dir_identity = hashlib.sha256(str(self._knowledge_dir.resolve()).encode("utf-8")).hexdigest()[:10]
+        self._vector_collection_name = f"health_knowledge_base_{knowledge_dir_identity}"
         self._chroma_root = Path(self._settings.chroma_path)
         self._manifest_path = self._chroma_root / "rag_manifest.json"
         self._chunks_cache_path = self._chroma_root / "chunks_cache.json"
@@ -165,6 +165,8 @@ class LangChainRAGService:
             "vector_enabled": self._vector_store is not None,
             "bm25_enabled": self._bm25_retriever is not None,
             "rerank_enabled": self._reranker is not None,
+            "fingerprint_manifest": str(self._manifest_path),
+            "files": [asdict(f) for f in self._file_fingerprints],
         }
 
     def _load_incremental(self) -> tuple[list[KnowledgeDocument], list[Document], list[DocumentFingerprint]]:
@@ -174,6 +176,20 @@ class LangChainRAGService:
 
         # 1. Load manifest
         old_manifest = self._read_manifest()
+        previous_dir = str(old_manifest.get("knowledge_dir") or "").strip()
+        current_dir = str(self._knowledge_dir)
+        if previous_dir and previous_dir != current_dir:
+            old_manifest = {}
+            try:
+                if self._manifest_path.exists():
+                    self._manifest_path.unlink()
+            except Exception:
+                pass
+            try:
+                if self._chunks_cache_path.exists():
+                    self._chunks_cache_path.unlink()
+            except Exception:
+                pass
         old_files = old_manifest.get("files", {})
         
         # 2. Scan disk
@@ -254,6 +270,7 @@ class LangChainRAGService:
             # but we need to track what to delete
             self._dirty_sources = dirty_sources
             self._deleted_sources = deleted_sources
+            self._chroma_root.mkdir(parents=True, exist_ok=True)
             self._write_fingerprint_manifest(final_fingerprints)
             self._write_chunks_cache(all_chunks)
         else:
@@ -280,7 +297,12 @@ class LangChainRAGService:
             
             # Incremental Update to ChromaDB
             if self._dirty_sources or self._deleted_sources:
-                print(f"Updating ChromaDB: deleting {len(self._dirty_sources | self._deleted_sources)} sources, adding {len(dirty_chunks)} chunks.")
+                dirty_chunks = [c for c in self._chunks if c.metadata.get("source") in self._dirty_sources]
+                print(
+                    "Updating ChromaDB: deleting %d sources, adding %d chunks.",
+                    len(self._dirty_sources | self._deleted_sources),
+                    len(dirty_chunks),
+                )
                 for source in self._dirty_sources | self._deleted_sources:
                     # LangChain Chroma doesn't have a direct 'delete by metadata' easily in one line without exposing client
                     # but we can use the underlying collection
@@ -289,7 +311,6 @@ class LangChainRAGService:
                 # Add only the chunks from dirty_sources (which are in self._documents/new_chunks)
                 # But here we already have self._chunks as the FULL set.
                 # We should only add chunks that belong to the new/dirty docs.
-                dirty_chunks = [c for c in self._chunks if c.metadata.get("source") in self._dirty_sources]
                 if dirty_chunks:
                     store.add_documents(
                         dirty_chunks,
@@ -309,11 +330,12 @@ class LangChainRAGService:
             return {}
 
     def _write_fingerprint_manifest(self, fingerprints: list[DocumentFingerprint]) -> None:
+        self._manifest_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "docs_hash": self._calculate_global_hash(fingerprints),
             "vector_collection": self._vector_collection_name,
             "knowledge_dir": str(self._knowledge_dir),
-            "files": {f.source: asdict(f) for f in fingerprints},
+            "files": [asdict(f) for f in fingerprints],
             "last_indexed": datetime.now().isoformat()
         }
         self._manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -328,6 +350,7 @@ class LangChainRAGService:
             return []
 
     def _write_chunks_cache(self, chunks: list[Document]) -> None:
+        self._chunks_cache_path.parent.mkdir(parents=True, exist_ok=True)
         data = [{"text": c.page_content, "metadata": c.metadata} for c in chunks]
         self._chunks_cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 

@@ -11,22 +11,22 @@ class AlarmRepository {
       : _endpointConfig = endpointConfig;
 
   Future<List<AlarmRecord>> getAlarms({bool activeOnly = false}) async {
-    final response = await _apiClient.get('/alarms', queryParameters: {'active_only': activeOnly});
+    final response = await _apiClient.get('alarms', queryParameters: {'active_only': activeOnly});
     return (response.data as List).map((e) => AlarmRecord.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<List<AlarmQueueItem>> getAlarmQueue() async {
-    final response = await _apiClient.get('/alarms/queue');
+    final response = await _apiClient.get('alarms/queue');
     return (response.data as List).map((e) => AlarmQueueItem.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<List<MobilePushRecord>> getMobilePushes() async {
-    final response = await _apiClient.get('/alarms/mobile-pushes');
+    final response = await _apiClient.get('alarms/mobile-pushes');
     return (response.data as List).map((e) => MobilePushRecord.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<void> acknowledgeAlarm(String alarmId) async {
-    await _apiClient.post('/alarms/$alarmId/acknowledge');
+    await _apiClient.post('alarms/$alarmId/acknowledge');
   }
 
   WebSocketChannel connectToAlarms() {

@@ -26,7 +26,7 @@ class ServerEndpointConfig extends ChangeNotifier {
   int get revision => _revision;
 
   String get origin => '$_scheme://$_host:$_port';
-  String get apiBaseUrl => '$origin/api/v1';
+  String get apiBaseUrl => '$origin/api/v1/';
   String get wsBaseUrl => '${_scheme == 'https' ? 'wss' : 'ws'}://$_host:$_port';
 
   static String _normalizeScheme(String value) {

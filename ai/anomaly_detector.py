@@ -135,6 +135,18 @@ class RealtimeAnomalyDetector:
                 )
             )
             sample = sample.model_copy(update={"sos_flag": False})
+
+        # SOS 广播包是“告警信号包”，不是完整生命体征包。
+        # 不要再对其做心率/体温/血氧阈值判断，避免 0 值触发假报警。
+        is_sos_signal_packet = (
+            sample.packet_type == "broadcast"
+            and sample.source.value == "serial"
+            and sample.heart_rate == 0
+            and sample.blood_oxygen == 0
+            and sample.temperature == 0
+        )
+        if is_sos_signal_packet:
+            return alarms
         systolic, diastolic = sample.blood_pressure_pair or (None, None)
 
         if sample.sos_flag:

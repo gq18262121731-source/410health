@@ -7,7 +7,7 @@ class CareRepository {
   CareRepository(this._apiClient);
 
   Future<CareAccessProfile> getAccessProfile() async {
-    final response = await _apiClient.get('/care/access-profile/me');
+    final response = await _apiClient.get('care/access-profile/me');
     return CareAccessProfile.fromJson(response.data);
   }
 }

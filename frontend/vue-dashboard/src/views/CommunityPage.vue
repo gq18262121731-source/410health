@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, toRef } from "vue";
+import { computed, toRef, watch } from "vue";
 import type { SessionUser } from "../api/client";
 import CommunityDeviceInspector from "../components/CommunityDeviceInspector.vue";
 import CommunityDeviceRail from "../components/CommunityDeviceRail.vue";
@@ -26,6 +26,19 @@ const pageMeta = computed(() => [
   `未确认告警 ${workspace.metrics.value?.unacknowledged_alarm_count ?? 0}`,
   `同步 ${syncLabel.value}`,
 ]);
+
+// SOS 弹窗：监听新 SOS 报警推入队列，用浏览器原生 alert 保证不遗漏
+watch(
+  () => workspace.sosAlarmQueue.value.length,
+  (len, prevLen) => {
+    if (len <= prevLen) return;
+    const sos = workspace.sosAlarmQueue.value[len - 1];
+    if (!sos) return;
+    const time = new Date(sos.created_at).toLocaleString("zh-CN", { hour12: false });
+    window.alert(`🚨 SOS 紧急报警\n设备: ${sos.device_mac}\n时间: ${time}\n消息: ${sos.message}\n\n请立即联系或前往处理！`);
+    workspace.dismissSosAlarm(sos.id);
+  },
+);
 </script>
 
 <template>

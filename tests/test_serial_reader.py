@@ -110,7 +110,7 @@ def test_single_target_reader_rotates_response_and_broadcast_types(monkeypatch) 
     reader = SerialGatewayReader(parser)
     connection = _FakeConnection([b"payload\r\n", b"payload\r\n", KeyboardInterrupt()])
 
-    monotonic_values = iter([0.0, 8.5, 8.5, 10.7, 10.7, 10.7, 10.7, 10.7])
+    monotonic_values = iter([0.0, 2.5, 2.5, 3.2, 3.2, 3.2, 3.2, 3.2])
 
     monkeypatch.setattr(reader, "detect_port", lambda port, keywords: "COM3")
     monkeypatch.setattr(reader, "_extract_payload_and_mac", lambda line: ("0201061AFF4C000215AA", "54:10:26:01:00:DF"))
@@ -128,8 +128,8 @@ def test_single_target_reader_rotates_response_and_broadcast_types(monkeypatch) 
             mac_filter="54:10:26:01:00:DF",
             target_mac_provider=lambda: "54:10:26:01:00:DF",
             enable_broadcast_sos_overlay=True,
-            response_cycle_seconds=8.0,
-            broadcast_cycle_seconds=2.0,
+            response_cycle_seconds=2.0,
+            broadcast_cycle_seconds=0.5,
         )
 
     assert "AT+TYPE=5" in connection.writes

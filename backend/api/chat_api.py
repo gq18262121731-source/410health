@@ -114,7 +114,7 @@ async def analyze_device_stream(payload: DeviceAnalysisRequest) -> StreamingResp
 
 @router.post("/analyze/community")
 async def analyze_community(payload: CommunityAnalysisRequest) -> dict[str, object]:
-    return get_agent_service().analyze_community(
+    result = get_agent_service().analyze_community(
         role=payload.role,
         question=payload.question,
         device_samples=None,
@@ -131,6 +131,11 @@ async def analyze_community(payload: CommunityAnalysisRequest) -> dict[str, obje
         per_device_limit=payload.per_device_limit,
         device_macs=payload.device_macs,
     )
+    if not isinstance(result.get("citations"), list):
+        result["citations"] = list(result.get("citations") or [])
+    if not isinstance(result.get("attachments"), list):
+        result["attachments"] = []
+    return result
 
 
 @router.post("/analyze/community/stream")

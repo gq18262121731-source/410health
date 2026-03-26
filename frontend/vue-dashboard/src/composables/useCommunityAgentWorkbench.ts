@@ -207,29 +207,6 @@ function mergeAttachments(current: AgentAttachment[], incoming: AgentAttachment[
   return merged;
 }
 
-function normalizeStageRecord(raw: unknown): StageRecord | null {
-  if (!raw || typeof raw !== "object") return null;
-  const record = raw as Record<string, unknown>;
-  const stage = String(record.stage ?? "");
-  if (!stage) return null;
-  const status = record.status === "running" || record.status === "error" ? record.status : "completed";
-  return {
-    stage,
-    label: String(record.label ?? stageLabel(stage)),
-    detail: String(record.detail ?? record.summary ?? stageSummaryFallback(stage, status)),
-    summary: String(record.summary ?? record.detail ?? stageSummaryFallback(stage, status)),
-    status,
-    updatedAt: String(record.updatedAt ?? record.updated_at ?? new Date().toISOString()),
-    elapsedMs:
-      typeof record.elapsedMs === "number"
-        ? record.elapsedMs
-        : typeof record.elapsed_ms === "number"
-          ? record.elapsed_ms
-          : null,
-    group: String(record.group ?? "trace"),
-  };
-}
-
 function normalizeChildTools(raw: unknown): TraceChildTool[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -240,39 +217,6 @@ function normalizeChildTools(raw: unknown): TraceChildTool[] {
       summary: String(item.summary ?? ""),
       status: String(item.status ?? "completed"),
     }));
-}
-
-function normalizeToolRecord(raw: unknown): ToolRecord | null {
-  if (!raw || typeof raw !== "object") return null;
-  const record = raw as Record<string, unknown>;
-  const requestId = String(record.requestId ?? record.request_id ?? "");
-  if (!requestId) return null;
-  return {
-    requestId,
-    toolName: String(record.toolName ?? record.tool_name ?? "tool"),
-    title: String(record.title ?? record.toolName ?? record.tool_name ?? "工具"),
-    toolKind:
-      record.toolKind === "data_query" ||
-      record.toolKind === "analysis" ||
-      record.toolKind === "report" ||
-      record.toolKind === "recommendation"
-        ? record.toolKind
-        : record.tool_kind === "data_query" ||
-            record.tool_kind === "analysis" ||
-            record.tool_kind === "report" ||
-            record.tool_kind === "recommendation"
-          ? record.tool_kind
-          : "analysis",
-    source: String(record.source ?? "internal_tool"),
-    status: String(record.status ?? "completed"),
-    success: typeof record.success === "boolean" ? record.success : null,
-    summary: String(record.summary ?? ""),
-    inputPreview: String(record.inputPreview ?? record.input_preview ?? ""),
-    outputPreview: String(record.outputPreview ?? record.output_preview ?? ""),
-    childTools: normalizeChildTools(record.childTools ?? record.child_tools),
-    attachments: Array.isArray(record.attachments) ? (record.attachments as AgentAttachment[]) : [],
-    updatedAt: String(record.updatedAt ?? record.updated_at ?? new Date().toISOString()),
-  };
 }
 
 function safeReadState(): PersistedState | null {
@@ -774,8 +718,8 @@ export function useCommunityAgentWorkbench(deviceMacs: () => string[], selectedD
     handleEvent({
       type: "session.completed",
       session_id: currentSessionId.value || activeRunId.value,
-      selected_model: selectedProvider.value,
-      degraded_notes: ["stream_endpoint_fallback_to_sync"],
+      selected_model: result.selected_model ?? selectedModel.value ?? selectedProvider.value,
+      degraded_notes: Array.isArray(result.degraded) ? result.degraded : ["stream_endpoint_fallback_to_sync"],
       timestamp: new Date().toISOString(),
     });
   }

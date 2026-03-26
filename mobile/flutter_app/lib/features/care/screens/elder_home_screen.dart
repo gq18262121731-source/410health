@@ -197,8 +197,10 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
       runSpacing: 12,
       children: [
         _buildMetricCard('心率', '${metric?.heartRate?.toInt() ?? '--'}', 'bpm', Icons.favorite),
+        _buildMetricCard('血压', metric?.bloodPressure ?? '--', 'mmHg', Icons.bloodtype),
         _buildMetricCard('血氧', '${metric?.bloodOxygen?.toInt() ?? '--'}', '%', Icons.water_drop),
         _buildMetricCard('体温', '${metric?.temperature ?? '--'}', '℃', Icons.thermostat),
+        _buildMetricCard('步数', '${metric?.steps ?? '--'}', '步', Icons.directions_walk),
         _buildMetricCard('健康度', '${metric?.healthScore ?? '--'}', '分', Icons.monitor_heart),
       ],
     );

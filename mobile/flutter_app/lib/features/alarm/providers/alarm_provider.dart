@@ -75,10 +75,38 @@ class AlarmProvider extends ChangeNotifier {
   void _handleWsMessage(dynamic message) {
     try {
       final data = jsonDecode(message as String);
-      if (data is Map<String, dynamic>) {
+      if (data is! Map<String, dynamic>) return;
+
+      // 后端可能发两种格式：
+      // 1. 单条 AlarmRecord（broadcast_alarm）
+      // 2. {type: "alarm_queue", queue: [...]}（broadcast_alarm_queue）
+      final msgType = data['type'] as String?;
+
+      if (msgType == 'alarm_queue') {
+        // 全量刷新队列
+        final rawQueue = data['queue'] as List<dynamic>?;
+        if (rawQueue != null) {
+          _queue = rawQueue
+              .map((e) => AlarmQueueItem.fromJson(e as Map<String, dynamic>))
+              .toList();
+        }
+        // 同步更新 alarms 列表（从 queue 中提取）
+        for (final item in _queue) {
+          final newAlarm = item.alarm;
+          final index = _alarms.indexWhere((a) => a.id == newAlarm.id);
+          if (index != -1) {
+            _alarms[index] = newAlarm;
+          } else {
+            _alarms.insert(0, newAlarm);
+          }
+        }
+        notifyListeners();
+        return;
+      }
+
+      // 单条报警推送
+      if (data.containsKey('id') && data.containsKey('alarm_type')) {
         final newAlarm = AlarmRecord.fromJson(data);
-        
-        // 增量刷新：检查是否已存在
         final index = _alarms.indexWhere((a) => a.id == newAlarm.id);
         if (index != -1) {
           _alarms[index] = newAlarm;

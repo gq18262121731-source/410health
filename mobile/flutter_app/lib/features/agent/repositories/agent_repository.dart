@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import '../../../core/network/api_client.dart';
 
 class AgentMessage {
@@ -38,18 +40,28 @@ class AgentRepository {
 
     try {
       final response = await _apiClient.postStream(
-        '/chat/analyze/device/stream',
+        'chat/analyze/device/stream',
         data: payload,
       );
 
-      final stream = response.data?.stream;
-      if (stream == null) {
-        yield '无法获取流式响应。';
+      final dynamic data = response.data;
+      if (data == null) {
+        yield '无法获取响应数据。';
         return;
       }
 
+      Stream<List<int>> byteStream;
+      if (kIsWeb) {
+        // On Web, data is already a String or Map because ResponseType.stream is not supported.
+        final content = data is String ? data : jsonEncode(data);
+        byteStream = Stream.value(utf8.encode(content));
+      } else {
+        // On Mobile/Desktop, data is a ResponseBody with a stream.
+        byteStream = (data as ResponseBody).stream;
+      }
+
       String buffer = '';
-      await for (final chunk in stream) {
+      await for (final chunk in byteStream) {
         buffer += utf8.decode(chunk);
         // Process complete NDJSON lines
         while (buffer.contains('\n')) {

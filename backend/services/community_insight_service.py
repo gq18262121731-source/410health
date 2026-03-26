@@ -303,12 +303,7 @@ class CommunityInsightService:
             degraded_notes.append("tavily_not_configured")
 
         if not results:
-            duckduckgo_result = self._run_duckduckgo_search(query)
-            if duckduckgo_result:
-                results = duckduckgo_result
-                degraded_notes.append("duckduckgo_fallback")
-            else:
-                degraded_notes.append("web_search_no_results")
+            degraded_notes.append("external_search_disabled_without_tavily")
 
         return {
             "query": query,

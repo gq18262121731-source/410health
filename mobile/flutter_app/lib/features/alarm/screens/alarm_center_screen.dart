@@ -185,11 +185,11 @@ class _AlarmCenterScreenState extends State<AlarmCenterScreen> with SingleTicker
         final item = queue[index];
         return ListTile(
           leading: CircleAvatar(
-            backgroundColor: Color.lerp(Colors.orange, Colors.red, item.priority / 10),
+            backgroundColor: Color.lerp(Colors.orange, Colors.red, item.score / 10),
             radius: 4,
           ),
-          title: Text('MAC: ${item.deviceMac}', style: const TextStyle(color: Colors.white, fontSize: 14)),
-          subtitle: Text('优先级: ${item.priority} | 状态: ${item.status}', style: const TextStyle(color: Colors.white30, fontSize: 12)),
+          title: Text('MAC: ${item.alarm.deviceMac}', style: const TextStyle(color: Colors.white, fontSize: 14)),
+          subtitle: Text('优先级: ${item.score} | 状态: ${item.alarm.alarmLevel}', style: const TextStyle(color: Colors.white30, fontSize: 12)),
           trailing: const Icon(Icons.low_priority, color: Colors.white10),
         );
       },

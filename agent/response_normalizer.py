@@ -250,6 +250,12 @@ def sanitize_agent_response(payload: dict[str, Any]) -> dict[str, object]:
         "analysis": analysis,
         "references": sanitize_list(payload.get("references")),
         "attachments": sanitize_attachments(payload.get("attachments")),
+        "window": sanitize_text(payload.get("window")),
+        "subject": payload.get("subject") if isinstance(payload.get("subject"), dict) else None,
+        "mode": sanitize_text(payload.get("mode")),
+        "selected_provider": sanitize_text(payload.get("selected_provider")),
+        "selected_model": sanitize_text(payload.get("selected_model")),
+        "degraded": sanitize_list(payload.get("degraded")),
     }
 
 

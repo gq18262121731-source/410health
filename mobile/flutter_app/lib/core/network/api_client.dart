@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'server_endpoint_config.dart';
 import '../../features/session/services/session_manager.dart';
 
@@ -51,13 +52,17 @@ class ApiClient {
     return _dio.post(path, data: data);
   }
 
-  Future<Response<ResponseBody>> postStream(String path, {dynamic data}) {
+  Future<Response> postStream(String path, {dynamic data}) {
     _syncBaseUrl();
-    return _dio.post<ResponseBody>(
+    // On Web, ResponseType.stream is not supported by the default BrowserHttpClientAdapter.
+    // We fallback to ResponseType.plain and let the repository handle it as a single chunk
+    // or simulate a stream for compatibility.
+    final responseType = kIsWeb ? ResponseType.plain : ResponseType.stream;
+    return _dio.post(
       path,
       data: data,
       options: Options(
-        responseType: ResponseType.stream,
+        responseType: responseType,
         receiveTimeout: const Duration(seconds: 60),
       ),
     );

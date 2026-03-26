@@ -47,7 +47,7 @@ class T10PacketParser:
     def __init__(
         self,
         layout: PacketLayout | None = None,
-        merge_timeout_seconds: float = 2.5,
+        merge_timeout_seconds: float = 1.0,
         sos_window_seconds: int = 15,
     ) -> None:
         self._layout = layout or PacketLayout()
@@ -128,7 +128,7 @@ class T10PacketParser:
         heart_rate = payload[25]
         blood_oxygen = payload[26]
         temperature = round(int.from_bytes(payload[27:29], byteorder="big") / 100.0, 2)
-        sos_value = payload[29]
+        sos_value = payload[29] if len(payload) >= 30 else 0
         sos_trigger = self._decode_sos_trigger(sos_value)
 
         normalized_mac = self._normalize_mac(device_mac)
@@ -194,12 +194,10 @@ class T10PacketParser:
         )
 
     def _flush_stale_partials(self, now: datetime) -> HealthSample | None:
-        """Emit a response_a_only sample for any partial that has expired."""
         stale_macs = [
             mac
             for mac, partial in self._partials.items()
-            if partial.sample
-            and partial.packet_a
+            if partial.packet_a
             and not partial.packet_b
             and now - partial.first_seen > timedelta(seconds=self._merge_timeout)
         ]
@@ -207,9 +205,7 @@ class T10PacketParser:
         for mac in stale_macs:
             partial = self._partials.pop(mac)
             if partial.sample:
-                flushed = partial.sample.model_copy(
-                    update={"packet_type": "response_a_only"}
-                )
+                flushed = partial.sample.model_copy(update={"packet_type": "response_a_only"})
         return flushed
 
     def _handle_response_a(

@@ -1,6 +1,34 @@
 import { computed, onMounted, onUnmounted, ref, watch, type Ref } from "vue";
 import { api, type HealthSample } from "../api/client";
 
+const DISPLAY_READY_SERIAL_PACKET_TYPES = new Set(["response_ab", "response_a", "response_a_only", "broadcast", "legacy_response", "legacy_response_a", "legacy_response_b"]);
+
+function parseBloodPressure(value?: string | null): { sbp: number | null; dbp: number | null } {
+  if (!value) return { sbp: null, dbp: null };
+  const [sbpRaw, dbpRaw] = value.split("/", 2);
+  const sbp = Number.parseInt(sbpRaw ?? "", 10);
+  const dbp = Number.parseInt(dbpRaw ?? "", 10);
+  return {
+    sbp: Number.isFinite(sbp) ? sbp : null,
+    dbp: Number.isFinite(dbp) ? dbp : null,
+  };
+}
+
+export function isDisplayReadySample(sample: HealthSample | null | undefined, ingestMode?: string | null): sample is HealthSample {
+  if (!sample) return false;
+  if (ingestMode === "serial" || sample.source === "serial") {
+    if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 0) return false;
+    if (sample.packet_type && !DISPLAY_READY_SERIAL_PACKET_TYPES.has(sample.packet_type)) return false;
+    if (sample.packet_type !== "response_a_only" && sample.packet_type !== "response_a" && sample.packet_type !== "broadcast") {
+      const { sbp, dbp } = parseBloodPressure(sample.blood_pressure);
+      if (!sample.blood_pressure || (sbp ?? 0) <= 0 || (dbp ?? 0) <= 0) return false;
+    }
+    return true;
+  }
+  if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 30) return false;
+  return true;
+}
+
 export function useDeviceTrend(options: {
   selectedDeviceMac: Ref<string>;
   latest: Ref<Record<string, HealthSample>>;

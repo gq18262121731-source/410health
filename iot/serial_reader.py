@@ -132,8 +132,8 @@ class SerialGatewayReader:
         apply_mac_filter: bool = False,
         apply_packet_type: bool = False,
         enable_broadcast_sos_overlay: bool = False,
-        response_cycle_seconds: float = 8.0,
-        broadcast_cycle_seconds: float = 2.0,
+        response_cycle_seconds: float = 2.0,
+        broadcast_cycle_seconds: float = 0.5,
         target_mac_provider: Callable[[], str | None] | None = None,
         on_sample: Callable[[HealthSample], None] | None = None,
     ) -> None:

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict
@@ -351,6 +351,7 @@ class HealthAgentService:
                 "subject_elder_id": subject_elder_id,
                 "target_device_macs": [item.upper() for item in (device_macs or []) if item],
                 "device_histories": device_samples or {},
+                "citations": [],
                 "artifact_ids": [],
                 "session_id": f"sync-{uuid4()}",
             }
@@ -394,6 +395,7 @@ class HealthAgentService:
             "subject_elder_id": subject_elder_id,
             "target_device_macs": [item.upper() for item in (device_macs or []) if item],
             "device_histories": device_samples or {},
+            "citations": [],
             "artifact_ids": [],
             "session_id": session_id,
         }
@@ -1504,7 +1506,7 @@ class HealthAgentService:
             "references": [item["source_path"] for item in state.get("citations", [])],
             "analysis": state.get("analysis_payload", {}),
             "attachments": state.get("attachments", []),
-            "citations": state.get("citations", []),
+            "citations": list(state.get("citations") or []),
             "artifact_ids": state.get("artifact_ids", []),
             "scope": state.get("scope", AnalysisScope.COMMUNITY.value),
             "window": state.get("window", WindowKind.DAY.value),
@@ -1977,4 +1979,3 @@ class HealthAgentService:
             "group": "trace",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-
