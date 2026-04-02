@@ -455,7 +455,8 @@ cd docker
 docker compose up -d redis
 cd ..
 conda run -n helth 
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+python run.py
+
 ```
 
 然后新开一个终端进入前端目录执行：

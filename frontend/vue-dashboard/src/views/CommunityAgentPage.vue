@@ -193,7 +193,7 @@ function submitFreeChat() {
               :citations="message.trace.citations"
               :selected-model="message.trace.selectedModel"
               :degraded-notes="message.trace.degradedNotes"
-              :open-by-default="message.status === 'streaming'"
+              :streaming="message.status === 'streaming'"
             />
 
             <CommunityAgentAttachmentRenderer
@@ -211,6 +211,7 @@ function submitFreeChat() {
                 v-if="message.role === 'assistant' && message.text"
                 :content="message.text"
                 variant="bubble"
+                :streaming="message.status === 'streaming'"
               />
               <p v-else>{{ message.text || (message.role === "assistant" ? "正在整理结果..." : "") }}</p>
             </div>
@@ -505,7 +506,7 @@ function submitFreeChat() {
   gap: 14px;
   align-items: center;
   color: var(--text-sub);
-  font-size: 0.82rem;
+  font-size: 0.92rem;
 }
 
 .agent-message__author {
@@ -551,7 +552,7 @@ function submitFreeChat() {
   margin: 0;
   white-space: pre-wrap;
   line-height: 1.85;
-  font-size: 1rem;
+  font-size: 1.15rem;
 }
 
 .agent-composer {

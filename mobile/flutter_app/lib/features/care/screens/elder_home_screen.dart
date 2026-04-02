@@ -5,7 +5,6 @@ import '../../../widgets/logout_action.dart';
 import '../../agent/widgets/ai_chat_dialog.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../../core/theme/app_colors.dart';
-import '../../voice/screens/elder_voice_screen.dart';
 import '../models/care_profile_model.dart';
 import '../providers/care_provider.dart';
 
@@ -132,19 +131,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 20),
-            _buildBigButton(
-              Icons.mic,
-              '语音对话',
-              Colors.purple,
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => ElderVoiceScreen(
-                    deviceMac: metric?.deviceMac,
-                  ),
-                ),
-              ),
-            ),
+
             const SizedBox(height: 20),
             _buildBigButton(
               Icons.auto_awesome,

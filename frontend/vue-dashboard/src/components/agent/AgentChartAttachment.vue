@@ -17,15 +17,62 @@ const props = defineProps<{
 const chartRef = ref<HTMLDivElement | null>(null);
 let chartInstance: echarts.ECharts | null = null;
 
-const resolvedHeight = computed(() => props.height ?? 320);
+/** Detect whether the chart is a pie or donut */
+function isPieChart(option: Record<string, unknown>): boolean {
+  const series = Array.isArray(option.series) ? option.series : [];
+  return series.some(
+    (s: Record<string, unknown>) => s && s.type === "pie",
+  );
+}
+
+const resolvedHeight = computed(() => {
+  if (props.height) return props.height;
+  // Pie charts get more vertical space by default
+  const option = (props.chart.echarts_option ?? {}) as Record<string, unknown>;
+  return isPieChart(option) ? 420 : 340;
+});
+
+// ── BioRender-inspired color palette ──────────────────────────────
+// Curated from BioRender's scientific illustration style:
+// clear, saturated-but-not-neon, publication-quality colors.
+const BIORENDER_PALETTE = [
+  "#3C91E6", // sky blue
+  "#6BCB77", // fresh green
+  "#FF6B6B", // coral red
+  "#FFB347", // warm amber
+  "#A78BFA", // soft purple
+  "#4ECDC4", // teal
+  "#FF8FAB", // rose pink
+  "#5DADE2", // light royal blue
+  "#F7DC6F", // lemon
+  "#E59866", // terracotta
+];
+
+// Specific semantic colors for risk/status pie charts
+const PIE_SEMANTIC_COLORS: Record<string, string> = {
+  high: "#E74C3C",
+  medium: "#F5B041",
+  low: "#58D68D",
+  unknown: "#AEB6BF",
+  online: "#58D68D",
+  offline: "#AEB6BF",
+  warning: "#F5B041",
+  "高风险": "#E74C3C",
+  "中风险": "#F5B041",
+  "低风险": "#58D68D",
+  "未知": "#AEB6BF",
+  "在线": "#58D68D",
+  "离线": "#AEB6BF",
+  "告警": "#F5B041",
+};
 
 // Deep-merge theme overrides into any echarts option coming from backend
 function applyEchartsTheme(option: Record<string, unknown>): Record<string, unknown> {
   const axisStyle = {
     axisLine: { lineStyle: { color: "rgba(15, 23, 42, 0.1)" } },
     splitLine: { lineStyle: { color: "rgba(15, 23, 42, 0.05)", type: "dashed" } },
-    axisLabel: { color: "#475569", fontSize: 12 },
-    nameTextStyle: { color: "#64748b" },
+    axisLabel: { color: "#475569", fontSize: 13 },
+    nameTextStyle: { color: "#64748b", fontSize: 13 },
   };
 
   const applyAxis = (axes: unknown) => {
@@ -38,52 +85,122 @@ function applyEchartsTheme(option: Record<string, unknown>): Record<string, unkn
     }));
   };
 
-  // Upgrade series: thicker lines, glowing area, bigger symbols
-  const PALETTE = ["#22d3ee", "#f97316", "#a78bfa", "#34d399", "#fb923c", "#60a5fa", "#f472b6"];
+  // Upgrade series based on chart type
   const series = Array.isArray(option.series)
-    ? (option.series as Record<string, unknown>[]).map((s, i) => ({
-        smooth: true,
-        showSymbol: false,
-        symbolSize: 6,
-        ...s,
-        lineStyle: { width: 2.5, color: PALETTE[i % PALETTE.length], ...(s.lineStyle as object ?? {}) },
-        areaStyle: s.type === "line" ? {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: (PALETTE[i % PALETTE.length] + "44") },
-            { offset: 1, color: (PALETTE[i % PALETTE.length] + "05") },
-          ]),
-          ...(s.areaStyle as object ?? {}),
-        } : s.areaStyle,
-        itemStyle: { color: PALETTE[i % PALETTE.length], ...(s.itemStyle as object ?? {}) },
-      }))
+    ? (option.series as Record<string, unknown>[]).map((s, i) => {
+        // ── Pie / Donut charts ──
+        if (s.type === "pie") {
+          const dataArr = Array.isArray(s.data) ? s.data as Record<string, unknown>[] : [];
+          const coloredData = dataArr.map((item, di) => {
+            const name = String(item.name ?? "");
+            const semanticColor = PIE_SEMANTIC_COLORS[name.toLowerCase()] ?? PIE_SEMANTIC_COLORS[name];
+            const color = semanticColor ?? BIORENDER_PALETTE[di % BIORENDER_PALETTE.length];
+            return {
+              ...item,
+              itemStyle: {
+                color,
+                borderColor: "#ffffff",
+                borderWidth: 3,
+                shadowBlur: 12,
+                shadowColor: "rgba(0, 0, 0, 0.08)",
+                ...((item.itemStyle as object) ?? {}),
+              },
+            };
+          });
+
+          return {
+            ...s,
+            radius: s.radius ?? ["42%", "75%"],
+            center: s.center ?? ["50%", "54%"],
+            data: coloredData,
+            label: {
+              show: true,
+              fontSize: 14,
+              fontWeight: 600,
+              color: "#334155",
+              formatter: "{b}\n{d}%",
+              lineHeight: 20,
+              ...((s.label as object) ?? {}),
+            },
+            labelLine: {
+              length: 18,
+              length2: 14,
+              lineStyle: { color: "#94a3b8", width: 1.5 },
+              ...((s.labelLine as object) ?? {}),
+            },
+            emphasis: {
+              scale: true,
+              scaleSize: 8,
+              itemStyle: {
+                shadowBlur: 24,
+                shadowColor: "rgba(0, 0, 0, 0.18)",
+              },
+              label: { fontSize: 16, fontWeight: 700 },
+              ...((s.emphasis as object) ?? {}),
+            },
+            animationType: "scale",
+            animationEasing: "elasticOut",
+            animationDelay: (idx: number) => idx * 80,
+          };
+        }
+
+        // ── Line / Bar / Area charts ──
+        return {
+          smooth: true,
+          showSymbol: false,
+          symbolSize: 7,
+          ...s,
+          lineStyle: { width: 2.8, color: BIORENDER_PALETTE[i % BIORENDER_PALETTE.length], ...(s.lineStyle as object ?? {}) },
+          areaStyle: s.type === "line" ? {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: (BIORENDER_PALETTE[i % BIORENDER_PALETTE.length] + "44") },
+              { offset: 1, color: (BIORENDER_PALETTE[i % BIORENDER_PALETTE.length] + "05") },
+            ]),
+            ...(s.areaStyle as object ?? {}),
+          } : s.areaStyle,
+          itemStyle: {
+            color: BIORENDER_PALETTE[i % BIORENDER_PALETTE.length],
+            borderRadius: s.type === "bar" ? [6, 6, 0, 0] : undefined,
+            ...(s.itemStyle as object ?? {}),
+          },
+        };
+      })
     : option.series;
 
-  return {
+  const themed: Record<string, unknown> = {
     ...option,
     backgroundColor: "transparent",
-    textStyle: { color: "#334155", fontFamily: "'Manrope','Noto Sans SC',sans-serif" },
+    color: BIORENDER_PALETTE,
+    textStyle: { color: "#334155", fontFamily: "'Manrope','Noto Sans SC',sans-serif", fontSize: 13 },
     legend: {
       top: 8,
-      textStyle: { color: "#475569", fontSize: 13 },
+      textStyle: { color: "#475569", fontSize: 14, fontWeight: 500 },
       inactiveColor: "#cbd5e1",
+      itemGap: 16,
       ...((option.legend as object) ?? {}),
     },
     tooltip: {
-      trigger: "axis",
+      trigger: isPieChart(option) ? "item" : "axis",
       backgroundColor: "rgba(255, 255, 255, 0.98)",
       borderColor: "rgba(15, 23, 42, 0.12)",
       borderWidth: 1,
-      textStyle: { color: "#0f172a", fontSize: 13 },
+      textStyle: { color: "#0f172a", fontSize: 14 },
       axisPointer: {
         lineStyle: { color: "rgba(15, 23, 42, 0.15)", width: 1.5, type: "dashed" },
       },
       ...((option.tooltip as object) ?? {}),
     },
-    grid: option.grid ?? { left: "4%", right: "3%", top: 48, bottom: 32, containLabel: true },
-    xAxis: applyAxis(option.xAxis),
-    yAxis: applyAxis(option.yAxis),
     series,
   };
+
+  // Non-pie charts get grid + axis theming
+  if (!isPieChart(option)) {
+    themed.grid = option.grid ?? { left: "4%", right: "3%", top: 48, bottom: 32, containLabel: true };
+    themed.xAxis = applyAxis(option.xAxis);
+    themed.yAxis = applyAxis(option.yAxis);
+  }
+
+  return themed;
 }
 
 function renderChart() {
@@ -128,8 +245,8 @@ onUnmounted(() => {
 <style scoped>
 .agent-chart-card {
   display: grid;
-  gap: 14px;
-  padding: 20px;
+  gap: 16px;
+  padding: 24px;
   border-radius: 24px;
   background: #ffffff;
   border: 1px solid var(--line-medium);
@@ -144,7 +261,7 @@ onUnmounted(() => {
   inset: 0 auto auto 0;
   width: 100%;
   height: 4px;
-  background: linear-gradient(90deg, var(--brand) 0%, #38bdf8 40%, transparent 100%);
+  background: linear-gradient(90deg, #3C91E6 0%, #4ECDC4 40%, #6BCB77 100%);
   border-radius: 24px 24px 0 0;
   opacity: 0.9;
 }
@@ -159,7 +276,7 @@ onUnmounted(() => {
 .agent-chart-card__head h4 {
   margin: 0;
   color: var(--text-main);
-  font-size: 1.15rem;
+  font-size: 1.25rem;
   font-weight: 800;
   letter-spacing: -0.01em;
 }
@@ -168,27 +285,27 @@ onUnmounted(() => {
   margin: 6px 0 0;
   color: var(--text-sub);
   line-height: 1.65;
-  font-size: 0.88rem;
+  font-size: 0.95rem;
 }
 
 .agent-chart-card__badge {
-  padding: 4px 10px;
+  padding: 5px 12px;
   border-radius: 999px;
-  background: #f1f5f9;
-  color: var(--brand);
-  font-size: 0.7rem;
+  background: linear-gradient(135deg, #f0fdf4, #ecfeff);
+  color: #0f766e;
+  font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.12em;
-  border: 1px solid var(--line-medium);
+  border: 1px solid rgba(15, 118, 110, 0.15);
   flex-shrink: 0;
   margin-top: 2px;
 }
 
 .agent-chart-card__canvas {
   width: 100%;
-  min-height: 220px;
+  min-height: 280px;
   border-radius: 16px;
-  background: #f8fafc;
+  background: #fafbfc;
   border: 1px solid var(--line-medium);
 }
 </style>

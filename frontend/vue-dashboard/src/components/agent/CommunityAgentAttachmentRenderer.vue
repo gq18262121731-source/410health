@@ -197,7 +197,6 @@ const preparedAttachments = computed(() =>
           v-for="chart in attachment.charts"
           :key="chart.id"
           :chart="chart"
-          :height="260"
         />
       </div>
 
@@ -267,7 +266,7 @@ const preparedAttachments = computed(() =>
 }
 
 .agent-attachment__head h3 {
-  font-size: 1.15rem;
+  font-size: 1.3rem;
   font-weight: 700;
 }
 
@@ -276,7 +275,7 @@ const preparedAttachments = computed(() =>
   margin: 6px 0 0;
   color: var(--text-sub);
   line-height: 1.7;
-  font-size: 0.92rem;
+  font-size: 1.02rem;
 }
 
 .agent-attachment__metric-grid {
@@ -298,7 +297,7 @@ const preparedAttachments = computed(() =>
 
 .agent-metric-card span {
   color: var(--text-sub);
-  font-size: 0.95rem;
+  font-size: 1.05rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -306,14 +305,14 @@ const preparedAttachments = computed(() =>
 
 .agent-metric-card strong {
   color: var(--text-main);
-  font-size: 1.55rem;
+  font-size: 1.75rem;
   font-weight: 700;
   line-height: 1.2;
 }
 
 .agent-metric-card small {
   color: var(--text-sub);
-  font-size: 0.82rem;
+  font-size: 0.92rem;
 }
 
 .agent-metric-card[data-tone="high"] strong,
@@ -341,15 +340,15 @@ const preparedAttachments = computed(() =>
 .agent-table-wrap table {
   min-width: 100%;
   border-collapse: collapse;
-  font-size: 0.95rem;
+  font-size: 1.08rem;
 }
 
 .agent-table-wrap th {
-  padding: 12px 16px;
+  padding: 14px 18px;
   text-align: left;
   white-space: nowrap;
   color: var(--text-sub);
-  font-size: 0.88rem;
+  font-size: 0.98rem;
   font-weight: 700;
   letter-spacing: 0.05em;
   background: #f8fafc;
@@ -357,10 +356,10 @@ const preparedAttachments = computed(() =>
 }
 
 .agent-table-wrap td {
-  padding: 11px 16px;
+  padding: 13px 18px;
   white-space: nowrap;
   color: var(--text-main);
-  font-size: 0.93rem;
+  font-size: 1.02rem;
   border-bottom: 1px solid var(--line-default);
   min-width: 80px;
 }
@@ -395,7 +394,7 @@ const preparedAttachments = computed(() =>
 }
 
 .agent-report__head h4 {
-  font-size: 1.55rem;
+  font-size: 1.75rem;
   letter-spacing: -0.03em;
   font-weight: 700;
   color: var(--text-main);
@@ -406,7 +405,7 @@ const preparedAttachments = computed(() =>
 .agent-report__summary {
   margin: 4px 0 0;
   color: var(--text-sub);
-  font-size: 0.95rem;
+  font-size: 1.08rem;
   line-height: 1.7;
 }
 
@@ -449,7 +448,7 @@ const preparedAttachments = computed(() =>
 }
 
 .agent-report__section h5 {
-  font-size: 1.2rem;
+  font-size: 1.35rem;
   letter-spacing: -0.01em;
   font-weight: 700;
   color: var(--text-main);

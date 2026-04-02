@@ -237,6 +237,17 @@ class _AiHealthAppState extends State<AiHealthApp> {
         scaffoldBackgroundColor: AppColors.background,
         useMaterial3: true,
         fontFamily: 'Inter', // Ensuring modern typography
+        textTheme: const TextTheme(
+          displayLarge: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: AppColors.textMain),
+          displayMedium: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: AppColors.textMain),
+          displaySmall: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: AppColors.textMain),
+          headlineMedium: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: AppColors.textMain),
+          titleLarge: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textMain),
+          titleMedium: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textMain),
+          bodyLarge: TextStyle(fontSize: 16, color: AppColors.textMain),
+          bodyMedium: TextStyle(fontSize: 14, color: AppColors.textMain),
+          labelLarge: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textSub),
+        ),
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.transparent,
           elevation: 0,
@@ -244,7 +255,7 @@ class _AiHealthAppState extends State<AiHealthApp> {
           iconTheme: IconThemeData(color: AppColors.textMain),
           titleTextStyle: TextStyle(
             color: AppColors.textMain,
-            fontSize: 20,
+            fontSize: 22, // Increased from 20
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -266,7 +277,7 @@ class _AiHealthAppState extends State<AiHealthApp> {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
-            textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18), // Increased from 16
           ),
         ),
         outlinedButtonTheme: OutlinedButtonThemeData(
@@ -277,6 +288,7 @@ class _AiHealthAppState extends State<AiHealthApp> {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
+            textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18), // Added explicit style
           ),
         ),
         dialogTheme: DialogThemeData(
@@ -288,12 +300,12 @@ class _AiHealthAppState extends State<AiHealthApp> {
           ),
           titleTextStyle: const TextStyle(
             color: AppColors.textMain,
-            fontSize: 20,
+            fontSize: 24, // Increased from 20
             fontWeight: FontWeight.bold,
           ),
           contentTextStyle: const TextStyle(
             color: AppColors.textSub,
-            fontSize: 16,
+            fontSize: 18, // Increased from 16
           ),
         ),
         inputDecorationTheme: InputDecorationTheme(
@@ -307,8 +319,8 @@ class _AiHealthAppState extends State<AiHealthApp> {
             borderRadius: BorderRadius.circular(12),
             borderSide: const BorderSide(color: AppColors.primary, width: 2),
           ),
-          labelStyle: const TextStyle(color: AppColors.textSub),
-          hintStyle: const TextStyle(color: AppColors.textMuted),
+          labelStyle: const TextStyle(color: AppColors.textSub, fontSize: 16), // Increased from implicit default
+          hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 14), // Increased from implicit default
         ),
       ),
       home: GlobalAlarmListener(

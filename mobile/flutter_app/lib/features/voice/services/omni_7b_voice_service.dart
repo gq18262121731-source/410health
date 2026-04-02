@@ -11,6 +11,15 @@ class Omni7bVoiceService {
 
   late final Dio _dio;
 
+  static const String _systemPrompt = '''
+你是面向老人的AI健康守护助手，当前正处于智慧康养项目的演示体验环节。
+你的任务是用简单、温和、充满关怀的拟人化口语和体验者（代入老人角色）对话，展现系统的智能化与温度。
+约束要求：
+1. 每次回答必须控制在2到3个短句，口语化、短平快，不要长篇大论，也不要表现出僵硬的机器感。
+2. 如果被问及健康状况，优先用通俗易懂的话告诉对方目前的身体状态很不错、很平稳，切忌堆砌生硬的医学术语或具体数值分析。
+3. 展现出你是一个随时待命、可靠且贴心的守护者，让听众感受到AI的陪伴感。
+''';
+
   Omni7bVoiceService({
     required this.apiKey,
     required this.apiBase,
@@ -34,6 +43,10 @@ class Omni7bVoiceService {
     final response = await _postChat(
       messages: <Map<String, Object>>[
         <String, Object>{
+          'role': 'system',
+          'content': _systemPrompt,
+        },
+        <String, Object>{
           'role': 'user',
           'content': message,
         },
@@ -46,6 +59,10 @@ class Omni7bVoiceService {
     final audioInput = await _buildAudioInput(audioPath);
     final response = await _postChat(
       messages: <Map<String, Object>>[
+        <String, Object>{
+          'role': 'system',
+          'content': _systemPrompt,
+        },
         <String, Object>{
           'role': 'user',
           'content': <Map<String, Object>>[audioInput],
@@ -62,6 +79,10 @@ class Omni7bVoiceService {
     final audioInput = await _buildAudioInput(audioPath);
     final response = await _postChat(
       messages: <Map<String, Object>>[
+        <String, Object>{
+          'role': 'system',
+          'content': _systemPrompt,
+        },
         <String, Object>{
           'role': 'user',
           'content': <Map<String, Object>>[

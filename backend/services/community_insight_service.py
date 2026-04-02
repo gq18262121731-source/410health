@@ -672,10 +672,10 @@ class CommunityInsightService:
                             "type": "pie",
                             "radius": ["45%", "72%"],
                             "data": [
-                                {"name": "high", "value": risk_distribution.get("high", 0)},
-                                {"name": "medium", "value": risk_distribution.get("medium", 0)},
-                                {"name": "low", "value": risk_distribution.get("low", 0)},
-                                {"name": "unknown", "value": risk_distribution.get("unknown", 0)},
+                                {"name": "高风险", "value": risk_distribution.get("high", 0)},
+                                {"name": "中风险", "value": risk_distribution.get("medium", 0)},
+                                {"name": "低风险", "value": risk_distribution.get("low", 0)},
+                                {"name": "未知", "value": risk_distribution.get("unknown", 0)},
                             ],
                         }
                     ],
@@ -694,7 +694,14 @@ class CommunityInsightService:
                             "type": "pie",
                             "radius": "68%",
                             "data": [
-                                {"name": key, "value": value}
+                                {
+                                    "name": {
+                                        "online": "在线",
+                                        "offline": "离线",
+                                        "warning": "告警"
+                                    }.get(key, key), 
+                                    "value": value
+                                }
                                 for key, value in device_status_distribution.items()
                             ],
                         }

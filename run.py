@@ -38,6 +38,6 @@ if __name__ == "__main__":
     print("\nPlease enter this IP in the mobile app's Server Settings (accessible via the Gear icon on the Login screen).")
     print("\n" + "="*60 + "\n")
 
-    # Start Uvicorn listening on all interfaces
+    # Start Uvicorn listening on all interfaces with hot-reload enabled
     # We must bind to 0.0.0.0 to accept external requests
-    os.system("python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000")
+    os.system("python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload")

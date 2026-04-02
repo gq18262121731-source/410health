@@ -44,7 +44,7 @@ type SerialSelectionGate = {
   hasFreshSample: boolean;
 };
 
-const DISPLAY_READY_SERIAL_PACKET_TYPES = new Set(["response_ab", "response_a", "response_a_only", "broadcast", "legacy_response", "legacy_response_a", "legacy_response_b"]);
+const DISPLAY_READY_SERIAL_PACKET_TYPES = new Set(["response_ab", "response_a", "response_a_only", "response_b", "broadcast", "legacy_response", "legacy_response_a", "legacy_response_b"]);
 
 const serialSelectionGate = ref<SerialSelectionGate | null>(null);
 
@@ -133,10 +133,10 @@ function sparseDeduplicateSamples(samples: HealthSample[], maxFlatRun = 10): Hea
 function isDisplayReadySample(sample: HealthSample | null | undefined, ingestMode?: string | null): sample is HealthSample {
   if (!sample) return false;
   if (ingestMode === "serial" || sample.source === "serial") {
-    // 串口模式：收到什么参数就更新什么参数，缺失字段由后端回填上一时刻值。
+    // 串口模式：至少一项有效生命体征即可展示（后端已回填上一时刻值）
     if (sample.packet_type && !DISPLAY_READY_SERIAL_PACKET_TYPES.has(sample.packet_type)) return false;
-    if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 0) return false;
-    return true;
+    const hasAnyVital = sample.heart_rate > 0 || sample.blood_oxygen > 0 || sample.temperature > 0;
+    return hasAnyVital;
   }
   if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 30) return false;
   return true;

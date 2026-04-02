@@ -2,7 +2,7 @@ import { computed, onMounted, onUnmounted, ref, watch, type Ref } from "vue";
 import { api, type HealthSample } from "../api/client";
 import { mergeHealthSample, mergeHealthSeries } from "../domain/healthSampleMerge";
 
-const DISPLAY_READY_SERIAL_PACKET_TYPES = new Set(["response_ab", "response_a", "response_a_only", "broadcast", "legacy_response", "legacy_response_a", "legacy_response_b"]);
+const DISPLAY_READY_SERIAL_PACKET_TYPES = new Set(["response_ab", "response_a", "response_a_only", "response_b", "broadcast", "legacy_response", "legacy_response_a", "legacy_response_b"]);
 
 function parseBloodPressure(value?: string | null): { sbp: number | null; dbp: number | null } {
   if (!value) return { sbp: null, dbp: null };
@@ -18,13 +18,10 @@ function parseBloodPressure(value?: string | null): { sbp: number | null; dbp: n
 export function isDisplayReadySample(sample: HealthSample | null | undefined, ingestMode?: string | null): sample is HealthSample {
   if (!sample) return false;
   if (ingestMode === "serial" || sample.source === "serial") {
-    if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 0) return false;
     if (sample.packet_type && !DISPLAY_READY_SERIAL_PACKET_TYPES.has(sample.packet_type)) return false;
-    if (sample.packet_type !== "response_a_only" && sample.packet_type !== "response_a" && sample.packet_type !== "broadcast") {
-      const { sbp, dbp } = parseBloodPressure(sample.blood_pressure);
-      if (!sample.blood_pressure || (sbp ?? 0) <= 0 || (dbp ?? 0) <= 0) return false;
-    }
-    return true;
+    // 串口模式：至少一项有效生命体征即可展示（后端已回填上一时刻值）
+    const hasAnyVital = sample.heart_rate > 0 || sample.blood_oxygen > 0 || sample.temperature > 0;
+    return hasAnyVital;
   }
   if (sample.heart_rate <= 0 || sample.blood_oxygen <= 0 || sample.temperature <= 30) return false;
   return true;

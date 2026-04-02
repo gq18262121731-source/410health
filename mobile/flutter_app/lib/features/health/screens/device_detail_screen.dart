@@ -58,7 +58,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       appBar: AppBar(
         title: Text(
           '实时监测: ${widget.deviceMac}',
-          style: const TextStyle(color: AppColors.textMain, fontSize: 16, fontWeight: FontWeight.bold),
+          style: const TextStyle(color: AppColors.textMain, fontSize: 20, fontWeight: FontWeight.bold), // Increased from 16
         ),
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -170,7 +170,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               ),
             ),
           const SizedBox(height: 24),
-          const Text('实时数据会自动刷新，没有新包时会保留最近一次有效样本', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+          const Text('实时数据会自动刷新，没有新包时会保留最近一次有效样本', style: TextStyle(color: AppColors.textMuted, fontSize: 16)), // Increased from 12
         ],
       ),
     );
@@ -200,14 +200,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('实时健康分', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
-              SizedBox(height: 4),
-              Text('今日状态监测中', style: TextStyle(color: Colors.white70, fontSize: 12)),
+              Text('实时健康分', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)), // Increased from 16
+              SizedBox(height: 6),
+              Text('今日状态监测中', style: TextStyle(color: Colors.white70, fontSize: 16)), // Increased from 12
             ],
           ),
           Text(
             '${score ?? '--'}',
-            style: const TextStyle(color: Colors.white, fontSize: 48, fontWeight: FontWeight.bold),
+            style: const TextStyle(color: Colors.white, fontSize: 56, fontWeight: FontWeight.bold), // Increased from 48
           ),
         ],
       ),
@@ -245,22 +245,22 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 14, color: color),
+              Icon(icon, size: 16, color: color), // Increased from 14
               const SizedBox(width: 4),
-              Text(label, style: const TextStyle(color: AppColors.textSub, fontSize: 11)),
+              Text(label, style: const TextStyle(color: AppColors.textSub, fontSize: 13, fontWeight: FontWeight.w500)), // Increased from 11
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(value, style: const TextStyle(color: AppColors.textMain, fontSize: 16, fontWeight: FontWeight.bold)),
+              Text(value, style: const TextStyle(color: AppColors.textMain, fontSize: 18, fontWeight: FontWeight.bold)), // Increased from 16
               if (unit.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(left: 2),
-                  child: Text(unit, style: const TextStyle(color: AppColors.textMuted, fontSize: 9)),
+                  child: Text(unit, style: const TextStyle(color: AppColors.textSub, fontSize: 12, fontWeight: FontWeight.w500)), // Increased from 9
                 ),
             ],
           ),
@@ -333,7 +333,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                       reservedSize: 36,
                       getTitlesWidget: (val, meta) => Text(
                         val.toInt().toString(),
-                        style: const TextStyle(color: AppColors.textMuted, fontSize: 10),
+                        style: const TextStyle(color: AppColors.textMuted, fontSize: 12), // Increased from 10
                       ),
                     ),
                   ),
@@ -389,7 +389,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
                       reservedSize: 36,
                       getTitlesWidget: (val, meta) => Text(
                         val.toInt().toString(),
-                        style: const TextStyle(color: AppColors.textMuted, fontSize: 10),
+                        style: const TextStyle(color: AppColors.textMuted, fontSize: 12), // Increased from 10
                       ),
                     ),
                   ),
@@ -424,7 +424,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
     return Center(
       child: Text(
         message,
-        style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+        style: const TextStyle(color: AppColors.textMuted, fontSize: 14), // Increased from 12
       ),
     );
   }
@@ -445,9 +445,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             padding: const EdgeInsets.only(left: 12, bottom: 8),
             child: Row(
               children: [
-                const Icon(Icons.show_chart, color: AppColors.textMuted, size: 14),
+                const Icon(Icons.show_chart, color: AppColors.textMuted, size: 16),
                 const SizedBox(width: 8),
-                Text(title, style: const TextStyle(color: AppColors.textMuted, fontSize: 11)),
+                Text(title, style: const TextStyle(color: AppColors.textSub, fontSize: 14, fontWeight: FontWeight.bold)), // Increased from 11
               ],
             ),
           ),

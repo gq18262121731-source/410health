@@ -444,11 +444,13 @@ def is_display_ready_sample(sample: HealthSample, ingest_mode: DeviceIngestMode 
         return True
     if effective == DeviceIngestMode.SERIAL:
         # 串口模式：收到即更新，缺失字段由 _merge_with_latest 回填上一时刻值。
-        if sample.heart_rate <= 0 or sample.blood_oxygen <= 0:
-            return False
-        if sample.temperature <= 0:
-            return False
-        return True
+        # 只要有至少一项有效生命体征即可展示（不同包携带不同字段）。
+        has_any_vital = (
+            sample.heart_rate > 0
+            or sample.blood_oxygen > 0
+            or sample.temperature > 0
+        )
+        return has_any_vital
     return True
 
 
@@ -1004,6 +1006,9 @@ def _merge_with_latest(sample: HealthSample) -> HealthSample:
         update["surface_temperature"] = latest.surface_temperature
     if not sample.device_uuid and latest.device_uuid:
         update["device_uuid"] = latest.device_uuid
+    # 健康评分在 ingest 管线末端计算；此处沿用上一时刻评分，避免 UI 闪"--"。
+    if sample.health_score is None and latest.health_score is not None:
+        update["health_score"] = latest.health_score
 
     return sample.model_copy(update=update) if update else sample
 

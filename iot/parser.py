@@ -84,7 +84,7 @@ class T10PacketParser:
         return self._decode_legacy(device_mac, packet, kind, timestamp, source) or stale
 
     def identify_packet(self, payload: bytes) -> PacketKind:
-        if payload.startswith(self._layout.broadcast_prefix) and len(payload) >= 30:
+        if payload.startswith(self._layout.broadcast_prefix) and len(payload) >= 29:
             return PacketKind.BROADCAST
 
         response_a_index = self._find_response_marker(payload, self._layout.response_a_marker)
@@ -92,7 +92,7 @@ class T10PacketParser:
             return PacketKind.RESPONSE_A
 
         response_b_index = self._find_response_marker(payload, self._layout.response_b_marker)
-        if response_b_index != -1 and len(payload) >= response_b_index + 7:
+        if response_b_index != -1 and len(payload) >= response_b_index + 5:
             return PacketKind.RESPONSE_B
 
         if len(payload) <= self._layout.legacy_marker_offset + 1:
@@ -198,16 +198,11 @@ class T10PacketParser:
         stale_macs = [
             mac
             for mac, partial in self._partials.items()
-            if partial.packet_a
-            and not partial.packet_b
-            and now - partial.first_seen > timedelta(seconds=self._merge_timeout)
+            if now - partial.first_seen > timedelta(seconds=self._merge_timeout)
         ]
-        flushed: HealthSample | None = None
         for mac in stale_macs:
-            partial = self._partials.pop(mac)
-            if partial.sample:
-                flushed = partial.sample.model_copy(update={"packet_type": "response_a_only"})
-        return flushed
+            self._partials.pop(mac, None)
+        return None
 
     def _handle_response_a(
         self,
@@ -224,18 +219,20 @@ class T10PacketParser:
         if not partial or timestamp - partial.first_seen > timedelta(seconds=self._merge_timeout):
             partial = PartialPacket(first_seen=timestamp)
 
+        # If there's already a pending B, merge immediately and clear.
+        if partial.packet_b:
+            merged = self._merge_response_b(sample, partial.packet_b, partial.raw_b, timestamp)
+            self._partials.pop(sample.device_mac, None)
+            return merged
+
+        # Store partial and emit A immediately — don't wait for B.
+        # The backend's _merge_with_latest will carry forward BP and other fields.
         partial.first_seen = timestamp
         partial.packet_a = payload
         partial.raw_a = payload.hex().upper()
         partial.sample = sample
         self._partials[sample.device_mac] = partial
-
-        if partial.packet_b:
-            merged = self._merge_response_b(sample, partial.packet_b, partial.raw_b, timestamp)
-            del self._partials[sample.device_mac]
-            return merged
-
-        return None
+        return sample
 
     def _handle_response_b(
         self,
@@ -249,20 +246,43 @@ class T10PacketParser:
 
         normalized_mac = self._normalize_mac(device_mac)
         partial = self._partials.get(normalized_mac)
-        if not partial or timestamp - partial.first_seen > timedelta(seconds=self._merge_timeout):
-            partial = PartialPacket(first_seen=timestamp)
 
-        partial.first_seen = timestamp
-        partial.packet_b = payload
-        partial.raw_b = payload.hex().upper()
-        self._partials[normalized_mac] = partial
-
-        if partial.sample:
-            merged = self._merge_response_b(partial.sample, payload, partial.raw_b, timestamp)
-            del self._partials[normalized_mac]
+        # If there's a pending A sample, merge B into it and return.
+        if partial and partial.sample and timestamp - partial.first_seen <= timedelta(seconds=self._merge_timeout):
+            merged = self._merge_response_b(partial.sample, payload, partial.raw_b or payload.hex().upper(), timestamp)
+            self._partials.pop(normalized_mac, None)
             return merged
 
-        return None
+        # B arrived without a pending A (or A timed out).
+        # Build a partial sample from B fields only — the backend will merge with latest.
+        marker_index = self._find_response_marker(payload, self._layout.response_b_marker)
+        if marker_index == -1 or len(payload) < marker_index + 5:
+            return None
+
+        systolic = payload[marker_index + 3]
+        diastolic = payload[marker_index + 4]
+        
+        body_temperature = 0.0
+        if len(payload) >= marker_index + 7:
+            body_temperature = round(
+                int.from_bytes(payload[marker_index + 5 : marker_index + 7], byteorder="big") / 100.0,
+                2,
+            )
+        self._partials.pop(normalized_mac, None)
+        return HealthSample(
+            device_mac=normalized_mac,
+            timestamp=timestamp,
+            heart_rate=0,
+            temperature=body_temperature if 30.0 <= body_temperature <= 45.0 else 0.0,
+            blood_oxygen=0,
+            blood_pressure=f"{systolic}/{diastolic}",
+            battery=0,
+            sos_flag=False,
+            source=source,
+            device_uuid=self._layout.default_uuid,
+            packet_type=PacketKind.RESPONSE_B.value,
+            raw_packet_b=payload.hex().upper(),
+        )
 
     def _merge_response_b(
         self,
@@ -272,24 +292,27 @@ class T10PacketParser:
         timestamp: datetime,
     ) -> HealthSample:
         marker_index = self._find_response_marker(payload, self._layout.response_b_marker)
-        if marker_index == -1 or len(payload) < marker_index + 7:
+        if marker_index == -1 or len(payload) < marker_index + 5:
             return sample
 
         systolic = payload[marker_index + 3]
         diastolic = payload[marker_index + 4]
-        body_temperature = round(
-            int.from_bytes(payload[marker_index + 5 : marker_index + 7], byteorder="big") / 100.0,
-            2,
-        )
-        return sample.model_copy(
-            update={
-                "timestamp": timestamp,
-                "temperature": body_temperature,
-                "blood_pressure": f"{systolic}/{diastolic}",
-                "packet_type": "response_ab",
-                "raw_packet_b": raw_packet_b,
-            }
-        )
+        
+        update_fields: dict[str, object] = {
+            "timestamp": timestamp,
+            "blood_pressure": f"{systolic}/{diastolic}",
+            "packet_type": "response_ab",
+            "raw_packet_b": raw_packet_b,
+        }
+
+        if len(payload) >= marker_index + 7:
+            body_temp = round(
+                int.from_bytes(payload[marker_index + 5 : marker_index + 7], byteorder="big") / 100.0,
+                2,
+            )
+            update_fields["temperature"] = body_temp
+
+        return sample.model_copy(update=update_fields)
 
     @staticmethod
     def _decode_sos_trigger(sos_value: int) -> str | None:

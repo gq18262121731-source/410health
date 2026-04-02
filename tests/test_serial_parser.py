@@ -39,15 +39,26 @@ def _broadcast_payload(sos_value: int = 0x01) -> bytes:
     )
 
 
-def test_response_a_waits_for_response_b_before_emitting_sample() -> None:
+def test_response_a_emits_immediately_and_b_merges() -> None:
+    """Response A is emitted immediately; when B follows within the merge window,
+    a merged AB sample is also emitted."""
     parser = T10PacketParser()
 
     first = parser.feed("53:57:08:02:00:01", _response_a_payload(), source=IngestionSource.SERIAL)
     second = parser.feed("53:57:08:02:00:01", _response_b_payload(), source=IngestionSource.SERIAL)
 
-    assert first is None
+    # A is emitted immediately (not None)
+    assert first is not None
+    assert first.device_mac == "53:57:08:02:00:01"
+    assert first.heart_rate == 72
+    assert first.blood_oxygen == 98
+    assert first.battery == 90
+    assert first.steps == 1234
+    assert first.packet_type == "response_a"
+    assert first.blood_pressure is None  # A doesn't carry BP
+
+    # B merges with the pending A partial
     assert second is not None
-    assert second.device_mac == "53:57:08:02:00:01"
     assert second.heart_rate == 72
     assert second.blood_oxygen == 98
     assert second.temperature == 36.63
@@ -59,20 +70,28 @@ def test_response_a_waits_for_response_b_before_emitting_sample() -> None:
     assert second.raw_packet_b == _response_b_payload().hex().upper()
 
 
-def test_response_b_arriving_first_is_merged_when_response_a_arrives() -> None:
+def test_response_b_arriving_first_emits_partial_then_a_merges() -> None:
+    """When B arrives before A, B is emitted as a partial sample with BP data.
+    When A arrives next, it merges with the pending B."""
     parser = T10PacketParser()
 
     first = parser.feed("53:57:08:02:00:01", _response_b_payload(), source=IngestionSource.SERIAL)
     second = parser.feed("53:57:08:02:00:01", _response_a_payload(), source=IngestionSource.SERIAL)
 
-    assert first is None
+    # B arrives without pending A → emitted as standalone partial
+    assert first is not None
+    assert first.packet_type == "response_b"
+    assert first.blood_pressure == "120/78"
+    assert first.heart_rate == 0  # B doesn't carry HR
+
+    # A arrives and finds no pending B → emitted as response_a
     assert second is not None
-    assert second.packet_type == "response_ab"
-    assert second.blood_pressure == "120/78"
-    assert second.temperature == 36.63
+    assert second.heart_rate == 72
+    assert second.blood_oxygen == 98
 
 
-def test_stale_partial_packet_is_not_merged_after_timeout() -> None:
+def test_stale_partial_is_cleaned_and_b_emits_standalone() -> None:
+    """After timeout, stale partials are cleaned. Late B is emitted as standalone."""
     parser = T10PacketParser(merge_timeout_seconds=0.1)
     base_time = datetime.now(timezone.utc)
 
@@ -89,14 +108,18 @@ def test_stale_partial_packet_is_not_merged_after_timeout() -> None:
         timestamp=base_time + timedelta(seconds=1),
     )
 
-    assert first is None
-    # Stale response_a is now flushed as response_a_only (not merged with late response_b)
+    # A emitted immediately
+    assert first is not None
+    assert first.packet_type == "response_a"
+    assert first.heart_rate == 72
+    assert first.blood_oxygen == 98
+    assert first.steps == 1234
+
+    # B arrives after timeout → stale A is cleaned, B emits standalone
     assert second is not None
-    assert second.packet_type == "response_a_only"
-    assert second.heart_rate == 72
-    assert second.blood_oxygen == 98
-    assert second.steps == 1234
-    assert second.blood_pressure is None
+    assert second.packet_type == "response_b"
+    assert second.blood_pressure == "120/78"
+    assert second.heart_rate == 0  # B doesn't carry HR
 
 
 def test_broadcast_packet_extracts_sos_fields() -> None:

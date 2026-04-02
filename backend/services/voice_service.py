@@ -142,28 +142,24 @@ class VoiceService:
     @staticmethod
     def _build_elder_voice_style_prompt(*, has_health_context: bool) -> str:
         prompt = (
-            "You are the elder-side health companion assistant in a mobile health app. "
-            "First understand the user's speech accurately, then answer based only on the provided monitoring data. "
-            "Reply in Simplified Chinese. "
-            "Sound warm, gentle, natural, and reassuring, like a patient family health assistant. "
-            "Do not sound blunt or like you are reading a report. "
-            "Start with a short overall impression, then explain the most important point in plain language, "
-            "and end with one simple next-step suggestion. "
-            "When the user asks about today's condition, prefer realistic high-level descriptions such as "
-            "'overall stable', 'a small fluctuation', or 'worth watching a bit more closely'. "
-            "You may use natural phrases like '目前看起来', '整体来说', or '从这会儿的监测看'. "
-            "Never invent measurements, symptoms, diagnoses, examinations, events, or abnormalities that were not provided. "
+            "你是面向老人的健康说明助手、AI健康守护助手，当前正处于智慧康养项目的演示体验环节。\n"
+            "无论用户说什么，必须优先理解用户的语音，然后基于提供的健康监测数据进行自然、口语化的语音反馈。\n"
+            "你的任务是用简单、温和、充满关怀的拟人化口语和体验者（代入老人角色）对话，展现系统的智能化与温度。\n\n"
+            "约束要求：\n"
+            "1. 用简单词语和短句，不使用复杂医学术语。一切回答必须使用简体中文。\n"
+            "2. 语气温和、安抚、好理解，不制造恐慌。必须控制在2到3个短句以内，适合直接转换为语音念给老人听。\n"
+            "3. 优先告诉老人现在身体大概稳不稳、指标的情况。一次只强调最关键的结论，如果指标异常需要复测或求助时，直接给出最简单的下一步动作（如：帮您呼叫家属）。\n"
+            "4. 如果用户询问当天状态，使用诸如“整体指标看起来很平稳”、“血压确实有点小波动，别担心”等高视角的口语描述，不要生硬地朗读数值。\n"
+            "5. 绝对不要虚构和捏造任何健康数值、诊断、症状或未发生的事情。\n"
         )
         if has_health_context:
             prompt += (
-                "If monitoring data is available, weave it into a natural spoken explanation instead of listing raw numbers mechanically. "
+                "6. 请将下方的监测数据自然地融入长者的关怀回复中。\n"
             )
         else:
             prompt += (
-                "If monitoring data is missing or limited, clearly say the current monitoring data is limited, "
-                "and only give cautious, non-diagnostic suggestions. "
+                "6. 目前未能获取到有效的最新体征数据，请坦诚告知，并用温和安抚的口吻回应。\n"
             )
-        prompt += "Keep the answer to 2 to 4 sentences so it is suitable for direct voice playback."
         return prompt
 
     def transcribe(self, audio_bytes: bytes, *, fmt: str = "wav") -> dict[str, object]:
@@ -240,9 +236,13 @@ class VoiceService:
         if health_context:
             system_prompt += health_context
 
+        if normalized_role == "elder":
+            # Force Qwen-Omni to obey the persona by injecting it directly alongside the audio
+            prompt_text = f"【系统指令与约束（必须严格遵守）】\n{system_prompt}\n\n【用户附加要求】\n{prompt_text}"
+
         audio_input_b64 = base64.b64encode(audio_bytes).decode("ascii")
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": "You are a helpful assistant."},
             {
                 "role": "user",
                 "content": [

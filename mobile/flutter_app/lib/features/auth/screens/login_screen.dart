@@ -33,16 +33,16 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               const Text(
                 'AIoT 智慧康养',
-                style: TextStyle(color: AppColors.textMain, fontSize: 38, fontWeight: FontWeight.w900, letterSpacing: -1),
+                style: TextStyle(color: AppColors.textMain, fontSize: 48, fontWeight: FontWeight.w900, letterSpacing: -1.5),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
               const Text(
                 '智慧康养监护系统',
-                style: TextStyle(color: AppColors.textSub, fontSize: 18, fontWeight: FontWeight.w500),
+                style: TextStyle(color: AppColors.textSub, fontSize: 20, fontWeight: FontWeight.w600),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 48),
+              const SizedBox(height: 56),
               TextField(
                 controller: _usernameController,
                 style: const TextStyle(color: AppColors.textMain, fontSize: 18, fontWeight: FontWeight.bold),
@@ -51,7 +51,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 18),
                   filled: true,
                   fillColor: AppColors.surface,
-                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: AppColors.border)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: AppColors.border, width: 1.5)),
                   focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: AppColors.primary, width: 2)),
                   prefixIcon: const Icon(Icons.person, color: AppColors.textSub, size: 26),
                 ),
@@ -66,18 +66,18 @@ class _LoginScreenState extends State<LoginScreen> {
                   hintStyle: const TextStyle(color: AppColors.textMuted, fontSize: 18),
                   filled: true,
                   fillColor: AppColors.surface,
-                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: AppColors.border)),
+                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: AppColors.border, width: 1.5)),
                   focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: const BorderSide(color: AppColors.primary, width: 2)),
                   prefixIcon: const Icon(Icons.lock, color: AppColors.textSub, size: 26),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 32),
               if (authProvider.status == AuthStatus.error)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 16),
                   child: Text(
                     authProvider.errorMessage ?? '登录失败',
-                    style: const TextStyle(color: AppColors.error, fontWeight: FontWeight.bold),
+                    style: const TextStyle(color: AppColors.error, fontSize: 16, fontWeight: FontWeight.bold),
                     textAlign: TextAlign.center,
                   ),
                 ),
@@ -90,13 +90,13 @@ class _LoginScreenState extends State<LoginScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  padding: const EdgeInsets.symmetric(vertical: 20),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   elevation: 0,
                 ),
                 child: authProvider.status == AuthStatus.authenticating
-                    ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(strokeWidth: 3, color: Color(0xFF0F172A)))
-                    : const Text('登 录', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, letterSpacing: 4)),
+                    ? const SizedBox(height: 28, width: 28, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white))
+                    : const Text('登 录', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 4)),
               ),
               const SizedBox(height: 16),
               OutlinedButton(
@@ -107,13 +107,13 @@ class _LoginScreenState extends State<LoginScreen> {
                 },
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppColors.primary,
-                  side: const BorderSide(color: AppColors.primary, width: 1.5),
+                  side: const BorderSide(color: AppColors.primary, width: 2),
                   backgroundColor: Colors.transparent,
-                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  padding: const EdgeInsets.symmetric(vertical: 20),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   elevation: 0,
                 ),
-                child: const Text('注 册', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 4)),
+                child: const Text('注 册', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, letterSpacing: 4)),
               ),
             ],
           ),

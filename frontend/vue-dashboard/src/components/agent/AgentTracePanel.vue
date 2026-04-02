@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import type { AgentCitation } from "../../api/client";
 
 type StageRecord = {
@@ -42,25 +42,16 @@ const props = withDefaults(
     citations: AgentCitation[];
     selectedModel?: string;
     degradedNotes?: string[];
-    openByDefault?: boolean;
+    streaming?: boolean;
   }>(),
   {
     selectedModel: "",
     degradedNotes: () => [],
-    openByDefault: false,
+    streaming: false,
   },
 );
 
-const detailsOpen = ref(Boolean(props.openByDefault));
-
-watch(
-  () => props.openByDefault,
-  (nextValue) => {
-    if (nextValue) {
-      detailsOpen.value = true;
-    }
-  },
-);
+const detailsOpen = ref(false);
 
 function handleToggle(event: Event) {
   detailsOpen.value = (event.target as HTMLDetailsElement).open;
@@ -82,25 +73,54 @@ function toolTone(kind: ToolRecord["toolKind"]) {
 }
 
 const runningStageCount = computed(() => props.stages.filter((item) => item.status === "running").length);
+const runningToolCount = computed(() => props.tools.filter((item) => item.status === "running").length);
+const latestRunningTool = computed(() => [...props.tools].reverse().find((item) => item.status === "running"));
+const latestRunningStage = computed(() => [...props.stages].reverse().find((item) => item.status === "running"));
+
+const summaryTitle = computed(() => {
+  if (latestRunningTool.value) return `正在调用 ${latestRunningTool.value.title}`;
+  if (latestRunningStage.value) return `正在${latestRunningStage.value.label}`;
+  if (props.streaming) return "正在生成回答";
+  if (props.tools.length > 0 || props.stages.length > 0) return "执行过程已完成";
+  if (props.selectedModel?.trim()) return `当前模型 ${props.selectedModel}`;
+  return "查看执行过程";
+});
 
 const summaryText = computed(() => {
-  if (runningStageCount.value > 0) {
-    return `正在执行 ${runningStageCount.value} 个关键步骤`;
+  if (latestRunningTool.value) {
+    return latestRunningTool.value.summary || latestRunningTool.value.toolName;
+  }
+
+  if (latestRunningStage.value) {
+    return latestRunningStage.value.summary || latestRunningStage.value.detail;
+  }
+
+  if (props.streaming) {
+    return "回答内容会继续实时流式输出";
   }
 
   if (props.tools.length > 0) {
-    return `已完成 ${props.tools.length} 个工具调用`;
+    return `共完成 ${props.tools.length} 个工具调用，详情默认折叠`;
   }
 
   if (props.stages.length > 0) {
-    return `已记录 ${props.stages.length} 个执行阶段`;
+    return `共记录 ${props.stages.length} 个执行阶段`;
   }
 
   if (props.selectedModel?.trim()) {
-    return `当前模型 ${props.selectedModel}`;
+    return "点击展开查看完整执行细节";
   }
 
-  return "展开查看关键步骤与工具调用";
+  return "点击展开查看完整步骤";
+});
+
+const summaryMeta = computed(() => {
+  if (runningToolCount.value > 0) return `${runningToolCount.value} 个工具运行中`;
+  if (runningStageCount.value > 0) return `${runningStageCount.value} 个阶段进行中`;
+  if (props.tools.length > 0) return `${props.tools.length} 个工具`;
+  if (props.stages.length > 0) return `${props.stages.length} 个阶段`;
+  if (props.citations.length > 0) return `${props.citations.length} 条来源`;
+  return "";
 });
 </script>
 
@@ -108,16 +128,18 @@ const summaryText = computed(() => {
   <details
     v-if="stages.length || tools.length || citations.length || degradedNotes.length"
     class="agent-trace"
+    :data-streaming="streaming ? 'true' : 'false'"
     :open="detailsOpen"
     @toggle="handleToggle"
   >
     <summary class="agent-trace__summary">
-      <span class="agent-trace__spark">✦</span>
+      <span class="agent-trace__spark">AI</span>
       <div class="agent-trace__summary-copy">
-        <strong>{{ detailsOpen ? "执行过程" : "查看执行过程" }}</strong>
+        <strong>{{ summaryTitle }}</strong>
         <span>{{ summaryText }}</span>
       </div>
-      <span class="agent-trace__caret" :data-open="detailsOpen">⌄</span>
+      <small v-if="summaryMeta" class="agent-trace__summary-tag">{{ summaryMeta }}</small>
+      <span class="agent-trace__caret" :data-open="detailsOpen">></span>
     </summary>
 
     <div class="agent-trace__body">
@@ -221,18 +243,23 @@ const summaryText = computed(() => {
 
 <style scoped>
 .agent-trace {
-  border-radius: 24px;
+  border-radius: 22px;
   background: #ffffff;
   border: 1px solid var(--line-medium);
   overflow: hidden;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
 }
 
+.agent-trace[data-streaming="true"] {
+  border-color: rgba(37, 99, 235, 0.26);
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.08);
+}
+
 .agent-trace__summary {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 18px;
+  padding: 14px 16px;
   cursor: pointer;
   list-style: none;
 }
@@ -242,14 +269,21 @@ const summaryText = computed(() => {
 }
 
 .agent-trace__spark {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 999px;
   display: grid;
   place-items: center;
   color: var(--brand);
-  background: #eff6ff;
-  font-size: 0.95rem;
+  background: linear-gradient(135deg, #eff6ff, #f8fafc);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  flex-shrink: 0;
+}
+
+.agent-trace[data-streaming="true"] .agent-trace__spark {
+  animation: trace-pulse 1.6s ease-in-out infinite;
 }
 
 .agent-trace__summary-copy {
@@ -261,21 +295,35 @@ const summaryText = computed(() => {
 
 .agent-trace__summary-copy strong {
   color: var(--text-main);
+  line-height: 1.35;
 }
 
 .agent-trace__summary-copy span {
   color: var(--text-sub);
   font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.agent-trace__summary-tag {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid var(--line-medium);
+  color: var(--text-sub);
+  font-size: 0.74rem;
+  font-weight: 700;
 }
 
 .agent-trace__caret {
   color: var(--text-sub);
-  font-size: 1rem;
+  font-size: 0.94rem;
   transition: transform 180ms ease;
+  flex-shrink: 0;
 }
 
 .agent-trace__caret[data-open="true"] {
-  transform: rotate(180deg);
+  transform: rotate(90deg);
 }
 
 .agent-trace__body,
@@ -449,29 +497,27 @@ const summaryText = computed(() => {
   border-color: rgba(167, 139, 250, 0.4);
 }
 
-.agent-trace__section h4 {
-  margin: 0;
-  color: var(--text-main);
-  font-size: 0.96rem;
+@keyframes trace-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.16);
+  }
+
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+  }
 }
 
-.agent-trace__section header span {
-  color: var(--text-sub);
-  font-size: 0.8rem;
-}
+@media (max-width: 760px) {
+  .agent-trace__summary {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
 
-.agent-trace__summary-copy strong {
-  color: var(--text-main);
-}
-
-.agent-trace__summary-copy span {
-  color: var(--text-sub);
-  font-size: 0.84rem;
-}
-
-.agent-trace__caret {
-  color: var(--text-sub);
-  font-size: 1rem;
-  transition: transform 180ms ease;
+  .agent-trace__summary-tag {
+    order: 3;
+  }
 }
 </style>

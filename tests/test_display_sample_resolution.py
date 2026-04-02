@@ -9,11 +9,12 @@ from backend.models.health_model import HealthSample, IngestionSource
 
 
 def test_display_ready_sample_rejects_incomplete_serial_payload() -> None:
+    # All vital signs are zero/missing → truly incomplete → must be rejected.
     sample = HealthSample(
         device_mac="54:10:26:01:00:DF",
         timestamp=datetime.now(timezone.utc),
         heart_rate=0,
-        temperature=30.0,
+        temperature=0.0,
         blood_oxygen=0,
         blood_pressure="0/0",
         battery=0,
@@ -90,7 +91,7 @@ def test_restore_recent_samples_to_stream_publishes_only_display_ready_samples(m
         device_mac="54:10:26:01:00:DF",
         timestamp=datetime.now(timezone.utc) - timedelta(minutes=10),
         heart_rate=0,
-        temperature=30.0,
+        temperature=0.0,
         blood_oxygen=0,
         blood_pressure="0/0",
         battery=0,
