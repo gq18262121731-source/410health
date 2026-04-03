@@ -16,17 +16,20 @@ class ElderHomeScreen extends StatefulWidget {
 }
 
 class _ElderHomeScreenState extends State<ElderHomeScreen> {
+  late CareProvider _careProvider;
+
   @override
   void initState() {
     super.initState();
+    _careProvider = context.read<CareProvider>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<CareProvider>().startAutoRefresh();
+      if (mounted) _careProvider.startAutoRefresh();
     });
   }
 
   @override
   void dispose() {
-    context.read<CareProvider>().stopAutoRefresh();
+    _careProvider.stopAutoRefresh();
     super.dispose();
   }
 
@@ -673,9 +676,12 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
       SnackBar(
         content: Text(
           success ? '手环已成功登记并绑定' : (provider.errorMessage ?? '绑定手环失败，请稍后重试'),
-          style: const TextStyle(fontSize: 18),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
         ),
-        backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,
+        backgroundColor: success ? AppColors.success : AppColors.error,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        duration: const Duration(seconds: 4),
       ),
     );
   }
@@ -722,20 +728,30 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
   }
 
   String _normalizeMacInput(String rawValue) {
-    final compact =
-        rawValue.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+    if (rawValue.isEmpty) return '';
+    
+    // 强制去除所有非十六进制字符、空格、不可见字符，并转大写
+    final compact = rawValue
+        .replaceAll(RegExp(r'[^0-9A-Fa-f]'), '')
+        .trim()
+        .toUpperCase();
+        
+    // 如果不是 12 位，可能是输入中或格式错误，返回清洗后的原始大写（供 isValidMac 验证）
     if (compact.length != 12) {
-      return rawValue.trim().toUpperCase();
+      return compact;
     }
+
+    // 标准格式化为 AA:BB:CC:DD:EE:FF
     final parts = <String>[];
-    for (var index = 0; index < compact.length; index += 2) {
-      parts.add(compact.substring(index, index + 2));
+    for (var i = 0; i < 12; i += 2) {
+      parts.add(compact.substring(i, i + 2));
     }
     return parts.join(':');
   }
 
   bool _isValidMac(String value) {
-    final compact = value.replaceAll(':', '');
+    if (value.isEmpty) return false;
+    final compact = value.replaceAll(':', '').trim();
     return RegExp(r'^[0-9A-F]{12}$').hasMatch(compact);
   }
 }

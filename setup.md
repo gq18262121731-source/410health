@@ -190,7 +190,7 @@ SERIAL_ENABLED=false
 conda run -n helth python -m pip install -r requirements.txt
 ```
 
-这里的 `requirements.txt` 是完整开发依赖，适合本地开发、调试和联调使用。
+这里的 `requirements.txt` 是完整开发依赖，适合本地开发、调试 and 联调使用。
 
 项目里还有一个 `requirements-runtime.txt`，它是精简运行依赖，只适合“尽快把服务跑起来”的场景，不建议把它当作默认安装入口。
 
@@ -260,42 +260,6 @@ conda run -n helth python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```powershell
 conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1
 ```
-
-## 12. GPU 与稳定化补充
-
-### 12.1 推荐的 PyTorch GPU 环境
-
-如果现场演示机器带 NVIDIA GPU，推荐把 `helth` 环境切到 `torch 2.2.2 + cu121`：
-
-```powershell
-conda run -n helth python -m pip uninstall -y torch torchvision torchaudio
-conda run -n helth python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
-```
-
-安装后验证：
-
-```powershell
-conda run -n helth python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
-```
-
-项目当前支持：
-- `MODEL_DEVICE=auto`：优先 CUDA，失败时回退 CPU
-- `MODEL_DEVICE=cpu`：强制使用 CPU
-- `MODEL_DEVICE=cuda`：强制使用 GPU，不可用时直接报错
-
-### 12.2 现场演示的稳定化输出
-
-新的健康评分链路已经加入“稳定值判分 + 去抖 + 事件聚合”，现场高频采样时建议重点查看这些返回字段：
-- `stabilized_vitals`
-- `active_events`
-- `score_adjustment_reason`
-
-对应接口：
-- `POST /api/v1/health/score`
-- `POST /api/v1/health/warning/check`
-- `POST /api/v1/agent/health/explain`
-
-当前 `window_data` 已经不再只看最后一个点，而是会返回 `window_mode=event_aggregated_window`，用于抑制边界抖动造成的误报。
 
 这个脚本会调用项目里的 `scripts/start_frontend.ps1`，默认监听 `127.0.0.1:5173`。如果本地还没有 `node_modules`，脚本会先执行安装。
 
@@ -454,9 +418,7 @@ conda run -n helth python -m pip install -r requirements.txt
 cd docker
 docker compose up -d redis
 cd ..
-conda run -n helth 
-python run.py
-
+conda run -n helth python run.py
 ```
 
 然后新开一个终端进入前端目录执行：
@@ -466,6 +428,42 @@ cd frontend\vue-dashboard
 npm install
 npm run dev
 ```
+
+## 12. GPU 与稳定化补充
+
+### 12.1 推荐的 PyTorch GPU 环境
+
+如果现场演示机器带 NVIDIA GPU，推荐把 `helth` 环境切到 `torch 2.2.2 + cu121`：
+
+```powershell
+conda run -n helth python -m pip uninstall -y torch torchvision torchaudio
+conda run -n helth python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
+```
+
+安装后验证：
+
+```powershell
+conda run -n helth python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
+```
+
+项目当前支持：
+- `MODEL_DEVICE=auto`：优先 CUDA，失败时回退 CPU
+- `MODEL_DEVICE=cpu`：强制使用 CPU
+- `MODEL_DEVICE=cuda`：强制使用 GPU，不可用时直接报错
+
+### 12.2 现场演示的稳定化输出
+
+新的健康评分链路已经加入“稳定值判分 + 去抖 + 事件聚合”，现场高频采样时建议重点查看这些返回字段：
+- `stabilized_vitals`
+- `active_events`
+- `score_adjustment_reason`
+
+对应接口：
+- `POST /api/v1/health/score`
+- `POST /api/v1/health/warning/check`
+- `POST /api/v1/agent/health/explain`
+
+当前 `window_data` 已经不再只看最后一个点，而是会返回 `window_mode=event_aggregated_window`，用于抑制边界抖动造成的误报。
 
 ## 13. 启动移动端
 
@@ -499,26 +497,25 @@ flutter devices
 flutter run -d <device_id>
 ```
 
-
 以下账号已绑定到对应的虚拟设备，登录后要求实时显示 mock data；老人端账号与家庭端账号联动，并为每位老人分配演示姓名。
 
 | 账号 | 角色 | 姓名 | 默认密码 | 联动家庭账号 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 | `community_admin` | 社区端 | 社区管理员 | `123456` | - | 社区总入口 |
 | `family01` | 家庭端 | 家属 01 | `123456` | `family01` | 绑定对应虚拟设备组，登录后实时显示 mock data |
-| `elder01_01` | 老人端 | 王秀英 | `123456` | `family01` | 与 `family01` 联动，登录后需要做真实设备绑定解绑演示 |
-| `elder01_02` | 老人端 | 李建国 | `123456` | `family01` | 与 `family01` 联动，登录后实时显示 mock data |
+| `elder01_01` | 老人端 | 张三 | `123456` | `family01` | 与 `family01` 联动，登录后需要做真实设备绑定解绑演示 |
+| `elder01_02` | 老人端 | 李四 | `123456` | `family01` | 与 `family01` 联动，登录后实时显示 mock data |
 | `family02` | 家庭端 | 家属 02 | `123456` | `family02` | 绑定对应虚拟设备组，登录后实时显示 mock data |
-| `elder02_01` | 老人端 | 张桂兰 | `123456` | `family02` | 与 `family02` 联动，登录后实时显示 mock data |
-| `elder02_02` | 老人端 | 陈德福 | `123456` | `family02` | 与 `family02` 联动，登录后实时显示 mock data |
+| `elder02_01` | 老人端 | 王五 | `123456` | `family02` | 与 `family02` 联动，登录后实时显示 mock data |
+| `elder02_02` | 老人端 | 赵六 | `123456` | `family02` | 与 `family02` 联动，登录后实时显示 mock data |
 | `family03` | 家庭端 | 家属 03 | `123456` | `family03` | 绑定对应虚拟设备组，登录后实时显示 mock data |
-| `elder03_01` | 老人端 | 刘春梅 | `123456` | `family03` | 与 `family03` 联动，登录后实时显示 mock data |
-| `elder03_02` | 老人端 | 赵志强 | `123456` | `family03` | 与 `family03` 联动，登录后实时显示 mock data |
+| `elder03_01` | 老人端 | 钱七 | `123456` | `family03` | 与 `family03` 联动，登录后实时显示 mock data |
+| `elder03_02` | 老人端 | 孙八 | `123456` | `family03` | 与 `family03` 联动，登录后实时显示 mock data |
 | `family04` | 家庭端 | 家属 04 | `123456` | `family04` | 绑定对应虚拟设备组，登录后实时显示 mock data |
-| `elder04_01` | 老人端 | 黄玉兰 | `123456` | `family04` | 与 `family04` 联动，登录后实时显示 mock data |
-| `elder04_02` | 老人端 | 周永顺 | `123456` | `family04` | 与 `family04` 联动，登录后实时显示 mock data |
+| `elder04_01` | 老人端 | 周九 | `123456` | `family04` | 与 `family04` 联动，登录后实时显示 mock data |
+| `elder04_02` | 老人端 | 吴十 | `123456` | `family04` | 与 `family04` 联动，登录后实时显示 mock data |
 | `family05` | 家庭端 | 家属 05 | `123456` | `family05` | 绑定对应虚拟设备组，登录后实时显示 mock data |
-| `elder05_01` | 老人端 | 吴淑芬 | `123456` | `family05` | 与 `family05` 联动，登录后实时显示 mock data |
-| `elder05_02` | 老人端 | 郑国华 | `123456` | `family05` | 与 `family05` 联动，登录后实时显示 mock data |
+| `elder05_01` | 老人端 | 郑十一 | `123456" | `family05` | 与 `family05` 联动，登录后实时显示 mock data |
+| `elder05_02` | 老人端 | 卫十二 | `123456` | `family05` | 与 `family05` 联动，登录后实时显示 mock data |
 | `family06` | 家庭端 | 家属 06 | `123456` | `family06` | 绑定对应虚拟设备组，登录后实时显示 mock data |
-| `elder06_01` | 老人端 | 孙美玲 | `123456` | `family06` | 与 `family06` 联动，登录后实时显示 mock data |
+| `elder06_01` | 老人端 | 韩十三 | `123456` | `family06` | 与 `family06` 联动，登录后实时显示 mock data |

@@ -115,8 +115,8 @@ class Settings(BaseSettings):
     serial_apply_mac_filter: bool = False
     serial_apply_packet_type: bool = False
     serial_enable_broadcast_sos_overlay: bool = True
-    serial_response_cycle_seconds: float = 1.0
-    serial_broadcast_cycle_seconds: float = 0.5
+    serial_response_cycle_seconds: float = 0.4
+    serial_broadcast_cycle_seconds: float = 0.1
 
     mqtt_enabled: bool = False
     mqtt_broker_host: str = "localhost"

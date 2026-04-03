@@ -238,8 +238,8 @@ def test_demo_directory_strictly_matches_setup_account_layout(tmp_path) -> None:
     directory = care_service.get_demo_directory()
     accounts = care_service.list_auth_accounts()
     family01 = next((family for family in directory.families if family.login_username == "family01"), None)
-    wang_xiuying = next((elder for elder in directory.elders if elder.name == "王秀英"), None)
-    li_jianguo = next((elder for elder in directory.elders if elder.name == "李建国"), None)
+    zhang_san = next((elder for elder in directory.elders if elder.name == "张三"), None)
+    li_si = next((elder for elder in directory.elders if elder.name == "李四"), None)
 
     assert [account.username for account in accounts[:4]] == [
         "community_admin",
@@ -284,7 +284,7 @@ def test_demo_bound_serial_device_uses_demo_elder_mapping_in_metrics(monkeypatch
 
     assert len(metrics) == 1
     assert metrics[0].elder_id == "elder01_01"
-    assert metrics[0].elder_name == "王秀英"
+    assert metrics[0].elder_name == "张三"
 
 
 def test_demo_elder_account_ids_are_valid_binding_targets() -> None:

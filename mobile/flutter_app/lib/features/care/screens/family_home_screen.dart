@@ -38,17 +38,20 @@ class FamilyHomeScreen extends StatefulWidget {
 }
 
 class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
+  late CareProvider _careProvider;
+
   @override
   void initState() {
     super.initState();
+    _careProvider = context.read<CareProvider>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<CareProvider>().startAutoRefresh();
+      if (mounted) _careProvider.startAutoRefresh();
     });
   }
 
   @override
   void dispose() {
-    context.read<CareProvider>().stopAutoRefresh();
+    _careProvider.stopAutoRefresh();
     super.dispose();
   }
 

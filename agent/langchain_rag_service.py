@@ -190,7 +190,11 @@ class LangChainRAGService:
                     self._chunks_cache_path.unlink()
             except Exception:
                 pass
-        old_files = old_manifest.get("files", {})
+        raw_files = old_manifest.get("files", {})
+        if isinstance(raw_files, list):
+            old_files = {f["source"]: f for f in raw_files if "source" in f}
+        else:
+            old_files = raw_files
         
         # 2. Scan disk
         current_files: dict[str, dict[str, Any]] = {}
@@ -335,7 +339,7 @@ class LangChainRAGService:
             "docs_hash": self._calculate_global_hash(fingerprints),
             "vector_collection": self._vector_collection_name,
             "knowledge_dir": str(self._knowledge_dir),
-            "files": [asdict(f) for f in fingerprints],
+            "files": {f.source: asdict(f) for f in fingerprints},
             "last_indexed": datetime.now().isoformat()
         }
         self._manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

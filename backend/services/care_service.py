@@ -61,17 +61,17 @@ DEMO_FAMILY_SEEDS = [
 ]
 
 DEMO_ELDER_SEEDS = [
-    DemoElderSeed(id="elder01_01", login_username="elder01_01", name="王秀英", apartment="1-101", family_id="family01", receives_mock_device=False),
-    DemoElderSeed(id="elder01_02", login_username="elder01_02", name="李建国", apartment="1-102", family_id="family01", receives_mock_device=True),
-    DemoElderSeed(id="elder02_01", login_username="elder02_01", name="张桂兰", apartment="1-103", family_id="family02", receives_mock_device=True),
-    DemoElderSeed(id="elder02_02", login_username="elder02_02", name="陈德福", apartment="2-101", family_id="family02", receives_mock_device=True),
-    DemoElderSeed(id="elder03_01", login_username="elder03_01", name="刘春梅", apartment="2-102", family_id="family03", receives_mock_device=True),
-    DemoElderSeed(id="elder03_02", login_username="elder03_02", name="赵志强", apartment="2-103", family_id="family03", receives_mock_device=True),
-    DemoElderSeed(id="elder04_01", login_username="elder04_01", name="黄玉兰", apartment="3-101", family_id="family04", receives_mock_device=True),
-    DemoElderSeed(id="elder04_02", login_username="elder04_02", name="周永顺", apartment="3-102", family_id="family04", receives_mock_device=True),
-    DemoElderSeed(id="elder05_01", login_username="elder05_01", name="吴淑芬", apartment="3-103", family_id="family05", receives_mock_device=True),
-    DemoElderSeed(id="elder05_02", login_username="elder05_02", name="郑国华", apartment="4-101", family_id="family05", receives_mock_device=True),
-    DemoElderSeed(id="elder06_01", login_username="elder06_01", name="孙美玲", apartment="4-102", family_id="family06", receives_mock_device=True),
+    DemoElderSeed(id="elder01_01", login_username="elder01_01", name="张三", apartment="1-101", family_id="family01", receives_mock_device=False),
+    DemoElderSeed(id="elder01_02", login_username="elder01_02", name="李四", apartment="1-102", family_id="family01", receives_mock_device=True),
+    DemoElderSeed(id="elder02_01", login_username="elder02_01", name="王五", apartment="1-103", family_id="family02", receives_mock_device=True),
+    DemoElderSeed(id="elder02_02", login_username="elder02_02", name="赵六", apartment="2-101", family_id="family02", receives_mock_device=True),
+    DemoElderSeed(id="elder03_01", login_username="elder03_01", name="钱七", apartment="2-102", family_id="family03", receives_mock_device=True),
+    DemoElderSeed(id="elder03_02", login_username="elder03_02", name="孙八", apartment="2-103", family_id="family03", receives_mock_device=True),
+    DemoElderSeed(id="elder04_01", login_username="elder04_01", name="周九", apartment="3-101", family_id="family04", receives_mock_device=True),
+    DemoElderSeed(id="elder04_02", login_username="elder04_02", name="吴十", apartment="3-102", family_id="family04", receives_mock_device=True),
+    DemoElderSeed(id="elder05_01", login_username="elder05_01", name="郑十一", apartment="3-103", family_id="family05", receives_mock_device=True),
+    DemoElderSeed(id="elder05_02", login_username="elder05_02", name="卫十二", apartment="4-101", family_id="family05", receives_mock_device=True),
+    DemoElderSeed(id="elder06_01", login_username="elder06_01", name="韩十三", apartment="4-102", family_id="family06", receives_mock_device=True),
 ]
 
 

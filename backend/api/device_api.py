@@ -216,6 +216,7 @@ async def bind_device_self(
                 mac_address=existing.mac_address,
                 target_user_id=user.id,
                 operator_id=user.id,
+                new_ingest_mode=payload.ingest_mode,
             )
         )
         bound = device_service.get_device(existing.mac_address)

@@ -218,13 +218,20 @@ class DeviceService:
                 device.device_name,
                 current_device_id=device.id,
             )
-            updated = device.model_copy(update={"user_id": payload.target_user_id, "bind_status": DeviceBindStatus.BOUND})
+            update_data = {
+                "user_id": payload.target_user_id,
+                "bind_status": DeviceBindStatus.BOUND,
+            }
+            if payload.new_ingest_mode and device.ingest_mode != payload.new_ingest_mode:
+                update_data["ingest_mode"] = payload.new_ingest_mode
+
+            updated = device.model_copy(update=update_data)
             self._devices[updated.mac_address] = updated
             self._upsert_device(updated)
-            if updated.ingest_mode == DeviceIngestMode.SERIAL:
+            if device.ingest_mode == DeviceIngestMode.SERIAL:
                 self._refresh_active_serial_target_locked()
             log = DeviceBindLogRecord(
-                device_id=updated.id,
+                device_id=device.id,
                 old_user_id=device.user_id,
                 new_user_id=payload.target_user_id,
                 action_type="bind",

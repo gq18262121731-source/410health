@@ -13,6 +13,7 @@ class DeviceBindRequest(BaseModel):
     mac_address: str
     target_user_id: str
     operator_id: str | None = None
+    new_ingest_mode: DeviceIngestMode | None = None
 
     @field_validator("mac_address")
     @classmethod

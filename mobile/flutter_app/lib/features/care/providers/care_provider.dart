@@ -143,6 +143,13 @@ class CareProvider extends ChangeNotifier {
             return _humanizeApiDetail(message);
           }
         }
+        if (detail is List && detail.isNotEmpty) {
+          final first = detail.first;
+          if (first is Map<String, dynamic>) {
+            final msg = first['msg'];
+            if (msg is String) return _humanizeApiDetail(msg);
+          }
+        }
       }
       final message = error.message;
       if (message != null && message.trim().isNotEmpty) {
@@ -182,23 +189,33 @@ class CareProvider extends ChangeNotifier {
   }
 
   String _humanizeApiDetail(String detail) {
-    if (detail.contains('INVALID_MAC_ADDRESS')) {
-      return '手环 MAC 地址格式不正确，请使用 AA:BB:CC:DD:EE:FF';
+    final code = detail.toUpperCase();
+    if (code.contains('INVALID_MAC_ADDRESS')) {
+      return '手环 MAC 地址格式不正确，请使用 12 位十六进制数';
     }
-    if (detail.contains('DEVICE_ALREADY_BOUND_TO_TARGET')) {
-      return '这只手环已经绑定到当前账号';
+    if (code.contains('DEVICE_ALREADY_BOUND_TO_TARGET')) {
+      return '这只手环已经绑定到当前账号了';
     }
-    if (detail.contains('DEVICE_ALREADY_BOUND')) {
+    if (code.contains('DEVICE_ALREADY_BOUND')) {
       return '这只手环已经绑定到其他账号了';
     }
-    if (detail.contains('TARGET_USER_ALREADY_HAS_DEVICE_OF_SAME_MODEL')) {
+    if (code.contains('TARGET_USER_ALREADY_HAS_DEVICE_OF_SAME_MODEL')) {
       return '当前账号已绑定同型号手环，请先解绑旧设备';
     }
-    if (detail.contains('NO_BOUND_SERIAL_DEVICE')) {
-      return '当前账号还没有已绑定的手环';
+    if (code.contains('NO_BOUND_SERIAL_DEVICE')) {
+      return '当前账号还没有已绑定的真实手环';
     }
-    if (detail.contains('DEVICE_NOT_FOUND')) {
-      return '未找到这只手环，请确认 MAC 地址是否正确';
+    if (code.contains('DEVICE_NOT_FOUND')) {
+      return '未找到这只手环，请核对 MAC 地址是否输入正确';
+    }
+    if (code.contains('USER_NOT_FOUND')) {
+      return '未找到关联的用户账号信息';
+    }
+    if (code.contains('INVALID_BIND_TARGET_ROLE')) {
+      return '当前账号角色不支持绑定手环设备 (仅限老年版使用)';
+    }
+    if (code.contains('SELF_BIND_FOR_ELDER_ONLY')) {
+      return '只有老人账号本人登录后才能进行手环绑定';
     }
     return detail;
   }

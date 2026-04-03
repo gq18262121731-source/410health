@@ -75,7 +75,7 @@ class SerialGatewayReader:
         disable_uuid_output: bool = True,
         apply_mac_filter: bool = False,
         apply_packet_type: bool = False,
-        command_delay_seconds: float = 0.2,
+        command_delay_seconds: float = 0.02,
     ) -> None:
         commands = ["AT+SCANSTOP"]
         if disable_uuid_output:
@@ -93,7 +93,7 @@ class SerialGatewayReader:
         *,
         target_mac: str,
         packet_type: int = 5,
-        command_delay_seconds: float = 0.5,
+        command_delay_seconds: float = 0.05,
     ) -> None:
         compact_mac = self._compact_mac(target_mac)
         commands = [
@@ -108,7 +108,7 @@ class SerialGatewayReader:
         self,
         connection,
         *,
-        command_delay_seconds: float = 0.2,
+        command_delay_seconds: float = 0.02,
     ) -> None:
         self._run_commands(connection, ["AT+SCANSTOP"], command_delay_seconds=command_delay_seconds)
 
@@ -117,7 +117,7 @@ class SerialGatewayReader:
         connection,
         *,
         packet_type: int,
-        command_delay_seconds: float = 0.2,
+        command_delay_seconds: float = 0.02,
     ) -> None:
         commands = ["AT+SCANSTOP", f"AT+TYPE={packet_type}", "AT+SCANSTART"]
         self._run_commands(connection, commands, command_delay_seconds=command_delay_seconds)
@@ -307,7 +307,7 @@ class SerialGatewayReader:
     @staticmethod
     def _drain_feedback(connection) -> None:
         started = time.time()
-        while time.time() - started < 0.2:
+        while time.time() - started < 0.05:
             waiting = getattr(connection, "in_waiting", 0)
             if not waiting:
                 break
