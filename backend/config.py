@@ -117,6 +117,7 @@ class Settings(BaseSettings):
     serial_enable_broadcast_sos_overlay: bool = True
     serial_response_cycle_seconds: float = 0.4
     serial_broadcast_cycle_seconds: float = 0.1
+    serial_command_delay_seconds: float = 0.12
 
     mqtt_enabled: bool = False
     mqtt_broker_host: str = "localhost"

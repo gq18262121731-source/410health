@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from agent.analysis_service import HealthDataAnalysisService
@@ -43,9 +44,11 @@ from backend.services.stream_service import StreamService
 from backend.services.user_service import UserService
 from backend.services.warning_service import WarningService
 from backend.services.websocket_manager import WebSocketManager
+from backend.schemas.health import VitalSignsPayload
 from iot.parser import T10PacketParser
 
 
+logger = logging.getLogger(__name__)
 _settings = get_settings()
 _user_service = UserService()
 _relation_service = RelationService(_user_service)
@@ -970,7 +973,7 @@ def _merge_with_latest(sample: HealthSample) -> HealthSample:
         update["heart_rate"] = latest.heart_rate
     if sample.blood_oxygen <= 0 and latest.blood_oxygen > 0:
         update["blood_oxygen"] = latest.blood_oxygen
-    if sample.temperature <= 0 and latest.temperature > 0:
+    if sample.temperature <= 0 and 35.0 <= latest.temperature <= 45.0:
         update["temperature"] = latest.temperature
 
     if (not sample.blood_pressure or sample.blood_pressure == "0/0") and latest.blood_pressure:
@@ -989,6 +992,112 @@ def _merge_with_latest(sample: HealthSample) -> HealthSample:
     return sample.model_copy(update=update) if update else sample
 
 
+def _persist_structured_health_score(sample: HealthSample, device: DeviceRecord) -> None:
+    """Persist ML/rule split scores so dashboard can render rule/model breakdown."""
+    systolic, diastolic = sample.blood_pressure_pair
+    vitals = VitalSignsPayload(
+        heart_rate=float(sample.heart_rate),
+        spo2=float(sample.blood_oxygen),
+        sbp=float(systolic),
+        dbp=float(diastolic),
+        body_temp=float(sample.temperature),
+        fall_detection=False,
+        data_accuracy=100.0,
+    )
+    elderly_id = str(device.user_id or f"UNBOUND:{sample.device_mac}")
+    try:
+        _structured_health_score_service.evaluate_vitals(
+            vitals=vitals,
+            elderly_id=elderly_id,
+            device_id=sample.device_mac,
+            timestamp=sample.timestamp,
+            persist=True,
+            stateful_stability=True,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Structured score persistence failed for %s: %s",
+            sample.device_mac,
+            exc,
+        )
+        fallback_score = float(sample.health_score or 0)
+        if fallback_score >= 85:
+            fallback_risk_level = "normal"
+        elif fallback_score >= 70:
+            fallback_risk_level = "attention"
+        elif fallback_score >= 55:
+            fallback_risk_level = "warning"
+        else:
+            fallback_risk_level = "critical"
+
+        fallback_tags: list[str] = []
+        fallback_reasons: list[str] = []
+        if sample.sos_flag:
+            fallback_tags.append("sos")
+            fallback_reasons.append("Detected SOS signal from device")
+        if sample.blood_oxygen < 93:
+            fallback_tags.append("spo2_low")
+            fallback_reasons.append(f"SpO2 is low ({sample.blood_oxygen}%)")
+        if sample.heart_rate > 120 or sample.heart_rate < 50:
+            fallback_tags.append("heart_rate_abnormal")
+            fallback_reasons.append(f"Heart rate out of preferred range ({sample.heart_rate} bpm)")
+        if sample.temperature >= 37.6:
+            fallback_tags.append("temperature_high")
+            fallback_reasons.append(f"Body temperature elevated ({sample.temperature:.1f} C)")
+
+        fallback_payload = {
+            "elderly_id": elderly_id,
+            "device_id": sample.device_mac,
+            "timestamp": sample.timestamp.isoformat(),
+            "health_score": round(fallback_score, 4),
+            "final_health_score": round(fallback_score, 4),
+            "rule_health_score": round(fallback_score, 4),
+            "model_health_score": round(fallback_score, 4),
+            "risk_level": fallback_risk_level,
+            "risk_score_raw": round(max(0.0, min(1.0, 1.0 - (fallback_score / 100.0))), 6),
+            "sub_scores": {
+                "rule_health_score": round(fallback_score, 4),
+                "model_health_score": round(fallback_score, 4),
+                "final_health_score": round(fallback_score, 4),
+            },
+            "alerts": {
+                "hr_alert": {"label": "High" if sample.heart_rate > 120 else ("Low" if sample.heart_rate < 50 else "Normal"), "probability": None},
+                "spo2_alert": {"label": "Low" if sample.blood_oxygen < 93 else "Normal", "probability": None},
+                "bp_alert": {"label": "Normal", "probability": None},
+                "temp_alert": {"label": "Abnormal" if sample.temperature >= 37.6 else "Normal", "probability": None},
+                "hard_threshold_level": fallback_risk_level if fallback_risk_level in {"warning", "critical"} else None,
+            },
+            "abnormal_tags": fallback_tags,
+            "trigger_reasons": fallback_reasons,
+            "recommendation_code": "EMERGENCY_CONTACT" if sample.sos_flag else "MONITOR",
+            "stability_mode": "rule_fallback",
+            "stabilized_vitals": {
+                "heart_rate": float(sample.heart_rate),
+                "spo2": float(sample.blood_oxygen),
+                "sbp": float(systolic),
+                "dbp": float(diastolic),
+                "body_temp": float(sample.temperature),
+                "fall_detection": False,
+                "data_accuracy": 100.0,
+            },
+            "active_events": [],
+            "score_adjustment_reason": "Structured model artifacts missing; fallback scores are used.",
+        }
+        try:
+            _score_repo.save_result(
+                elderly_id=elderly_id,
+                device_id=sample.device_mac,
+                timestamp=sample.timestamp,
+                result=fallback_payload,
+            )
+        except Exception as fallback_exc:
+            logger.warning(
+                "Structured fallback persistence failed for %s: %s",
+                sample.device_mac,
+                fallback_exc,
+            )
+
+
 async def ingest_sample(sample: HealthSample) -> IngestResponse:
     global _last_community_alarm_at
 
@@ -1000,6 +1109,8 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
         raise RuntimeError("Device must be registered before ingest in formal mode")
 
     _device_service.update_status(sample.device_mac, DeviceStatus.ONLINE)
+
+    _alarm_service.observe_sample(sample)
 
     # 【性能优化】第一时间评估并提取实时告警（包括SOS）。直接评估未 merged 的 sample_0。
     realtime_alarms = _alarm_service.evaluate(sample)
@@ -1028,6 +1139,7 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
         timestamp=sample.timestamp,
     )
     _stream_service.publish(sample)
+    _persist_structured_health_score(sample, device)
 
     ml_alarms = []
     intelligent_result = _intelligent_scorer.infer_device(

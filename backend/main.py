@@ -171,6 +171,7 @@ async def system_info() -> dict[str, object]:
             "broadcast_sos_overlay": cfg.serial_enable_broadcast_sos_overlay,
             "response_cycle_seconds": cfg.serial_response_cycle_seconds,
             "broadcast_cycle_seconds": cfg.serial_broadcast_cycle_seconds,
+            "command_delay_seconds": cfg.serial_command_delay_seconds,
             "active_target_mac": active_target_mac,
             "active_target_device_name": active_target_name,
             "target_locked": active_target_mac is not None,
@@ -325,6 +326,7 @@ async def _serial_stream_loop() -> None:
         enable_broadcast_sos_overlay=settings.serial_enable_broadcast_sos_overlay,
         response_cycle_seconds=settings.serial_response_cycle_seconds,
         broadcast_cycle_seconds=settings.serial_broadcast_cycle_seconds,
+        command_delay_seconds=settings.serial_command_delay_seconds,
         target_mac_provider=lambda: get_device_service().get_active_serial_target_mac(),
         on_sample=publish_from_thread,
     )
