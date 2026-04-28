@@ -1,0 +1,11 @@
+numpy>=1.26,<2
+pandas>=2.2,<3
+opencv-python>=4.9,<5
+ultralytics==8.3.107
+pypdf>=6.10
+py7zr>=1.1
+# Install PyTorch separately according to your GPU/CUDA version.
+# Recommended for the current training machine:
+# torch==2.11.0+cu128
+# torchvision==0.26.0+cu128
+# torchaudio==2.11.0+cu128

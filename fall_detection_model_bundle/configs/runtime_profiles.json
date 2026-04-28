@@ -1,0 +1,20 @@
+{
+  "public_best_profile": {
+    "description": "Current strongest profile on the held-out public RGB windows.",
+    "gru_weight": 0.30,
+    "hybrid_weight": 0.45,
+    "semantic_weight": 0.00,
+    "posture_weight": 0.25,
+    "threshold": 0.45,
+    "alert_hold": 3
+  },
+  "private_adaptation_template": {
+    "description": "Dry-run template after private-scene adaptation workflow is completed.",
+    "gru_weight": 0.15,
+    "hybrid_weight": 0.25,
+    "semantic_weight": 0.30,
+    "posture_weight": 0.30,
+    "threshold": 0.40,
+    "alert_hold": 3
+  }
+}
