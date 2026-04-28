@@ -1,13 +1,13 @@
 import { computed, onMounted, onUnmounted, ref, unref, watch, type Ref } from "vue";
 import {
   api,
-  type AlarmRecord,
   type CareDirectory,
   type DeviceRecord,
   type HealthSample,
   type SessionUser,
 } from "../api/client";
 import { mergeHealthSample } from "../domain/healthSampleMerge";
+import { useAlarmCenter } from "./useAlarmCenter";
 
 type MaybeRef<T> = T | Ref<T>;
 
@@ -32,10 +32,10 @@ export function useCareDirectoryDashboard(
     includeAllDevices?: MaybeRef<boolean>;
   } = {},
 ) {
+  const alarmCenter = useAlarmCenter(computed(() => sessionUser.value ?? null));
   const directory = ref<CareDirectory | null>(null);
   const devices = ref<DeviceRecord[]>([]);
   const latest = ref<Record<string, HealthSample>>({});
-  const alarms = ref<AlarmRecord[]>([]);
   const dashboardLoading = ref(false);
   const dashboardLoadError = ref("");
   const lastSyncAt = ref<Date | null>(null);
@@ -64,7 +64,6 @@ export function useCareDirectoryDashboard(
       directory.value = null;
       devices.value = [];
       latest.value = {};
-      alarms.value = [];
       dashboardLoadError.value = "当前页面数据加载失败，请稍后重试。";
       dashboardLoading.value = false;
       return;
@@ -88,7 +87,6 @@ export function useCareDirectoryDashboard(
     });
     latest.value = nextLatest;
 
-    alarms.value = await api.listAlarms().catch(() => [] as AlarmRecord[]);
     lastSyncAt.value = new Date();
     dashboardLoading.value = false;
   }
@@ -114,7 +112,7 @@ export function useCareDirectoryDashboard(
   });
 
   return {
-    alarms,
+    alarms: alarmCenter.activeAlarms,
     allFamilies,
     community,
     dashboardLoadError,

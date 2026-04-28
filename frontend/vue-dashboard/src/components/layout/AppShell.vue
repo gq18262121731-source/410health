@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, toRef, watch } from "vue";
 import { api, type AlarmRecord, type SessionUser } from "../../api/client";
+import { useAlarmCenter } from "../../composables/useAlarmCenter";
 import { focusCommunityWorkspaceDevice } from "../../composables/useCommunityWorkspace";
 import type { PageKey } from "../../composables/useHashRouting";
 import CommunitySosOverlay from "./CommunitySosOverlay.vue";
@@ -20,14 +21,33 @@ const emit = defineEmits<{
   navigate: [page: PageKey];
 }>();
 
-const activeAlarmCount = ref(0);
-const activeRealtimeAlarms = ref<AlarmRecord[]>([]);
 const simulatedAlarms = ref<AlarmRecord[]>([]); // 存储模拟告警
 const acknowledgingSos = ref(false);
 const manuallyAcknowledging = ref(false); // 标记是否正在手动确认告警
+const alarmCenter = useAlarmCenter(toRef(props, "sessionUser"));
 const isCommunityWorkspace = computed(
   () => props.sessionUser.role === "community" || props.sessionUser.role === "admin",
 );
+const supportsRealtimeSosOverlay = computed(
+  () =>
+    props.sessionUser.role === "community"
+    || props.sessionUser.role === "admin"
+    || props.sessionUser.role === "family"
+    || props.sessionUser.role === "elder",
+);
+const alarmOverlayVariant = computed(() => {
+  if (props.sessionUser.role === "family") return "family";
+  if (props.sessionUser.role === "elder") return "elder";
+  return "community";
+});
+const activeRealtimeAlarms = computed(() => {
+  const realAlarms = alarmCenter.activeAlarms.value.filter((alarm) => !alarm.id.startsWith("sim_"));
+  const simulated = simulatedAlarms.value.filter((alarm) => !alarm.acknowledged);
+  return [...realAlarms, ...simulated].sort(
+    (left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime(),
+  );
+});
+const activeAlarmCount = computed(() => activeRealtimeAlarms.value.length);
 const activeSosAlarms = computed(() =>
   activeRealtimeAlarms.value
     .filter((alarm) => !alarm.acknowledged && isRealSosAlarm(alarm))
@@ -36,8 +56,6 @@ const activeSosAlarms = computed(() =>
 const primarySosAlarm = computed(() => activeSosAlarms.value[0] ?? null);
 const additionalSosCount = computed(() => Math.max(0, activeSosAlarms.value.length - 1));
 
-let refreshTimer: number | null = null;
-let alarmChannel: WebSocket | null = null;
 let lastPresentedSosAlarmId = "";
 let sosAudioElement: HTMLAudioElement | null = null;
 let unlockAudioListenerBound = false;
@@ -115,32 +133,6 @@ function bindAudioUnlockListeners() {
   window.addEventListener("touchstart", unlockAudioHandler, { once: true, passive: true });
 }
 
-function syncAlarmState(alarms: AlarmRecord[]) {
-  // 过滤掉真实告警列表中的模拟告警（避免重复）
-  const realAlarms = alarms.filter(alarm => !alarm.id.startsWith('sim_'));
-  // 合并真实告警和模拟告警
-  const allAlarms = [...realAlarms, ...simulatedAlarms.value];
-  activeRealtimeAlarms.value = allAlarms
-    .filter((alarm) => !alarm.acknowledged)
-    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
-  activeAlarmCount.value = activeRealtimeAlarms.value.length;
-  // 处理页面导航（不处理音频，由watch统一管理）
-  presentPrimarySos();
-}
-
-function upsertAlarm(alarm: AlarmRecord) {
-  const next = [...activeRealtimeAlarms.value];
-  const index = next.findIndex((item) => item.id === alarm.id);
-  if (alarm.acknowledged) {
-    if (index >= 0) next.splice(index, 1);
-  } else if (index >= 0) {
-    next.splice(index, 1, alarm);
-  } else {
-    next.push(alarm);
-  }
-  syncAlarmState(next);
-}
-
 function presentPrimarySos() {
   if (!isCommunityWorkspace.value || !primarySosAlarm.value) {
     return;
@@ -156,62 +148,6 @@ function presentPrimarySos() {
   }
 }
 
-function stopAlarmRuntime() {
-  stopSosToneLoop();
-  if (refreshTimer !== null) {
-    window.clearInterval(refreshTimer);
-    refreshTimer = null;
-  }
-  alarmChannel?.close();
-  alarmChannel = null;
-}
-
-async function refreshAlarmState() {
-  const alarms = await api.listAlarms().catch(() => [] as AlarmRecord[]);
-  syncAlarmState(alarms);
-}
-
-function connectAlarmSocket() {
-  alarmChannel?.close();
-  alarmChannel = null;
-  if (!isCommunityWorkspace.value) return;
-
-  alarmChannel = api.alarmSocket();
-  alarmChannel.onmessage = (event) => {
-    try {
-      const payload = JSON.parse(event.data) as AlarmRecord | { type?: string; queue?: Array<{ alarm?: AlarmRecord }> };
-      if ("type" in payload && payload.type === "alarm_queue") {
-        const alarms = Array.isArray(payload.queue)
-          ? payload.queue
-              .map((item) => item.alarm)
-              .filter((item): item is AlarmRecord => Boolean(item))
-          : [];
-        syncAlarmState(alarms);
-        return;
-      } 
-      upsertAlarm(payload as AlarmRecord);
-    } catch {
-      // ignore malformed websocket payloads
-    }
-  };
-  alarmChannel.onclose = () => {
-    alarmChannel = null;
-    // Auto-reconnect after 2 seconds for real-time SOS delivery
-    setTimeout(() => {
-      if (isCommunityWorkspace.value) connectAlarmSocket();
-    }, 2000);
-  };
-}
-
-function startAlarmRuntime() {
-  stopAlarmRuntime();
-  void refreshAlarmState();
-  connectAlarmSocket();
-  refreshTimer = window.setInterval(() => {
-    void refreshAlarmState();
-  }, 5000);
-}
-
 // 监听SOS模拟事件
 function handleSOSSimulation(event: CustomEvent) {
   if (!isCommunityWorkspace.value) return;
@@ -219,33 +155,18 @@ function handleSOSSimulation(event: CustomEvent) {
   const mockAlarm = event.detail as AlarmRecord;
   // 将模拟告警添加到模拟告警列表中，这样不会被刷新覆盖
   simulatedAlarms.value.push(mockAlarm);
-  
-  // 手动更新activeRealtimeAlarms，避免调用syncAlarmState导致重复
-  const realAlarms = activeRealtimeAlarms.value.filter(alarm => !alarm.id.startsWith('sim_'));
-  const allAlarms = [...realAlarms, ...simulatedAlarms.value];
-  activeRealtimeAlarms.value = allAlarms
-    .filter((alarm) => !alarm.acknowledged)
-    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
-  activeAlarmCount.value = activeRealtimeAlarms.value.length;
-  
   // 处理页面导航（不处理音频，由watch统一管理）
   presentPrimarySos();
 }
 
-watch(() => props.sessionUser.id, () => {
-  startAlarmRuntime();
-});
-
 onMounted(() => {
   bindAudioUnlockListeners();
-  startAlarmRuntime();
-  
   // 添加SOS模拟事件监听器
   window.addEventListener('sos-simulation', handleSOSSimulation as EventListener);
 });
 
 onUnmounted(() => {
-  stopAlarmRuntime();
+  stopSosToneLoop();
   if (unlockAudioListenerBound && unlockAudioHandler) {
     window.removeEventListener("pointerdown", unlockAudioHandler);
     window.removeEventListener("keydown", unlockAudioHandler);
@@ -278,19 +199,12 @@ async function acknowledgePrimarySos() {
     if (current.id.startsWith('sim_')) {
       console.log('[SOS Acknowledge] Removing simulated alarm');
       simulatedAlarms.value = simulatedAlarms.value.filter(alarm => alarm.id !== current.id);
-      // 手动更新状态
-      const realAlarms = activeRealtimeAlarms.value.filter(alarm => !alarm.id.startsWith('sim_'));
-      const allAlarms = [...realAlarms, ...simulatedAlarms.value];
-      activeRealtimeAlarms.value = allAlarms
-        .filter((alarm) => !alarm.acknowledged)
-        .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
-      activeAlarmCount.value = activeRealtimeAlarms.value.length;
       console.log('[SOS Acknowledge] Remaining alarms:', activeRealtimeAlarms.value.length);
     } else {
       // 真实告警通过API确认
       console.log('[SOS Acknowledge] Acknowledging real alarm via API');
       await api.ackAlarm(current.id);
-      await refreshAlarmState();
+      await alarmCenter.refreshAlarmState();
     }
     lastPresentedSosAlarmId = "";
   } finally {
@@ -306,6 +220,9 @@ async function acknowledgePrimarySos() {
 watch(
   [primarySosAlarm, isCommunityWorkspace],
   ([alarm, canRing], [oldAlarm]) => {
+    if (canRing && alarm && (!oldAlarm || alarm.id !== oldAlarm.id)) {
+      presentPrimarySos();
+    }
     console.log('[SOS Watch] Triggered', {
       alarm: alarm?.id,
       oldAlarm: oldAlarm?.id,
@@ -387,10 +304,11 @@ watch(
     </div>
 
     <CommunitySosOverlay
-      v-if="isCommunityWorkspace"
+      v-if="supportsRealtimeSosOverlay"
       :alarm="primarySosAlarm"
       :additional-count="additionalSosCount"
       :acknowledging="acknowledgingSos"
+      :variant="alarmOverlayVariant"
       @acknowledge="acknowledgePrimarySos"
     />
   </main>

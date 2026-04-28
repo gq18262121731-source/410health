@@ -6,6 +6,7 @@ const props = defineProps<{
   alarm: AlarmRecord | null;
   additionalCount: number;
   acknowledging?: boolean;
+  variant?: "community" | "family" | "elder";
 }>();
 
 const emit = defineEmits<{
@@ -33,6 +34,29 @@ const triggeredAt = computed(() => {
   if (!props.alarm?.created_at) return "--";
   return new Date(props.alarm.created_at).toLocaleString("zh-CN", { hour12: false });
 });
+
+const overlayTitle = computed(() => {
+  if (props.variant === "family") return "家属端紧急呼叫提醒";
+  if (props.variant === "elder") return "个人端紧急呼叫提醒";
+  return "社区值守紧急呼叫";
+});
+
+const overlayLead = computed(() => {
+  if (props.variant === "family") {
+    return `已收到 ${elderName.value} 对应设备 ${deviceName.value} 的 SOS 求助，请尽快联系本人或社区值守人员。`;
+  }
+  if (props.variant === "elder") {
+    return `已收到设备 ${deviceName.value} 的 SOS 求助，请尽快确认周边人员是否已响应。`;
+  }
+  return `已定位到设备 ${deviceName.value}，请立即查看对应老人状态并完成人工确认。`;
+});
+
+const actionLabel = computed(() => {
+  if (props.acknowledging) return "处理中...";
+  if (props.variant === "family") return "确认收到并解除警报";
+  if (props.variant === "elder") return "确认收到并解除警报";
+  return "确认处理并解除警报";
+});
 </script>
 
 <template>
@@ -41,9 +65,9 @@ const triggeredAt = computed(() => {
       <div class="sos-overlay__pulse" />
       <div class="sos-overlay__panel">
         <p class="sos-overlay__eyebrow">Emergency SOS</p>
-        <h2>社区值守紧急呼叫</h2>
+        <h2>{{ overlayTitle }}</h2>
         <p class="sos-overlay__lead">
-          已定位到设备 {{ deviceName }}，请立即查看对应老人状态并完成人工确认。
+          {{ overlayLead }}
         </p>
 
         <div class="sos-overlay__grid">
@@ -76,7 +100,7 @@ const triggeredAt = computed(() => {
             :disabled="acknowledging"
             @click="emit('acknowledge')"
           >
-            {{ acknowledging ? "处理中..." : "确认处理并解除警报" }}
+            {{ actionLabel }}
           </button>
         </div>
       </div>

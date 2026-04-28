@@ -219,6 +219,37 @@ function normalizeChildTools(raw: unknown): TraceChildTool[] {
     }));
 }
 
+function reportPlaceholderAttachment(
+  workflow: CommunityWorkflow,
+  scope: AnalysisScope,
+  window: WindowKind,
+  subjectLabel: string,
+): AgentAttachment | null {
+  if (!["community_report", "report_generation", "elder_report"].includes(workflow)) {
+    return null;
+  }
+
+  const scopeLabel = scope === "community" ? "社区" : subjectLabel || "老人";
+  const windowLabel = window === "week" ? "过去一周" : "过去一天";
+  return {
+    id: `analysis-report-${scope}-${window}`,
+    title: `${scopeLabel}${windowLabel}健康分析报告`,
+    summary: "正在搭建报告骨架，随后会逐步填入摘要、表格与图表。",
+    render_type: "report_document",
+    render_payload: {
+      document_title: `${scopeLabel}${windowLabel}健康分析报告`,
+      sections: [
+        { id: "summary", title: "执行摘要", content: "正在生成执行摘要..." },
+        { id: "metrics", title: "关键指标表", content: "正在汇总关键指标..." },
+        { id: "risk", title: "重点风险对象", content: "正在整理重点风险对象..." },
+        { id: "alerts", title: "告警与运维重点", content: "正在整理告警与运维重点..." },
+        { id: "actions", title: "处置建议", content: "正在生成处置建议..." },
+      ],
+    },
+    source_tool: "report_placeholder",
+  };
+}
+
 function safeReadState(): PersistedState | null {
   if (typeof window === "undefined") return null;
   try {
@@ -454,10 +485,16 @@ export function useCommunityAgentWorkbench(deviceMacs: () => string[], selectedD
     }));
   }
 
-  function createConversationSeed(prompt: string, workflow: CommunityWorkflow) {
-    const timestamp = new Date().toISOString();
-    const runId = activeRunId.value;
-    messages.value = [
+function createConversationSeed(prompt: string, workflow: CommunityWorkflow) {
+  const timestamp = new Date().toISOString();
+  const runId = activeRunId.value;
+  const placeholder = reportPlaceholderAttachment(
+    workflow,
+    selectedScope.value,
+    selectedWindow.value,
+    selectedSubjectLabel.value,
+  );
+  messages.value = [
       ...messages.value,
       {
         id: `${runId}-user`,
@@ -475,12 +512,12 @@ export function useCommunityAgentWorkbench(deviceMacs: () => string[], selectedD
         text: "",
         createdAt: timestamp,
         workflow,
-        attachments: [],
+        attachments: placeholder ? [placeholder] : [],
         status: "streaming",
         trace: createEmptyTrace(),
       },
     ];
-  }
+}
 
   function syncTraceMeta() {
     updateMessageTrace(currentAssistantMessageId(), (trace) => ({

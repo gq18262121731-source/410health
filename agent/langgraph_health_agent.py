@@ -614,6 +614,12 @@ class HealthAgentService:
                 "answer": str(formatted.get("answer", "")).strip(),
                 "references": list(formatted.get("references", [])),
                 "analysis": dict(formatted.get("analysis", {})),
+                "attachments": list(formatted.get("attachments", [])),
+                "citations": list(formatted.get("citations", [])),
+                "artifact_ids": list(formatted.get("artifact_ids", [])),
+                "scope": formatted.get("scope"),
+                "window": formatted.get("window"),
+                "subject": formatted.get("subject"),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             yield {
@@ -901,6 +907,12 @@ class HealthAgentService:
         normalized_question = question.lower()
         explicit_search_terms = ("搜索", "查找", "检索", "search", "政策", "指南", "天气", "空气", "周边", "假期", "网页", "新闻")
         return workflow in {"free_chat", "device_focus"} and any(term in normalized_question for term in explicit_search_terms)
+
+    @staticmethod
+    def _uses_fixed_community_report_answer(state: AgentState) -> bool:
+        scope = str(state.get("scope", "device"))
+        workflow = str(state.get("workflow", "free_chat"))
+        return scope == "community" and workflow in {"community_report", "report_generation"}
 
     def _serialize_tool_result(self, call: ToolInvocation, item: Any) -> dict[str, Any]:
         attachments = self._tool_result_attachments(call.name, item.data if isinstance(item.data, dict) else {})
@@ -1975,6 +1987,8 @@ class HealthAgentService:
         )
 
     def _retrieve_node(self, state: AgentState) -> AgentState:
+        if self._uses_fixed_community_report_answer(state):
+            return {"knowledge_hits": []}
         query = str(state.get("retrieval_query") or state.get("question", "")).strip()
         if not query:
             return {"knowledge_hits": []}
@@ -1988,6 +2002,13 @@ class HealthAgentService:
         return {"knowledge_hits": hits}
 
     def _prompt_node(self, state: AgentState) -> AgentState:
+        if self._uses_fixed_community_report_answer(state):
+            return {
+                "system_prompt": "",
+                "user_prompt": "",
+                "prompt_text": "",
+                "messages": [],
+            }
         # Extract search results from tool_results
         tool_results = list(state.get("tool_results", []))
         search_hits = []
@@ -2044,6 +2065,10 @@ class HealthAgentService:
         selected_model = str(state.get("selected_model", self._settings.local_default_model))
         selected_provider = str(state.get("selected_provider", self._settings.preferred_llm_provider))
         dialogue_expression = dict(state.get("dialogue_expression", {}))
+
+        if self._uses_fixed_community_report_answer(state):
+            yield from self._iter_stream_fragments(self._build_fixed_community_report_answer(state))
+            return
 
         if not prompt_text:
             fallback = str(dialogue_expression.get("answer", "")).strip() or self._fallback_answer(state.get("analysis_payload", {}), scope)
@@ -2275,6 +2300,8 @@ class HealthAgentService:
             "subject": subject if isinstance(subject, dict) else None,
             "tool_results": list(state.get("tool_results", [])),
             "attachments": attachments,
+            "citations": list(state.get("citations", [])),
+            "artifact_ids": list(state.get("artifact_ids", [])),
             "model_results": dict(state.get("model_results", {})),
             "degraded": list(state.get("degraded_notes", [])),
         }
@@ -2326,9 +2353,13 @@ class HealthAgentService:
             if isinstance(events, list) and events:
                 return [str(event.get("title", "") or event.get("message", "")).strip() for event in events[:3] if isinstance(event, dict)]
         if stage == "retrieve":
+            if self._uses_fixed_community_report_answer(state):
+                return ["固定模板报告模式已启用，跳过额外知识检索。"]
             hits = list(state.get("knowledge_hits", []))
             return [f"检索到 {len(hits)} 条参考信息。"] if hits else ["未命中额外参考信息，继续使用本地上下文生成结果。"]
         if stage == "prompt":
+            if self._uses_fixed_community_report_answer(state):
+                return ["固定模板报告模式已启用，直接输出结构化报告正文。"]
             return ["已构建回答提示，不向前端暴露原始提示内容。"]
         if stage == "generate":
             answer = str(state.get("answer", "")).strip()
@@ -3208,6 +3239,111 @@ class HealthAgentService:
             f"建议动作：{'；'.join(str(item) for item in recommendations[:2])}" if recommendations else "建议继续结合后续监测与线下观察综合判断。",
         ]
         return " ".join(part for part in summary_parts if part).strip()
+
+    def _build_fixed_community_report_answer(self, state: AgentState) -> str:
+        analysis_payload = state.get("analysis_payload", {})
+        if not isinstance(analysis_payload, dict):
+            return self._fallback_answer({}, "community")
+
+        window = str(state.get("window") or self._window_value_from_history(int(state.get("history_minutes", 1440) or 1440)))
+        window_label = "过去一周" if window == "week" else "过去一天"
+        risk_distribution = analysis_payload.get("risk_distribution", {})
+        if not isinstance(risk_distribution, dict):
+            risk_distribution = {}
+        averages = analysis_payload.get("community_averages", {})
+        if not isinstance(averages, dict):
+            averages = {}
+        attention = analysis_payload.get("attention_summary", {})
+        if not isinstance(attention, dict):
+            attention = {}
+        priority_devices = analysis_payload.get("priority_devices", [])
+        if not isinstance(priority_devices, list):
+            priority_devices = []
+        recommendations = analysis_payload.get("recommendations", [])
+        if not isinstance(recommendations, list):
+            recommendations = []
+        attachments = self._collect_attachments(list(state.get("tool_results", [])))
+        if not isinstance(attachments, list):
+            attachments = []
+
+        high_count = int(risk_distribution.get("high", 0) or 0)
+        medium_count = int(risk_distribution.get("medium", 0) or 0)
+        low_count = int(risk_distribution.get("low", 0) or 0)
+        avg_health_score = averages.get("health_score", "--")
+        avg_spo2 = averages.get("blood_oxygen", "--")
+        avg_hr = averages.get("heart_rate", "--")
+        risk_rows = [
+            item for item in priority_devices[:5]
+            if isinstance(item, dict)
+        ]
+        report_attachment_count = sum(
+            1 for item in attachments
+            if isinstance(item, dict) and item.get("render_type") in {"report_document", "table", "echarts", "metric_cards"}
+        )
+
+        lines = [
+            f"## 社区健康运营报告",
+            f"",
+            f"### 执行摘要",
+            f"{window_label}内共覆盖 **{analysis_payload.get('device_count', 0)}** 台设备，当前高风险 **{high_count}** 台、中风险 **{medium_count}** 台、低风险 **{low_count}** 台。",
+            f"平均健康分 **{avg_health_score}**，平均血氧 **{avg_spo2}**，平均心率 **{avg_hr}**。系统已同步生成 **{report_attachment_count}** 个结构化附件，包含图表、表格和正式报告卡片。",
+            f"",
+            f"### 重点风险对象",
+            f"| 排名 | 设备 | 风险等级 | 健康分 | 重点信号 |",
+            f"| --- | --- | --- | --- | --- |",
+        ]
+
+        if risk_rows:
+            for index, item in enumerate(risk_rows, start=1):
+                flags = item.get("risk_flags", [])
+                if not isinstance(flags, list):
+                    flags = []
+                notable_events = item.get("notable_events", [])
+                if not isinstance(notable_events, list):
+                    notable_events = []
+                signal = "、".join(str(flag) for flag in flags[:2]) or "；".join(str(row) for row in notable_events[:1]) or "待进一步核查"
+                lines.append(
+                    f"| {index} | {item.get('device_mac', '--')} | {self._risk_label(str(item.get('risk_level', 'unknown')))} | {item.get('health_score', '--')} | {signal} |"
+                )
+        else:
+            lines.append("| 1 | -- | 低 | -- | 当前窗口内暂无高风险对象 |")
+
+        sos_devices = attention.get("sos_devices", [])
+        low_oxygen_devices = attention.get("low_oxygen_devices", [])
+        fever_devices = attention.get("fever_devices", [])
+        data_gap_devices = attention.get("data_gap_devices", [])
+        lines.extend(
+            [
+                "",
+                "### 告警与运维重点",
+                f"- SOS 相关设备：{self._join_display_list(sos_devices)}",
+                f"- 血氧偏低设备：{self._join_display_list(low_oxygen_devices)}",
+                f"- 发热关注设备：{self._join_display_list(fever_devices)}",
+                f"- 数据缺口设备：{self._join_display_list(data_gap_devices)}",
+                "",
+                "### 处置建议",
+            ]
+        )
+        if recommendations:
+            lines.extend(f"- {str(item)}" for item in recommendations[:5])
+        else:
+            lines.append("- 当前窗口未发现新的高优先级处置项，建议保持常规巡检节奏。")
+
+        lines.extend(
+            [
+                "",
+                "### 输出说明",
+                "- 图表、指标卡和正式报告附件已经同步生成，可直接在当前回答上方查看。",
+                "- 本报告正文采用固定模板，便于交接班、留档和多次对比。",
+            ]
+        )
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _join_display_list(value: Any) -> str:
+        if not isinstance(value, list) or not value:
+            return "无"
+        return "、".join(str(item) for item in value[:5])
 
     def _fallback_answer(self, analysis_payload: dict[str, Any], scope: str) -> str:
         if scope == "community":

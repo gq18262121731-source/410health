@@ -1006,8 +1006,14 @@ export const api = {
     requestJson<CommunityOverview>(`${API_BASE}/health/community/overview`),
   getIntelligentAnalysis: (mac: string) =>
     requestJson<IntelligentDeviceAnalysis>(`${API_BASE}/health/intelligent/${mac}`),
-  listAlarms: () => requestJson<AlarmRecord[]>(`${API_BASE}/alarms?active_only=true`),
-  listAlarmQueue: () => requestJson<AlarmQueueItem[]>(`${API_BASE}/alarms/queue`),
+  listAlarms: (token?: string) =>
+    requestJson<AlarmRecord[]>(`${API_BASE}/alarms?active_only=true`, {
+      headers: withBearer(token),
+    }),
+  listAlarmQueue: (token?: string) =>
+    requestJson<AlarmQueueItem[]>(`${API_BASE}/alarms/queue`, {
+      headers: withBearer(token),
+    }),
   listMobilePushes: (limit = 10) =>
     requestJson<MobilePushRecord[]>(`${API_BASE}/alarms/mobile-pushes?limit=${limit}`),
   ackAlarm: (alarmId: string) =>
@@ -1135,7 +1141,10 @@ export const api = {
       headers: withBearer(token),
     }),
   healthSocket: (mac: string) => new WebSocket(`${WS_BASE}/ws/health/${mac}`),
-  alarmSocket: () => new WebSocket(`${WS_BASE}/ws/alarms`),
+  alarmSocket: (token?: string) =>
+    new WebSocket(
+      `${WS_BASE}/ws/alarms${token ? `?token=${encodeURIComponent(token)}` : ""}`,
+    ),
 
   // Voice API
   voiceStatus: () =>

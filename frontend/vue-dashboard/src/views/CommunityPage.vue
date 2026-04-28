@@ -145,7 +145,7 @@ const pageMeta = computed(() => [
           <div 
             class="modern-alarm-badge"
             :class="{ 
-              'modern-alarm-badge--active': workspace.metrics.value?.unacknowledged_alarm_count > 0,
+              'modern-alarm-badge--active': (workspace.metrics.value?.unacknowledged_alarm_count ?? 0) > 0,
               'modern-alarm-badge--clickable': canAccessDebug 
             }"
             @click="canAccessDebug ? triggerSOSSimulation() : null"

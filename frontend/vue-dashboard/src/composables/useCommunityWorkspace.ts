@@ -10,6 +10,7 @@ import {
   type SessionUser,
 } from "../api/client";
 import { mergeHealthSample, mergeHealthSeries } from "../domain/healthSampleMerge";
+import { useAlarmCenter } from "./useAlarmCenter";
 import { getStoredSessionToken } from "./useSessionAuth";
 
 export const SELECTED_DEVICE_STORAGE_KEY = "community-workspace-selected-device";
@@ -27,17 +28,11 @@ let activeConsumers = 0;
 let dashboardTimer: number | null = null;
 let trendTimer: number | null = null;
 let healthSocket: WebSocket | null = null;
-let alarmSocket: WebSocket | null = null;
 let runtimeUserId = "";
 let trendRuntimeVersion = 0;
 let serialTargetSyncVersion = 0;
-let alarmReconnectTimer: number | null = null;
-let alarmReconnectAttempts = 0;
 let pendingFocusedDeviceMac = "";
 let alarmDrivenDashboardRefreshTimer: number | null = null;
-
-const activeAlarms = ref<AlarmRecord[]>([]);
-const sosAlarmQueue = ref<AlarmRecord[]>([]);
 
 type SerialSelectionGate = {
   deviceMac: string;
@@ -314,20 +309,10 @@ function stopTrendRuntime() {
 function stopWorkspaceRuntime() {
   stopDashboardPolling();
   stopTrendRuntime();
-  stopAlarmSocket();
-}
-
-function stopAlarmSocket() {
   if (alarmDrivenDashboardRefreshTimer !== null) {
     window.clearTimeout(alarmDrivenDashboardRefreshTimer);
     alarmDrivenDashboardRefreshTimer = null;
   }
-  if (alarmReconnectTimer !== null) {
-    window.clearTimeout(alarmReconnectTimer);
-    alarmReconnectTimer = null;
-  }
-  alarmSocket?.close();
-  alarmSocket = null;
 }
 
 function scheduleDashboardRefreshFromAlarmEvent() {
@@ -338,83 +323,6 @@ function scheduleDashboardRefreshFromAlarmEvent() {
     alarmDrivenDashboardRefreshTimer = null;
     void refreshDashboardData();
   }, 250);
-}
-
-function normalizeAlarmQueuePayload(payload: unknown): AlarmRecord[] {
-  if (!Array.isArray(payload)) return [];
-  return payload
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const nested = (entry as { alarm?: AlarmRecord }).alarm;
-      if (nested && typeof nested === "object" && "id" in nested && "alarm_type" in nested) {
-        return nested;
-      }
-      if ("id" in (entry as Record<string, unknown>) && "alarm_type" in (entry as Record<string, unknown>)) {
-        return entry as AlarmRecord;
-      }
-      return null;
-    })
-    .filter((item): item is AlarmRecord => item !== null);
-}
-
-function connectAlarmSocket() {
-  stopAlarmSocket();
-  const WS_BASE = (typeof window !== "undefined")
-    ? window.location.origin.replace(/^http/, "ws")
-    : "ws://localhost:8000";
-  // 如果 API_BASE 不是 localhost，用配置的后端地址
-  const apiBase = (window as Window & { __API_BASE__?: string }).__API_BASE__ ?? "";
-  const wsBase = apiBase
-    ? apiBase.replace(/^http/, "ws").replace(/\/api\/v1$/, "")
-    : WS_BASE;
-  try {
-    alarmSocket = new WebSocket(`${wsBase}/ws/alarms`);
-    alarmSocket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data as string) as Record<string, unknown>;
-        if (data["type"] === "alarm_queue") {
-          const queue = normalizeAlarmQueuePayload(data["queue"]);
-          activeAlarms.value = queue;
-          sosAlarmQueue.value = queue
-            .filter((alarm) => alarm.alarm_type === "sos" && !alarm.acknowledged)
-            .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
-          scheduleDashboardRefreshFromAlarmEvent();
-        } else if (data["id"] && data["alarm_type"]) {
-          const alarm = data as unknown as AlarmRecord;
-          const idx = activeAlarms.value.findIndex((a) => a.id === alarm.id);
-          if (alarm.acknowledged) {
-            if (idx !== -1) {
-              activeAlarms.value = activeAlarms.value.filter((item) => item.id !== alarm.id);
-            }
-          } else if (idx !== -1) {
-            activeAlarms.value = activeAlarms.value.map((a, i) => (i === idx ? alarm : a));
-          } else {
-            activeAlarms.value = [alarm, ...activeAlarms.value];
-          }
-          if (alarm.alarm_type === "sos") {
-            if (alarm.acknowledged) {
-              sosAlarmQueue.value = sosAlarmQueue.value.filter((item) => item.id !== alarm.id);
-            } else if (!sosAlarmQueue.value.some((item) => item.id === alarm.id)) {
-              sosAlarmQueue.value = [alarm, ...sosAlarmQueue.value];
-            }
-          }
-          scheduleDashboardRefreshFromAlarmEvent();
-        }
-      } catch { /* ignore malformed */ }
-    };
-    alarmSocket.onclose = () => {
-      if (activeConsumers > 0) {
-        const delay = Math.min(1000 * (1 << alarmReconnectAttempts), 30000);
-        alarmReconnectAttempts += 1;
-        alarmReconnectTimer = window.setTimeout(connectAlarmSocket, delay);
-      }
-    };
-    alarmSocket.onopen = () => { alarmReconnectAttempts = 0; };
-  } catch { /* ignore in SSR */ }
-}
-
-function dismissSosAlarm(id: string) {
-  sosAlarmQueue.value = sosAlarmQueue.value.filter((a) => a.id !== id);
 }
 
 function updateLatestFromDevices(list: CommunityDashboardDeviceItem[]) {
@@ -592,7 +500,6 @@ function startWorkspaceRuntime(sessionUser: SessionUser | null) {
   restoreSelectedDevice();
   startDashboardPolling();
   void startTrendRuntime();
-  connectAlarmSocket();
 }
 
 export type CommunityWorkspaceState = {
@@ -630,6 +537,13 @@ export type CommunityWorkspaceState = {
 };
 
 export function useCommunityWorkspace(sessionUser: Ref<SessionUser | null>): CommunityWorkspaceState {
+  const alarmCenter = useAlarmCenter(sessionUser);
+  const activeAlarms = alarmCenter.activeAlarms;
+  const sosAlarmQueue = alarmCenter.sosAlarmQueue;
+  const dismissSosAlarm = (id: string) => {
+    sosAlarmQueue.value = sosAlarmQueue.value.filter((alarm: AlarmRecord) => alarm.id !== id);
+  };
+
   watch(
     () => sessionUser.value?.id ?? "",
     (nextId) => {
@@ -655,6 +569,15 @@ export function useCommunityWorkspace(sessionUser: Ref<SessionUser | null>): Com
   watch(selectedDeviceMac, (mac) => {
     void handleSelectedDeviceChange(mac);
   });
+
+  watch(
+    alarmCenter.lastRealtimeUpdateAt,
+    () => {
+      if (activeConsumers > 0) {
+        scheduleDashboardRefreshFromAlarmEvent();
+      }
+    },
+  );
 
   onMounted(() => {
     activeConsumers += 1;

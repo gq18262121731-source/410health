@@ -21,6 +21,7 @@ from ai.data_generator import SyntheticHealthDataGenerator
 from ai.health_score_model import BaselineTracker, HealthScoreService as DemoHealthScoreService
 from backend.config import get_settings
 from backend.models.auth_model import SessionUser
+from backend.models.alarm_model import AlarmRecord
 from backend.models.device_model import DeviceIngestMode, DeviceRecord, DeviceStatus, ingest_source_matches_mode
 from backend.models.health_model import HealthSample, IngestResponse, IngestionSource
 from backend.models.analytics_model import AgentElderSubject, WindowKind
@@ -961,6 +962,63 @@ def _care_directory_lookup(device_mac: str) -> dict[str, object]:
     }
 
 
+def _enrich_alarm_metadata(alarm: AlarmRecord) -> AlarmRecord:
+    if alarm.device_mac.upper() == "COMMUNITY":
+        return alarm
+
+    device = _device_service.get_device(alarm.device_mac)
+    directory_context = _care_directory_lookup(alarm.device_mac)
+    elder_profile = directory_context.get("elder_profile") if isinstance(directory_context, dict) else None
+    family_profiles = directory_context.get("family_profiles") if isinstance(directory_context, dict) else []
+
+    metadata = {
+        **alarm.metadata,
+        "device_name": device.device_name if device else alarm.metadata.get("device_name", ""),
+        "device_status": device.status.value if device else alarm.metadata.get("device_status"),
+        "elder_name": elder_profile.get("name") if isinstance(elder_profile, dict) else alarm.metadata.get("elder_name", ""),
+        "elder_id": elder_profile.get("id") if isinstance(elder_profile, dict) else alarm.metadata.get("elder_id"),
+        "apartment": elder_profile.get("apartment") if isinstance(elder_profile, dict) else alarm.metadata.get("apartment"),
+        "family_names": [
+            profile.get("name")
+            for profile in family_profiles
+            if isinstance(profile, dict) and profile.get("name")
+        ] if isinstance(family_profiles, list) else alarm.metadata.get("family_names", []),
+    }
+    alarm.metadata = metadata
+    return alarm
+
+
+def _annotate_alarm_timeline(
+    alarm: AlarmRecord,
+    *,
+    receive_ts: datetime | None = None,
+    alarm_emit_ts: datetime | None = None,
+    ws_send_ts: datetime | None = None,
+    ack_ts: datetime | None = None,
+) -> AlarmRecord:
+    timeline = dict(alarm.metadata)
+    if receive_ts is not None:
+        timeline["receive_ts"] = receive_ts.astimezone(timezone.utc).isoformat()
+    if alarm_emit_ts is not None:
+        timeline["alarm_emit_ts"] = alarm_emit_ts.astimezone(timezone.utc).isoformat()
+    if ws_send_ts is not None:
+        timeline["ws_send_ts"] = ws_send_ts.astimezone(timezone.utc).isoformat()
+    if ack_ts is not None:
+        timeline["ack_ts"] = ack_ts.astimezone(timezone.utc).isoformat()
+    alarm.metadata = timeline
+    return alarm
+
+
+def _serialize_alarm_queue_items(active_only: bool = True) -> list[dict[str, object]]:
+    return [
+        {
+            **item.model_dump(mode="json"),
+            "alarm": _enrich_alarm_metadata(item.alarm).model_dump(mode="json"),
+        }
+        for item in _alarm_service.queue_items(active_only=active_only)
+    ]
+
+
 def _merge_with_latest(sample: HealthSample) -> HealthSample:
     latest = _stream_service.latest(sample.device_mac)
     if latest is None:
@@ -1100,6 +1158,7 @@ def _persist_structured_health_score(sample: HealthSample, device: DeviceRecord)
 
 async def ingest_sample(sample: HealthSample) -> IngestResponse:
     global _last_community_alarm_at
+    receive_ts = datetime.now(timezone.utc)
 
     if _settings.data_mode == "mock" and _settings.use_mock_data:
         device = _device_service.ensure_device(sample.device_mac, device_name=_settings.default_device_name)
@@ -1113,20 +1172,31 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
     _alarm_service.observe_sample(sample)
 
     # 【性能优化】第一时间评估并提取实时告警（包括SOS）。直接评估未 merged 的 sample_0。
-    realtime_alarms = _alarm_service.evaluate(sample)
+    realtime_alarms = [
+        _annotate_alarm_timeline(
+            _enrich_alarm_metadata(alarm),
+            receive_ts=receive_ts,
+            alarm_emit_ts=datetime.now(timezone.utc),
+        )
+        for alarm in _alarm_service.evaluate(sample)
+    ]
     
     # 若有紧急告警，第一时间 WebSocket 广播，避免被后续同步数据库写操作阻塞而导致高延迟
     if realtime_alarms:
-        _health_data_repository.persist_alerts(realtime_alarms)
+        broadcasted_realtime_alarms: list[AlarmRecord] = []
         for alarm in realtime_alarms:
-            await _websocket_manager.broadcast_alarm(alarm.model_dump(mode="json"))
+            alarm_to_send = _annotate_alarm_timeline(alarm, ws_send_ts=datetime.now(timezone.utc))
+            broadcasted_realtime_alarms.append(alarm_to_send)
+            await _websocket_manager.broadcast_alarm(alarm_to_send.model_dump(mode="json"))
+        realtime_alarms = broadcasted_realtime_alarms
         await _websocket_manager.broadcast_alarm_queue(
             {
                 "type": "alarm_queue",
-                "queue": [item.model_dump(mode="json") for item in _alarm_service.queue_items(active_only=True)],
+                "queue": _serialize_alarm_queue_items(active_only=True),
                 "snapshot": _alarm_service.queue_snapshot(),
             }
         )
+        _health_data_repository.persist_alerts(realtime_alarms)
 
     # 之后合并历史以填补异常的0或缺失数据，保证展示与入库的质量
     sample = _merge_with_latest(sample)
@@ -1150,7 +1220,14 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
     if intelligent_result:
         intelligent_alarm = _intelligent_scorer.build_alarm(sample, intelligent_result)
         if intelligent_alarm:
-            ml_alarms.extend(_alarm_service.evaluate_alarm_records([intelligent_alarm]))
+            ml_alarms.extend(
+                _annotate_alarm_timeline(
+                    _enrich_alarm_metadata(alarm),
+                    receive_ts=receive_ts,
+                    alarm_emit_ts=datetime.now(timezone.utc),
+                )
+                for alarm in _alarm_service.evaluate_alarm_records([intelligent_alarm])
+            )
 
     now = sample.timestamp.astimezone(timezone.utc)
     if _last_community_alarm_at is None or now - _last_community_alarm_at >= timedelta(hours=1):
@@ -1160,22 +1237,39 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
         )
         community_alarm = _community_clusterer.build_alarm(community_summary)
         if community_alarm:
-            ml_alarms.extend(_alarm_service.evaluate_alarm_records([community_alarm]))
+            ml_alarms.extend(
+                _annotate_alarm_timeline(
+                    _enrich_alarm_metadata(alarm),
+                    receive_ts=receive_ts,
+                    alarm_emit_ts=datetime.now(timezone.utc),
+                )
+                for alarm in _alarm_service.evaluate_alarm_records([community_alarm])
+            )
             _last_community_alarm_at = now
 
     if ml_alarms:
-        _health_data_repository.persist_alerts(ml_alarms)
+        broadcasted_ml_alarms: list[AlarmRecord] = []
         for alarm in ml_alarms:
-            await _websocket_manager.broadcast_alarm(alarm.model_dump(mode="json"))
+            alarm_to_send = _annotate_alarm_timeline(alarm, ws_send_ts=datetime.now(timezone.utc))
+            broadcasted_ml_alarms.append(alarm_to_send)
+            await _websocket_manager.broadcast_alarm(alarm_to_send.model_dump(mode="json"))
+        ml_alarms = broadcasted_ml_alarms
         await _websocket_manager.broadcast_alarm_queue(
             {
                 "type": "alarm_queue",
-                "queue": [item.model_dump(mode="json") for item in _alarm_service.queue_items(active_only=True)],
+                "queue": _serialize_alarm_queue_items(active_only=True),
                 "snapshot": _alarm_service.queue_snapshot(),
             }
         )
+        _health_data_repository.persist_alerts(ml_alarms)
 
     await _websocket_manager.broadcast_health(sample.device_mac, sample.model_dump(mode="json"))
 
     all_alarms = (realtime_alarms or []) + (ml_alarms or [])
-    return IngestResponse(success=True, message="Sample ingested", device_mac=sample.device_mac)
+    return IngestResponse(
+        success=True,
+        message="Sample ingested",
+        device_mac=sample.device_mac,
+        sample=sample,
+        triggered_alarm_ids=[alarm.id for alarm in all_alarms],
+    )

@@ -122,6 +122,19 @@ class SerialGatewayReader:
         commands = ["AT+SCANSTOP", f"AT+TYPE={packet_type}", "AT+SCANSTART"]
         self._run_commands(connection, commands, command_delay_seconds=command_delay_seconds)
 
+    def configure_broadcast_overlay(
+        self,
+        connection,
+        *,
+        packet_type: int = 4,
+        command_delay_seconds: float = 0.02,
+    ) -> None:
+        # TYPE=4 is used as a short SOS overlay window.
+        # Avoid re-applying a single-target MAC filter here so broadcasts
+        # from non-focused devices can still surface immediately.
+        commands = ["AT+SCANSTOP", f"AT+TYPE={packet_type}", "AT+SCANSTART"]
+        self._run_commands(connection, commands, command_delay_seconds=command_delay_seconds)
+
     def run(
         self,
         *,
@@ -235,12 +248,19 @@ class SerialGatewayReader:
 
                 if desired_target_mac != active_target_mac or desired_packet_type != active_packet_type:
                     if desired_target_mac:
-                        self.configure_single_target(
-                            connection,
-                            target_mac=desired_target_mac,
-                            packet_type=desired_packet_type,
-                            command_delay_seconds=command_delay_seconds,
-                        )
+                        if enable_broadcast_sos_overlay and desired_packet_type == 4:
+                            self.configure_broadcast_overlay(
+                                connection,
+                                packet_type=desired_packet_type,
+                                command_delay_seconds=command_delay_seconds,
+                            )
+                        else:
+                            self.configure_single_target(
+                                connection,
+                                target_mac=desired_target_mac,
+                                packet_type=desired_packet_type,
+                                command_delay_seconds=command_delay_seconds,
+                            )
                         active_target_mac = desired_target_mac
                         active_packet_type = desired_packet_type
                         cycle_started_at = time.monotonic()
@@ -282,6 +302,7 @@ class SerialGatewayReader:
             if (
                 collection_strategy == "single_target"
                 and active_target_mac
+                and active_packet_type != 4
                 and normalized_line_mac
                 and normalized_line_mac != active_target_mac
             ):
