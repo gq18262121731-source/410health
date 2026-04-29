@@ -43,6 +43,7 @@ from backend.services.relation_service import RelationService
 from backend.services.stream_service import StreamService
 from backend.services.user_service import UserService
 from backend.services.warning_service import WarningService
+from backend.services.camera_stream_hub import CameraFrameHub
 from backend.services.websocket_manager import WebSocketManager
 from backend.schemas.health import VitalSignsPayload
 from iot.parser import T10PacketParser
@@ -55,6 +56,7 @@ _relation_service = RelationService(_user_service)
 _device_service = DeviceService(_user_service, database_url=_settings.database_url)
 _stream_service = StreamService(retention_points=_settings.stream_retention_points)
 _websocket_manager = WebSocketManager()
+_camera_frame_hub = CameraFrameHub(_settings)
 _alarm_priority_queue = AlarmPriorityQueue(redis_url=_settings.redis_url)
 _notification_service = NotificationService()
 _health_data_repository = HealthDataRepository(database_url=_settings.database_url)
@@ -197,6 +199,10 @@ def get_alarm_service() -> AlarmService:
 
 def get_websocket_manager() -> WebSocketManager:
     return _websocket_manager
+
+
+def get_camera_frame_hub() -> CameraFrameHub:
+    return _camera_frame_hub
 
 
 def get_health_data_repository() -> HealthDataRepository:

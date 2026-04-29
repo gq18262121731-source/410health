@@ -782,8 +782,57 @@ export interface FamilyRelationRecord {
   created_at: string;
 }
 
+export interface CameraStatusResponse {
+  configured: boolean;
+  online: boolean;
+  ip: string;
+  port: number;
+  path: string;
+  checked_at: string;
+  latency_ms?: number | null;
+  error?: string | null;
+}
+
+export type CameraPtzDirection =
+  | "up"
+  | "down"
+  | "left"
+  | "right"
+  | "up_left"
+  | "up_right"
+  | "down_left"
+  | "down_right"
+  | "zoom_in"
+  | "zoom_out"
+  | "stop";
+
+export interface CameraPtzResponse {
+  ok: boolean;
+  direction: CameraPtzDirection;
+  mode?: "pulse" | "continuous";
+}
+
+export interface CameraStreamStatusResponse {
+  clients: number;
+  running: boolean;
+  latest_frame_at?: number | null;
+  latest_frame_size?: number;
+  last_error?: string | null;
+  frames_total?: number;
+  broadcast_total?: number;
+  target_fps?: number;
+  source_fps?: number;
+  broadcast_fps?: number;
+  measured_fps?: number;
+  active_url?: string | null;
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
 const WS_BASE = (import.meta.env.VITE_WS_BASE ?? "ws://localhost:8000").replace(/\/$/, "");
+
+function buildApiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -926,6 +975,17 @@ export async function streamCommunityAnalysis(
 }
 
 export const api = {
+  getCameraStatus: () => requestJson<CameraStatusResponse>(buildApiUrl("/camera/status")),
+  getCameraStreamStatus: () => requestJson<CameraStreamStatusResponse>(buildApiUrl("/camera/stream-status")),
+  getCameraSnapshotUrl: () => `${buildApiUrl("/camera/snapshot")}?t=${Date.now()}`,
+  getCameraStreamUrl: () => `${buildApiUrl("/camera/stream.mjpg")}?t=${Date.now()}`,
+  cameraFrameSocket: () => new WebSocket(`${WS_BASE}/ws/camera`),
+  moveCamera: (direction: CameraPtzDirection, mode: "pulse" | "continuous" = "pulse") =>
+    requestJson<CameraPtzResponse>(buildApiUrl("/camera/ptz"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction, mode }),
+    }),
   listDevices: () => requestJson<DeviceRecord[]>(`${API_BASE}/devices`),
   getDevice: (mac: string) => requestJson<DeviceRecord>(`${API_BASE}/devices/${mac}`),
   registerDevice: (

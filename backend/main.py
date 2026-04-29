@@ -15,6 +15,7 @@ _serial_logger = logging.getLogger("serial_runtime")
 from backend.api.alarm_api import router as alarm_router
 from backend.api.agent_api import router as agent_router
 from backend.api.auth_api import router as auth_router
+from backend.api.camera_api import router as camera_router
 from backend.api.care_api import router as care_router
 from backend.api.chat_api import router as chat_router
 from backend.api.device_api import router as device_router
@@ -28,6 +29,7 @@ from backend.models.device_model import DeviceIngestMode, DeviceStatus
 from backend.dependencies import (
     ensure_demo_overlay_history_window,
     get_alarm_service,
+    get_camera_frame_hub,
     get_data_generator,
     get_demo_data_status,
     get_device_service,
@@ -116,6 +118,7 @@ app.include_router(care_router, prefix=settings.api_v1_prefix)
 app.include_router(voice_router, prefix=settings.api_v1_prefix)
 app.include_router(omni_router, prefix=settings.api_v1_prefix)
 app.include_router(auth_router, prefix=settings.api_v1_prefix)
+app.include_router(camera_router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/healthz")
@@ -236,6 +239,19 @@ async def alarm_stream(websocket: WebSocket) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         await manager.disconnect_alarm(websocket)
+
+
+@app.websocket("/ws/camera")
+async def camera_frame_stream(websocket: WebSocket) -> None:
+    hub = get_camera_frame_hub()
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
 
 
 async def _mock_stream_loop() -> None:

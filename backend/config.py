@@ -127,6 +127,19 @@ class Settings(BaseSettings):
     mqtt_password: str = ""
     mqtt_keepalive_seconds: int = 60
 
+    camera_ip: str = ""
+    camera_user: str = "admin"
+    camera_password: str = ""
+    camera_rtsp_path: str = "/tcp/av0_0"
+    camera_rtsp_port: int = 10554
+    camera_onvif_port: int = 10080
+    camera_stream_rtsp_path: str = "/tcp/av0_1"
+    camera_probe_timeout_seconds: float = 3.0
+    camera_snapshot_timeout_seconds: float = 8.0
+    camera_stream_fps: float = 24.0
+    camera_ptz_move_seconds: float = 0.35
+    camera_ptz_speed: float = 0.45
+
     sos_broadcast_window_seconds: int = 15
     health_score_floor: int = 35
     stream_retention_points: int = 600
