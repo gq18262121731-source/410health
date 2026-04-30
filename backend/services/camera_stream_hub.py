@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
+from typing import AsyncGenerator
 
 from fastapi import WebSocket
 
@@ -20,7 +21,9 @@ class CameraFrameHub:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._clients: set[WebSocket] = set()
+        self._mjpeg_clients = 0
         self._lock = asyncio.Lock()
+        self._frame_event = asyncio.Event()
         self._capture_task: asyncio.Task[None] | None = None
         self._latest_frame: bytes | None = None
         self._latest_frame_at: float | None = None
@@ -35,13 +38,13 @@ class CameraFrameHub:
         self._broadcast_window_started_at = time.monotonic()
         self._broadcast_window_frames = 0
         self._active_url: str | None = None
+        self._keep_warm = False
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
         async with self._lock:
             self._clients.add(websocket)
-            if self._capture_task is None or self._capture_task.done():
-                self._capture_task = asyncio.create_task(self._capture_loop())
+            self._ensure_capture_task()
 
         if self._latest_frame:
             await self._send_frame(websocket, self._latest_frame)
@@ -49,14 +52,51 @@ class CameraFrameHub:
     async def disconnect(self, websocket: WebSocket) -> None:
         async with self._lock:
             self._clients.discard(websocket)
-            if not self._clients and self._capture_task and not self._capture_task.done():
-                self._capture_task.cancel()
-                self._capture_task = None
+            self._stop_capture_task_if_idle()
+
+    async def start_keep_warm(self) -> None:
+        async with self._lock:
+            self._keep_warm = True
+            self._ensure_capture_task()
+
+    async def stop_keep_warm(self) -> None:
+        async with self._lock:
+            self._keep_warm = False
+            self._stop_capture_task_if_idle()
+
+    async def mjpeg_frames(self) -> AsyncGenerator[bytes, None]:
+        async with self._lock:
+            self._mjpeg_clients += 1
+            self._ensure_capture_task()
+
+        last_frame_at: float | None = None
+        try:
+            while True:
+                frame = self._latest_frame
+                frame_at = self._latest_frame_at
+                if frame and frame_at != last_frame_at:
+                    last_frame_at = frame_at
+                    yield self._format_mjpeg_part(frame)
+                    continue
+
+                self._frame_event.clear()
+                try:
+                    await asyncio.wait_for(self._frame_event.wait(), timeout=4.0)
+                except asyncio.TimeoutError:
+                    if self._latest_frame:
+                        yield self._format_mjpeg_part(self._latest_frame)
+        finally:
+            async with self._lock:
+                self._mjpeg_clients = max(0, self._mjpeg_clients - 1)
+                self._stop_capture_task_if_idle()
 
     def status(self) -> dict[str, object]:
         return {
-            "clients": len(self._clients),
+            "clients": len(self._clients) + self._mjpeg_clients,
+            "websocket_clients": len(self._clients),
+            "mjpeg_clients": self._mjpeg_clients,
             "running": bool(self._capture_task and not self._capture_task.done()),
+            "keep_warm": self._keep_warm,
             "latest_frame_at": self._latest_frame_at,
             "latest_frame_size": self._latest_frame_size,
             "last_error": self._last_error,
@@ -67,7 +107,26 @@ class CameraFrameHub:
             "broadcast_fps": round(self._broadcast_fps, 2),
             "measured_fps": round(self._source_fps, 2),
             "active_url": self._mask_url(self._active_url),
+            "profile": self._settings.camera_stream_profile,
+            "jpeg_quality": max(2, min(self._settings.camera_stream_jpeg_quality, 12)),
+            "stream_width": max(0, self._settings.camera_stream_width),
         }
+
+    def latest_frame(self) -> bytes | None:
+        return self._latest_frame
+
+    def _ensure_capture_task(self) -> None:
+        if self._capture_task is None or self._capture_task.done():
+            self._capture_task = asyncio.create_task(self._capture_loop())
+
+    def _stop_capture_task_if_idle(self) -> None:
+        if self._keep_warm or self._clients or self._mjpeg_clients > 0 or not self._capture_task or self._capture_task.done():
+            return
+        self._capture_task.cancel()
+        self._capture_task = None
+
+    def _has_consumers(self) -> bool:
+        return bool(self._keep_warm or self._clients or self._mjpeg_clients > 0)
 
     async def _capture_loop(self) -> None:
         service = CameraService(self._settings)
@@ -88,12 +147,17 @@ class CameraFrameHub:
         import imageio_ffmpeg
 
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-        fps = max(1.0, min(self._settings.camera_stream_fps, 24.0))
+        fps = max(1.0, min(self._settings.camera_stream_fps, 30.0))
+        jpeg_quality = max(2, min(self._settings.camera_stream_jpeg_quality, 12))
+        stream_width = max(0, self._settings.camera_stream_width)
+        filters = [f"fps={fps:.2f}"]
+        if stream_width > 0:
+            filters.append(f"scale={stream_width}:-2:flags=lanczos")
         last_error = ""
 
         for url in service.stream_rtsp_urls:
             async with self._lock:
-                if not self._clients:
+                if not self._has_consumers():
                     return
 
             cmd = [
@@ -101,12 +165,15 @@ class CameraFrameHub:
                 "-hide_banner",
                 "-loglevel",
                 "error",
+                "-nostdin",
                 "-fflags",
-                "nobuffer",
+                "nobuffer+discardcorrupt",
                 "-flags",
                 "low_delay",
+                "-avioflags",
+                "direct",
                 "-probesize",
-                "32",
+                "8192",
                 "-analyzeduration",
                 "0",
                 "-max_delay",
@@ -119,9 +186,11 @@ class CameraFrameHub:
                 url,
                 "-an",
                 "-vf",
-                f"fps={fps:.2f}",
+                ",".join(filters),
                 "-q:v",
-                "8",
+                str(jpeg_quality),
+                "-flush_packets",
+                "1",
                 "-f",
                 "mjpeg",
                 "-",
@@ -142,11 +211,11 @@ class CameraFrameHub:
 
                 while True:
                     async with self._lock:
-                        if not self._clients:
+                        if not self._has_consumers():
                             return
 
                     try:
-                        chunk = await asyncio.wait_for(process.stdout.read(32768), timeout=4.0)
+                        chunk = await asyncio.wait_for(process.stdout.read(65536), timeout=4.0)
                     except asyncio.TimeoutError:
                         if frame_count == 0 or time.monotonic() - last_frame_at > 4.0:
                             raise RuntimeError("CAMERA_STREAM_READ_TIMEOUT")
@@ -174,11 +243,13 @@ class CameraFrameHub:
                         self._latest_frame_at = time.time()
                         self._latest_frame_size = len(frame)
                         self._last_error = None
+                        self._frame_event.set()
                         self._record_frame()
                         await self._broadcast_frame(frame)
             finally:
-                process.kill()
                 with suppress(ProcessLookupError):
+                    process.kill()
+                with suppress(ProcessLookupError, asyncio.TimeoutError):
                     await asyncio.wait_for(process.wait(), timeout=2.0)
 
             stderr = b""
@@ -199,6 +270,7 @@ class CameraFrameHub:
         self._latest_frame = frame
         self._latest_frame_at = time.time()
         self._latest_frame_size = len(frame)
+        self._frame_event.set()
         self._record_frame()
         await self._broadcast_frame(frame)
 
@@ -236,9 +308,12 @@ class CameraFrameHub:
         sent = 0
         for websocket in clients:
             try:
-                await self._send_frame(websocket, frame)
+                await asyncio.wait_for(
+                    self._send_frame(websocket, frame),
+                    timeout=max(0.05, self._settings.camera_stream_send_timeout_seconds),
+                )
                 sent += 1
-            except Exception:
+            except (asyncio.TimeoutError, Exception):
                 stale.append(websocket)
 
         self._record_broadcast(sent)
@@ -247,6 +322,16 @@ class CameraFrameHub:
             async with self._lock:
                 for websocket in stale:
                     self._clients.discard(websocket)
+
+    @staticmethod
+    def _format_mjpeg_part(image: bytes) -> bytes:
+        return (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n"
+            + f"Content-Length: {len(image)}\r\n\r\n".encode("ascii")
+            + image
+            + b"\r\n"
+        )
 
     @staticmethod
     async def _send_frame(websocket: WebSocket, frame: bytes) -> None:

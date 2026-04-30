@@ -81,14 +81,23 @@ class CameraService:
     @property
     def stream_rtsp_urls(self) -> list[str]:
         configured_path = self._normalize_path(self._settings.camera_stream_rtsp_path)
-        candidates = [
-            (configured_path, self._settings.camera_rtsp_port),
-            ("/tcp/av0_1", 10554),
-            ("/tcp/av0_0", 10554),
+        smooth_path = self._normalize_path(self._settings.camera_stream_smooth_path)
+        quality_path = self._normalize_path(self._settings.camera_stream_quality_path)
+
+        if self._settings.camera_stream_profile == "quality":
+            preferred_paths = [quality_path, configured_path, smooth_path]
+        elif self._settings.camera_stream_profile == "smooth":
+            preferred_paths = [smooth_path, configured_path, quality_path]
+        else:
+            preferred_paths = [configured_path, smooth_path, quality_path]
+
+        candidates = [(path, self._settings.camera_rtsp_port) for path in preferred_paths] + [
             ("/udp/av0_1", 10554),
             ("/udp/av0_0", 10554),
             ("/av0_1", 10554),
             ("/av0_0", 10554),
+            ("/tcp/av0_1", 10554),
+            ("/tcp/av0_0", 10554),
         ]
         urls: list[str] = []
         for path, port in candidates:

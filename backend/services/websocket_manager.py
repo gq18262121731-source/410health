@@ -45,24 +45,29 @@ class WebSocketManager:
     async def broadcast_health(self, device_mac: str, payload: dict[str, Any]) -> None:
         normalized = self._normalize_mac(device_mac)
         sockets = list(self._health_channels.get(normalized, set()))
-        for socket in sockets:
-            try:
-                await socket.send_json(payload)
-            except Exception:
-                await self.disconnect_health(device_mac, socket)
+        stale = await self._send_many(sockets, payload)
+        for socket in stale:
+            await self.disconnect_health(device_mac, socket)
 
     async def broadcast_alarm(self, payload: dict[str, Any]) -> None:
         sockets = list(self._alarm_channels)
-        for socket in sockets:
-            try:
-                await socket.send_json(payload)
-            except Exception:
-                await self.disconnect_alarm(socket)
+        stale = await self._send_many(sockets, payload)
+        for socket in stale:
+            await self.disconnect_alarm(socket)
 
     async def broadcast_alarm_queue(self, payload: dict[str, Any]) -> None:
         sockets = list(self._alarm_channels)
-        for socket in sockets:
+        stale = await self._send_many(sockets, payload)
+        for socket in stale:
+            await self.disconnect_alarm(socket)
+
+    async def _send_many(self, sockets: list[WebSocket], payload: dict[str, Any]) -> list[WebSocket]:
+        async def send(socket: WebSocket) -> WebSocket | None:
             try:
-                await socket.send_json(payload)
+                await asyncio.wait_for(socket.send_json(payload), timeout=0.2)
+                return None
             except Exception:
-                await self.disconnect_alarm(socket)
+                return socket
+
+        results = await asyncio.gather(*(send(socket) for socket in sockets), return_exceptions=False)
+        return [socket for socket in results if socket is not None]

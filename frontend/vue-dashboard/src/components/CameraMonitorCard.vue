@@ -16,7 +16,13 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-vue-next";
-import { api, type CameraPtzDirection, type CameraStatusResponse, type CameraStreamStatusResponse } from "../api/client";
+import {
+  api,
+  type CameraFallDetectionStatusResponse,
+  type CameraPtzDirection,
+  type CameraStatusResponse,
+  type CameraStreamStatusResponse,
+} from "../api/client";
 
 const status = ref<CameraStatusResponse | null>(null);
 const frameCanvas = ref<HTMLCanvasElement | null>(null);
@@ -25,7 +31,10 @@ const loadingStatus = ref(false);
 const autoRefresh = ref(true);
 const streamState = ref<"connecting" | "live" | "paused" | "offline">("connecting");
 const streamStatus = ref<CameraStreamStatusResponse | null>(null);
+const fallStatus = ref<CameraFallDetectionStatusResponse | null>(null);
 const clientFps = ref(0);
+const mjpegFallback = ref(false);
+const mjpegStreamSrc = ref("");
 const ptzBusy = ref<CameraPtzDirection | null>(null);
 const activePtz = ref<CameraPtzDirection | null>(null);
 const errorMessage = ref("");
@@ -57,6 +66,21 @@ const endpointLabel = computed(() => {
   return `${status.value.ip}:${status.value.port}${status.value.path}`;
 });
 
+const fallDetectionLabel = computed(() => {
+  if (!fallStatus.value?.enabled) return "跌倒检测未启用";
+  if (fallStatus.value.process_running) {
+    return fallStatus.value.accuracy_preserving ? "跌倒检测在线·精度优先" : "跌倒检测在线";
+  }
+  if (fallStatus.value.running) return "跌倒检测启动中";
+  return "跌倒检测离线";
+});
+
+const fallDetectionTone = computed(() => {
+  if (!fallStatus.value?.enabled) return "neutral";
+  if (fallStatus.value.process_running) return "online";
+  return "offline";
+});
+
 async function refreshStatus() {
   loadingStatus.value = true;
   try {
@@ -78,6 +102,14 @@ async function refreshStreamStatus() {
     streamStatus.value = await api.getCameraStreamStatus();
   } catch {
     // Status is diagnostic only; avoid disrupting the video path.
+  }
+}
+
+async function refreshFallDetectionStatus() {
+  try {
+    fallStatus.value = await api.getCameraFallDetectionStatus();
+  } catch {
+    // Model status is diagnostic; alarm delivery still comes from the backend websocket.
   }
 }
 
@@ -123,6 +155,7 @@ async function setFrame(frame: Blob) {
     context?.drawImage(bitmap, 0, 0);
     bitmap.close();
     hasFrame.value = true;
+    mjpegFallback.value = false;
     streamState.value = "live";
     recordClientFrame();
     errorMessage.value = "";
@@ -171,6 +204,7 @@ function startCameraSocket() {
   frameWatchdog = window.setTimeout(() => {
     if (streamState.value === "connecting") {
       streamState.value = "offline";
+      startMjpegFallback();
       errorMessage.value = "后端已连接，但还没有收到摄像头视频帧。请确认电脑正连接摄像头局域网，并检查 /camera/stream-status。";
     }
   }, 5000);
@@ -183,6 +217,7 @@ function startCameraSocket() {
   };
   frameSocket.onerror = () => {
     streamState.value = "offline";
+    startMjpegFallback();
     errorMessage.value = "后端摄像头转发暂时不可用，请确认 Windows 后端仍在运行。";
   };
   frameSocket.onclose = () => {
@@ -193,6 +228,23 @@ function startCameraSocket() {
       window.setTimeout(startCameraSocket, 1600);
     }
   };
+}
+
+function startMjpegFallback() {
+  if (!autoRefresh.value) return;
+  mjpegStreamSrc.value = api.getCameraStreamUrl();
+  mjpegFallback.value = true;
+  hasFrame.value = true;
+}
+
+function handleMjpegLoaded() {
+  streamState.value = "live";
+  errorMessage.value = "";
+}
+
+function handleMjpegError() {
+  streamState.value = "offline";
+  handleFrameError();
 }
 
 function closeCameraSocket() {
@@ -209,6 +261,8 @@ function closeCameraSocket() {
   if (socket && socket.readyState !== WebSocket.CLOSED) {
     socket.close();
   }
+  mjpegFallback.value = false;
+  mjpegStreamSrc.value = "";
 }
 
 function bindPtz(direction: CameraPtzDirection) {
@@ -301,8 +355,12 @@ function showAudioNotice(kind: "voice" | "talk") {
 onMounted(() => {
   void refreshStatus().then(refreshFrame);
   void refreshStreamStatus();
+  void refreshFallDetectionStatus();
   statusTimer = window.setInterval(refreshStatus, 8000);
-  streamStatusTimer = window.setInterval(refreshStreamStatus, 3000);
+  streamStatusTimer = window.setInterval(() => {
+    void refreshStreamStatus();
+    void refreshFallDetectionStatus();
+  }, 3000);
 });
 
 onBeforeUnmount(() => {
@@ -331,10 +389,18 @@ onBeforeUnmount(() => {
     <div class="camera-monitor-card__stage">
       <div class="camera-monitor-card__viewport" :class="{ 'has-frame': hasFrame }">
         <canvas
-          v-show="hasFrame"
+          v-show="hasFrame && !mjpegFallback"
           ref="frameCanvas"
           class="camera-monitor-card__canvas"
           aria-label="home camera realtime video"
+        />
+        <img
+          v-if="mjpegFallback && mjpegStreamSrc"
+          class="camera-monitor-card__canvas"
+          :src="mjpegStreamSrc"
+          alt="home camera realtime video"
+          @load="handleMjpegLoaded"
+          @error="handleMjpegError"
         />
         <div v-if="!hasFrame" class="camera-monitor-card__empty">
           <Camera :size="32" />
@@ -398,8 +464,14 @@ onBeforeUnmount(() => {
         延迟 {{ status.latency_ms }}ms
       </span>
       <span v-else>局域网 RTSP</span>
-      <span>24FPS WebSocket /ws/camera</span>
+      <span v-if="streamStatus">Target {{ (streamStatus.target_fps ?? 0).toFixed(1) }}fps / {{ streamStatus.profile ?? "balanced" }}</span>
+      <span v-else>WebSocket /ws/camera</span>
       <span v-if="streamStatus">后端源流 {{ (streamStatus.source_fps ?? streamStatus.measured_fps ?? 0).toFixed(1) }}fps</span>
+      <span v-if="streamStatus">JPEG q{{ streamStatus.jpeg_quality ?? 4 }}</span>
+      <span class="camera-monitor-card__fall" :class="`is-${fallDetectionTone}`">
+        {{ fallDetectionLabel }}
+      </span>
+      <span v-if="fallStatus?.last_event">最近事件 {{ String(fallStatus.last_event.event_type ?? "status") }}</span>
       <span>ONVIF 云台 10080</span>
     </div>
 
@@ -412,7 +484,15 @@ onBeforeUnmount(() => {
         <Play v-else :size="16" />
         {{ autoRefresh ? "暂停画面" : "继续查看" }}
       </button>
-      <button type="button" class="camera-action" :disabled="loadingStatus" @click="refreshStatus">
+      <button
+        type="button"
+        class="camera-action"
+        :disabled="loadingStatus"
+        @click="
+          refreshStatus();
+          refreshFallDetectionStatus();
+        "
+      >
         <RefreshCw :size="16" />
         刷新状态
       </button>
@@ -766,6 +846,22 @@ onBeforeUnmount(() => {
   color: var(--text-sub);
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+.camera-monitor-card__fall.is-online {
+  border-color: rgba(16, 185, 129, 0.2);
+  background: rgba(16, 185, 129, 0.11);
+  color: #047857;
+}
+
+.camera-monitor-card__fall.is-offline {
+  border-color: rgba(239, 68, 68, 0.18);
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.camera-monitor-card__fall.is-neutral {
+  color: var(--text-sub);
 }
 
 .camera-monitor-card__error,

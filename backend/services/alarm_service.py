@@ -33,12 +33,14 @@ class AlarmService:
         # This dict tracks {device_mac: ack_timestamp} so we can suppress
         # repeated alerts from the same physical event.
         self._sos_ack_cooldowns: dict[str, datetime] = {}
+        self._fall_ack_cooldowns: dict[str, datetime] = {}
         self._last_non_sos_sample_at: dict[str, datetime] = {}
         # Keep post-ack suppression short; long cooldowns can hide true new SOS events.
         # Use a small multiple of the dedupe window to absorb lingering packets only.
         self._sos_ack_cooldown_duration = timedelta(
             seconds=max(20, int(self._sos_dedupe_window.total_seconds() * 2)),
         )
+        self._fall_ack_cooldown_duration = timedelta(seconds=60)
 
     def evaluate(self, sample: HealthSample) -> list[AlarmRecord]:
         alarms = self._detector.evaluate(sample)
@@ -136,8 +138,27 @@ class AlarmService:
                         len(collapsed_sibling_ids),
                         self._sos_ack_cooldown_duration.total_seconds(),
                     )
+                elif alarm.alarm_type.value in {"fall_detected", "fall_injury_risk"}:
+                    mac = self._normalize_mac(alarm.device_mac)
+                    self._fall_ack_cooldowns[mac] = datetime.now(timezone.utc)
                 return updated, collapsed_sibling_ids
         return None, []
+
+    def acknowledge_many(self, alarm_ids: set[str]) -> list[AlarmRecord]:
+        acknowledged: list[AlarmRecord] = []
+        if not alarm_ids:
+            return acknowledged
+        for index, alarm in enumerate(self._alarms):
+            if alarm.id not in alarm_ids or alarm.acknowledged:
+                continue
+            updated = alarm.model_copy(update={"acknowledged": True})
+            self._alarms[index] = updated
+            self._queue.remove(alarm.id)
+            if alarm.alarm_type.value in {"fall_detected", "fall_injury_risk"}:
+                mac = self._normalize_mac(alarm.device_mac)
+                self._fall_ack_cooldowns[mac] = datetime.now(timezone.utc)
+            acknowledged.append(updated)
+        return acknowledged
 
     def _acknowledge_active_sos_siblings(self, *, device_mac: str, exclude_alarm_id: str) -> list[str]:
         acknowledged_ids: list[str] = []
@@ -160,6 +181,10 @@ class AlarmService:
         # Check post-acknowledgment cooldown first: if the user just dismissed
         # an SOS for this device, suppress subsequent SOS packets silently.
         if alarm.alarm_type.value == "sos" and self._is_in_sos_ack_cooldown(alarm.device_mac):
+            return None
+        if alarm.alarm_type.value in {"fall_detected", "fall_injury_risk"} and self._is_in_fall_ack_cooldown(alarm.device_mac):
+            return None
+        if alarm.alarm_type.value in {"fall_detected", "fall_injury_risk"} and self._has_active_fall_alarm(alarm.device_mac):
             return None
 
         existing_index = self._find_active_sos_index(alarm)
@@ -195,6 +220,34 @@ class AlarmService:
             self._sos_ack_cooldown_duration.total_seconds(),
         )
         return True
+
+    def _is_in_fall_ack_cooldown(self, device_mac: str) -> bool:
+        mac = self._normalize_mac(device_mac)
+        ack_at = self._fall_ack_cooldowns.get(mac)
+        if ack_at is None:
+            return False
+        elapsed = datetime.now(timezone.utc) - ack_at
+        if elapsed > self._fall_ack_cooldown_duration:
+            del self._fall_ack_cooldowns[mac]
+            return False
+        logger.debug(
+            "Fall alarm suppressed for %s - within post-ack cooldown (%ds/%ds elapsed).",
+            mac,
+            elapsed.total_seconds(),
+            self._fall_ack_cooldown_duration.total_seconds(),
+        )
+        return True
+
+    def _has_active_fall_alarm(self, device_mac: str) -> bool:
+        normalized_mac = self._normalize_mac(device_mac)
+        for existing in self._alarms:
+            if existing.acknowledged:
+                continue
+            if existing.alarm_type.value not in {"fall_detected", "fall_injury_risk"}:
+                continue
+            if self._normalize_mac(existing.device_mac) == normalized_mac:
+                return True
+        return False
 
     def _find_active_sos_index(self, alarm: AlarmRecord) -> int | None:
         if alarm.alarm_type.value != "sos":

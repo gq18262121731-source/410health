@@ -48,7 +48,12 @@ class HealthInferenceEngine:
         try:
             normalized = validate_inference_record(payload)
             rule_assessment = self.rule_engine.assess(normalized)
-            artifacts = self._load_artifacts()
+            try:
+                artifacts = self._load_artifacts()
+            except ModelArtifactMissingError:
+                if self.settings.allow_rule_only_fallback:
+                    return self._predict_rule_only(rule_assessment)
+                raise
 
             feature_frame = build_single_feature_frame(normalized).loc[:, artifacts.feature_columns]
             scaled = artifacts.scaler.transform(feature_frame)
@@ -108,6 +113,42 @@ class HealthInferenceEngine:
             LOGGER.exception("Static health inference failed")
             raise InferenceError(str(exc)) from exc
 
+    def _predict_rule_only(self, rule_assessment: Any) -> dict[str, Any]:
+        final_health_score = rule_assessment.rule_health_score
+        score_based_level = self.rule_engine.determine_risk_level(final_health_score)
+        risk_level = self.rule_engine.upgrade_risk_level(score_based_level, rule_assessment.hard_threshold.level)
+        recommendation_code = self.rule_engine.recommendation_code(
+            risk_level,
+            hard_threshold_level=rule_assessment.hard_threshold.level,
+            abnormal_tags=rule_assessment.abnormal_tags,
+        )
+        sub_scores = {
+            **rule_assessment.sub_scores,
+            "rule_health_score": round(rule_assessment.rule_health_score, 4),
+            "model_health_score": round(final_health_score, 4),
+            "final_health_score": round(final_health_score, 4),
+        }
+        abnormal_tags = set(rule_assessment.abnormal_tags)
+        return {
+            "rule_health_score": round(rule_assessment.rule_health_score, 4),
+            "model_health_score": round(final_health_score, 4),
+            "final_health_score": round(final_health_score, 4),
+            "health_score": round(final_health_score, 4),
+            "risk_level": risk_level,
+            "risk_score_raw": round(1.0 - final_health_score / 100.0, 6),
+            "sub_scores": sub_scores,
+            "alerts": {
+                "hr_alert": {"label": "High" if "tachycardia" in abnormal_tags else "Normal", "probability": None},
+                "spo2_alert": {"label": "Low" if "low_spo2" in abnormal_tags else "Normal", "probability": None},
+                "bp_alert": {"label": "High" if "hypertension" in abnormal_tags else "Normal", "probability": None},
+                "temp_alert": {"label": "Abnormal" if "fever" in abnormal_tags else "Normal", "probability": None},
+                "hard_threshold_level": rule_assessment.hard_threshold.level,
+            },
+            "abnormal_tags": rule_assessment.abnormal_tags,
+            "trigger_reasons": rule_assessment.hard_threshold.trigger_reasons,
+            "recommendation_code": recommendation_code,
+        }
+
     def _load_artifacts(self) -> LoadedArtifacts:
         if self._artifacts is not None:
             return self._artifacts
@@ -119,8 +160,6 @@ class HealthInferenceEngine:
         ]
         missing = [str(path) for path in required if not path.exists()]
         if missing:
-            if self.settings.allow_rule_only_fallback:
-                raise InferenceError("Rule-only fallback is configured but not implemented for this runtime")
             raise ModelArtifactMissingError(f"Missing model artifacts: {missing}")
 
         model = StaticHealthMultiTaskModel.load(self.settings.static_model_path, map_location=self.device)

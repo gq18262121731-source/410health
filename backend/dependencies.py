@@ -21,6 +21,7 @@ from ai.data_generator import SyntheticHealthDataGenerator
 from ai.health_score_model import BaselineTracker, HealthScoreService as DemoHealthScoreService
 from backend.config import get_settings
 from backend.models.auth_model import SessionUser
+from backend.models.alarm_model import AlarmLayer, AlarmPriority, AlarmRecord, AlarmType
 from backend.models.device_model import DeviceIngestMode, DeviceRecord, DeviceStatus, ingest_source_matches_mode
 from backend.models.health_model import HealthSample, IngestResponse, IngestionSource
 from backend.models.analytics_model import AgentElderSubject, WindowKind
@@ -35,6 +36,7 @@ from backend.services.community_insight_service import CommunityInsightService
 from backend.services.care_service import CareService
 from backend.services.device_service import DeviceService
 from backend.services.explanation_service import ExplanationService
+from backend.services.fall_detection_service import FallDetectionService
 from backend.services.health_data_repository import HealthDataRepository
 from backend.services.health_score_service import HealthScoreService as StructuredHealthScoreService
 from backend.services.health_stability_service import HealthStabilityService
@@ -147,6 +149,178 @@ _structured_health_score_service = StructuredHealthScoreService(
 )
 _warning_service = WarningService(health_score_service=_structured_health_score_service)
 _last_community_alarm_at: datetime | None = None
+_fall_alarm_seen_keys: set[str] = set()
+
+
+async def _handle_fall_detection_event(event: dict[str, object]) -> None:
+    event_type = str(event.get("event_type") or "")
+    state = str(event.get("state") or "")
+    injury = event.get("injury") if isinstance(event.get("injury"), dict) else {}
+    injury_level = str(injury.get("level") or "I0") if isinstance(injury, dict) else "I0"
+    if event_type != "fall_confirmed" and state not in {
+        "confirmed_fall",
+        "post_fall_monitoring",
+        "recovery_watch",
+        "injury_watch",
+        "abnormal_recovery",
+        "needs_assistance",
+        "emergency",
+    }:
+        return
+
+    if not _fall_event_passes_alarm_filters(event):
+        return
+
+    track_id = str(event.get("track_id") or "unknown")
+    dedupe_key = f"{track_id}:{event_type}:{state}:{injury_level}"
+    if dedupe_key in _fall_alarm_seen_keys:
+        return
+    _fall_alarm_seen_keys.add(dedupe_key)
+
+    severity = str(event.get("severity") or "NONE")
+    fall_score = float(event.get("fall_score") or 0.0)
+    advice = str(injury.get("advice") or "请尽快人工查看现场画面。") if isinstance(injury, dict) else "请尽快人工查看现场画面。"
+    priority = _fall_alarm_priority(severity=severity, injury_level=injury_level, state=state)
+    alarm_type = (
+        AlarmType.FALL_INJURY_RISK
+        if injury_level in {"I2", "I3", "I4", "I5"} or state in {"injury_watch", "abnormal_recovery", "needs_assistance", "emergency"}
+        else AlarmType.FALL_DETECTED
+    )
+    alarm = AlarmRecord(
+        device_mac=_settings.fall_detection_target_device_mac,
+        alarm_type=alarm_type,
+        alarm_level=priority,
+        alarm_layer=AlarmLayer.REALTIME,
+        message=f"摄像头检测到跌倒事件：{state or event_type}，伤情等级 {injury_level}，{advice}",
+        anomaly_probability=max(0.0, min(1.0, fall_score)),
+        metadata={
+            "source": "fall_detection_model",
+            "event": event,
+            "severity": severity,
+            "injury_level": injury_level,
+            "track_id": track_id,
+        },
+    )
+    alarms = _alarm_service.evaluate_alarm_records([alarm])
+    if not alarms:
+        return
+    _health_data_repository.persist_alerts(alarms)
+    for item in alarms:
+        await _websocket_manager.broadcast_alarm(item.model_dump(mode="json"))
+    await _websocket_manager.broadcast_alarm_queue(
+        {
+            "type": "alarm_queue",
+            "queue": [item.model_dump(mode="json") for item in _alarm_service.queue_items(active_only=True)],
+            "snapshot": _alarm_service.queue_snapshot(),
+        }
+    )
+
+
+def _fall_event_passes_alarm_filters(event: dict[str, object]) -> bool:
+    return _fall_event_passes_score_filter(event) and _fall_event_passes_roi_filter(event)
+
+
+def _fall_event_passes_score_filter(event: dict[str, object]) -> bool:
+    threshold = max(0.0, min(1.0, float(_settings.fall_detection_min_alert_score or 0.0)))
+    if threshold <= 0:
+        return True
+    try:
+        fall_score = float(event.get("fall_score") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return fall_score >= threshold
+
+
+def _fall_event_passes_roi_filter(event: dict[str, object]) -> bool:
+    if not _settings.fall_detection_roi_enabled:
+        return True
+    if event.get("source") == "fall_detection_demo" or event.get("demo") is True:
+        return True
+
+    roi = _parse_fall_detection_roi()
+    if roi is None:
+        logger.warning("Fall detection ROI is enabled but invalid; event admission is fail-open.")
+        return True
+
+    bbox = event.get("bbox")
+    normalized_bbox = _normalize_fall_bbox(bbox)
+    if normalized_bbox is None:
+        logger.debug("Fall detection event has no usable bbox; event admission is fail-open.")
+        return True
+
+    x1, y1, x2, y2 = normalized_bbox
+    bbox_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    if bbox_area <= 0:
+        return False
+
+    rx1, ry1, rx2, ry2 = roi
+    ix1 = max(x1, rx1)
+    iy1 = max(y1, ry1)
+    ix2 = min(x2, rx2)
+    iy2 = min(y2, ry2)
+    intersection_area = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    overlap = intersection_area / bbox_area
+    return overlap >= max(0.0, min(1.0, float(_settings.fall_detection_roi_min_overlap or 0.0)))
+
+
+def _parse_fall_detection_roi() -> tuple[float, float, float, float] | None:
+    raw = (_settings.fall_detection_roi_rect or "").strip()
+    if not raw:
+        return None
+    try:
+        parts = [float(part.strip()) for part in raw.replace(";", ",").split(",")]
+    except ValueError:
+        return None
+    if len(parts) != 4:
+        return None
+    x1, y1, x2, y2 = parts
+    x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
+    y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _normalize_fall_bbox(bbox: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        coords = [float(value) for value in bbox]
+    except (TypeError, ValueError):
+        return None
+
+    x1, y1, x2, y2 = coords
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
+        return (
+            max(0.0, min(1.0, x1)),
+            max(0.0, min(1.0, y1)),
+            max(0.0, min(1.0, x2)),
+            max(0.0, min(1.0, y2)),
+        )
+
+    frame_width = max(1.0, float(_settings.fall_detection_frame_width or 1.0))
+    frame_height = max(1.0, float(_settings.fall_detection_frame_height or 1.0))
+    return (
+        max(0.0, min(1.0, x1 / frame_width)),
+        max(0.0, min(1.0, y1 / frame_height)),
+        max(0.0, min(1.0, x2 / frame_width)),
+        max(0.0, min(1.0, y2 / frame_height)),
+    )
+
+
+def _fall_alarm_priority(*, severity: str, injury_level: str, state: str) -> AlarmPriority:
+    if injury_level in {"I4", "I5"} or severity == "L4" or state in {"needs_assistance", "emergency"}:
+        return AlarmPriority.CRITICAL
+    if injury_level == "I3" or severity == "L3" or state == "abnormal_recovery":
+        return AlarmPriority.CRITICAL
+    if injury_level == "I2" or severity == "L2":
+        return AlarmPriority.WARNING
+    return AlarmPriority.NOTICE
+
+
+_fall_detection_service = FallDetectionService(_settings, _handle_fall_detection_event)
 
 
 # NOTE: ingest_sample is defined further below (after helper functions)
@@ -203,6 +377,10 @@ def get_websocket_manager() -> WebSocketManager:
 
 def get_camera_frame_hub() -> CameraFrameHub:
     return _camera_frame_hub
+
+
+def get_fall_detection_service() -> FallDetectionService:
+    return _fall_detection_service
 
 
 def get_health_data_repository() -> HealthDataRepository:

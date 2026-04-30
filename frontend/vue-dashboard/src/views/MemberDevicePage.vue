@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, toRef, watch } from "vue";
 import type { DeviceBindLogRecord, SessionUser, SystemInfoResponse } from "../api/client";
 import { ApiError, api } from "../api/client";
+import CameraMonitorCard from "../components/CameraMonitorCard.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import { useCareDirectoryDashboard } from "../composables/useCareDirectoryDashboard";
 import { useRelationActions } from "../composables/useRelationActions";
@@ -264,6 +265,8 @@ onMounted(() => {
     <p v-if="dashboardLoadError" class="feedback-banner feedback-error">{{ dashboardLoadError }}</p>
 
     <section class="member-device-grid">
+      <CameraMonitorCard />
+
       <article class="panel member-device-panel">
         <div class="panel-head">
           <div>

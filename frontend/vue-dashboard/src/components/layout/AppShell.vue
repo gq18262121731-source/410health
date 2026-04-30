@@ -4,6 +4,7 @@ import { api, type AlarmRecord, type SessionUser } from "../../api/client";
 import { focusCommunityWorkspaceDevice } from "../../composables/useCommunityWorkspace";
 import type { PageKey } from "../../composables/useHashRouting";
 import CommunitySosOverlay from "./CommunitySosOverlay.vue";
+import FallAlertOverlay from "./FallAlertOverlay.vue";
 import GlobalHeader from "./GlobalHeader.vue";
 import PrimaryNav from "./PrimaryNav.vue";
 import ToolEntryMenu from "./ToolEntryMenu.vue";
@@ -24,7 +25,9 @@ const activeAlarmCount = ref(0);
 const activeRealtimeAlarms = ref<AlarmRecord[]>([]);
 const simulatedAlarms = ref<AlarmRecord[]>([]); // 存储模拟告警
 const acknowledgingSos = ref(false);
+const acknowledgingFall = ref(false);
 const manuallyAcknowledging = ref(false); // 标记是否正在手动确认告警
+const fallOverlayMutedUntil = ref(0);
 const isCommunityWorkspace = computed(
   () => props.sessionUser.role === "community" || props.sessionUser.role === "admin",
 );
@@ -35,6 +38,24 @@ const activeSosAlarms = computed(() =>
 );
 const primarySosAlarm = computed(() => activeSosAlarms.value[0] ?? null);
 const additionalSosCount = computed(() => Math.max(0, activeSosAlarms.value.length - 1));
+const activeFallAlarms = computed(() =>
+  activeRealtimeAlarms.value
+    .filter((alarm) => !alarm.acknowledged && isFallAlarm(alarm))
+    .sort((left, right) => {
+      if (left.alarm_level !== right.alarm_level) return left.alarm_level - right.alarm_level;
+      return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+    }),
+);
+const primaryFallAlarm = computed(() => {
+  if (Date.now() < fallOverlayMutedUntil.value) return null;
+  return activeFallAlarms.value[0] ?? null;
+});
+const additionalFallCount = computed(() => Math.max(0, activeFallAlarms.value.length - 1));
+const primaryAudibleAlarm = computed(() => {
+  if (primarySosAlarm.value) return primarySosAlarm.value;
+  if (primaryFallAlarm.value && isAudibleFallAlarm(primaryFallAlarm.value)) return primaryFallAlarm.value;
+  return null;
+});
 
 let refreshTimer: number | null = null;
 let alarmChannel: WebSocket | null = null;
@@ -45,6 +66,24 @@ let unlockAudioHandler: (() => void) | null = null;
 
 function isRealSosAlarm(alarm: AlarmRecord) {
   return alarm.alarm_type === "sos" && !alarm.acknowledged && Boolean(alarm.metadata?.is_real_device);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function isFallAlarm(alarm: AlarmRecord) {
+  return alarm.alarm_type === "fall_detected" || alarm.alarm_type === "fall_injury_risk";
+}
+
+function isAudibleFallAlarm(alarm: AlarmRecord) {
+  if (!isFallAlarm(alarm)) return false;
+  if (alarm.alarm_level <= 2) return true;
+  const event = asRecord(alarm.metadata?.event);
+  const injury = asRecord(event?.injury);
+  const injuryLevel = typeof injury?.level === "string" ? injury.level : "";
+  const severity = typeof event?.severity === "string" ? event.severity : "";
+  return ["I3", "I4", "I5"].includes(injuryLevel) || ["L3", "L4", "L5"].includes(severity);
 }
 
 function ensureSosAudioElement() {
@@ -125,7 +164,7 @@ function syncAlarmState(alarms: AlarmRecord[]) {
     .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
   activeAlarmCount.value = activeRealtimeAlarms.value.length;
   // 处理页面导航（不处理音频，由watch统一管理）
-  presentPrimarySos();
+  presentPrimaryAlarm();
 }
 
 function upsertAlarm(alarm: AlarmRecord) {
@@ -141,15 +180,18 @@ function upsertAlarm(alarm: AlarmRecord) {
   syncAlarmState(next);
 }
 
-function presentPrimarySos() {
-  if (!isCommunityWorkspace.value || !primarySosAlarm.value) {
+function presentPrimaryAlarm() {
+  const current = primarySosAlarm.value ?? primaryFallAlarm.value;
+  if (!isCommunityWorkspace.value || !current) {
     return;
   }
   
   // 只处理页面导航和设备聚焦，不处理音频（由watch统一管理）
-  if (lastPresentedSosAlarmId !== primarySosAlarm.value.id) {
-    lastPresentedSosAlarmId = primarySosAlarm.value.id;
-    focusCommunityWorkspaceDevice(primarySosAlarm.value.device_mac);
+  if (lastPresentedSosAlarmId !== current.id) {
+    lastPresentedSosAlarmId = current.id;
+    if (!current.device_mac.startsWith("CAMERA-")) {
+      focusCommunityWorkspaceDevice(current.device_mac);
+    }
     if (props.activePage !== "overview") {
       emit("navigate", "overview");
     }
@@ -229,7 +271,7 @@ function handleSOSSimulation(event: CustomEvent) {
   activeAlarmCount.value = activeRealtimeAlarms.value.length;
   
   // 处理页面导航（不处理音频，由watch统一管理）
-  presentPrimarySos();
+  presentPrimaryAlarm();
 }
 
 watch(() => props.sessionUser.id, () => {
@@ -303,8 +345,35 @@ async function acknowledgePrimarySos() {
   }
 }
 
+async function acknowledgePrimaryFall() {
+  const targetIds = activeFallAlarms.value.map((alarm) => alarm.id);
+  if (!targetIds.length) return;
+
+  manuallyAcknowledging.value = true;
+  acknowledgingFall.value = true;
+  stopSosToneLoop();
+  fallOverlayMutedUntil.value = Date.now() + 60_000;
+
+  try {
+    activeRealtimeAlarms.value = activeRealtimeAlarms.value.filter((alarm) => !targetIds.includes(alarm.id));
+    activeAlarmCount.value = activeRealtimeAlarms.value.length;
+    await api.ackActiveFallAlarms();
+    await refreshAlarmState();
+    lastPresentedSosAlarmId = "";
+  } finally {
+    acknowledgingFall.value = false;
+    setTimeout(() => {
+      manuallyAcknowledging.value = false;
+    }, 100);
+    window.setTimeout(() => {
+      fallOverlayMutedUntil.value = 0;
+      void refreshAlarmState();
+    }, 60_000);
+  }
+}
+
 watch(
-  [primarySosAlarm, isCommunityWorkspace],
+  [primaryAudibleAlarm, isCommunityWorkspace],
   ([alarm, canRing], [oldAlarm]) => {
     console.log('[SOS Watch] Triggered', {
       alarm: alarm?.id,
@@ -392,6 +461,13 @@ watch(
       :additional-count="additionalSosCount"
       :acknowledging="acknowledgingSos"
       @acknowledge="acknowledgePrimarySos"
+    />
+    <FallAlertOverlay
+      v-if="isCommunityWorkspace && !primarySosAlarm"
+      :alarm="primaryFallAlarm"
+      :additional-count="additionalFallCount"
+      :acknowledging="acknowledgingFall"
+      @acknowledge="acknowledgePrimaryFall"
     />
   </main>
 </template>

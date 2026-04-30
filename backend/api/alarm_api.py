@@ -75,6 +75,34 @@ async def list_mobile_pushes(
     return pushes
 
 
+@router.post("/fall/acknowledge-active")
+async def acknowledge_active_fall_alarms() -> dict[str, object]:
+    active_fall_alarms = [
+        alarm
+        for alarm in get_alarm_service().list_alarms(active_only=True)
+        if alarm.alarm_type.value in {"fall_detected", "fall_injury_risk"}
+    ]
+    if not active_fall_alarms:
+        return {"acknowledged_count": 0, "alarm_ids": []}
+
+    acknowledged = get_alarm_service().acknowledge_many({alarm.id for alarm in active_fall_alarms})
+    repository = get_health_data_repository()
+    for alarm in acknowledged:
+        repository.acknowledge_alert(alarm.id)
+        await get_websocket_manager().broadcast_alarm(alarm.model_dump(mode="json"))
+    await get_websocket_manager().broadcast_alarm_queue(
+        {
+            "type": "alarm_queue",
+            "queue": [item.model_dump(mode="json") for item in get_alarm_service().queue_items(active_only=True)],
+            "snapshot": get_alarm_service().queue_snapshot(),
+        }
+    )
+    return {
+        "acknowledged_count": len(acknowledged),
+        "alarm_ids": [alarm.id for alarm in acknowledged],
+    }
+
+
 @router.post("/{alarm_id}/acknowledge", response_model=AlarmRecord)
 async def acknowledge_alarm(alarm_id: str) -> AlarmRecord:
     alarm, collapsed_sibling_ids = get_alarm_service().acknowledge(alarm_id)

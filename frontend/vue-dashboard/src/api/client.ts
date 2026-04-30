@@ -825,10 +825,36 @@ export interface CameraStreamStatusResponse {
   broadcast_fps?: number;
   measured_fps?: number;
   active_url?: string | null;
+  profile?: "smooth" | "balanced" | "quality";
+  jpeg_quality?: number;
+  stream_width?: number;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
-const WS_BASE = (import.meta.env.VITE_WS_BASE ?? "ws://localhost:8000").replace(/\/$/, "");
+export interface CameraFallDetectionStatusResponse {
+  enabled: boolean;
+  running: boolean;
+  process_running: boolean;
+  pid?: number | null;
+  speed_profile?: "accuracy" | "balanced" | "fast";
+  accuracy_preserving?: boolean;
+  event_log?: string;
+  snapshot_dir?: string;
+  last_event_at?: number | null;
+  last_event?: Record<string, unknown> | null;
+  last_error?: string | null;
+  restart_count?: number;
+  started_at?: number | null;
+}
+
+const DEFAULT_API_ORIGIN =
+  typeof window === "undefined" ? "http://localhost:8000" : `${window.location.protocol}//${window.location.hostname}:8000`;
+const DEFAULT_WS_ORIGIN =
+  typeof window === "undefined"
+    ? "ws://localhost:8000"
+    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8000`;
+
+const API_BASE = (import.meta.env.VITE_API_BASE ?? `${DEFAULT_API_ORIGIN}/api/v1`).replace(/\/$/, "");
+const WS_BASE = (import.meta.env.VITE_WS_BASE ?? DEFAULT_WS_ORIGIN).replace(/\/$/, "");
 
 function buildApiUrl(path: string): string {
   return `${API_BASE}${path}`;
@@ -977,6 +1003,10 @@ export async function streamCommunityAnalysis(
 export const api = {
   getCameraStatus: () => requestJson<CameraStatusResponse>(buildApiUrl("/camera/status")),
   getCameraStreamStatus: () => requestJson<CameraStreamStatusResponse>(buildApiUrl("/camera/stream-status")),
+  getCameraFallDetectionStatus: () =>
+    requestJson<CameraFallDetectionStatusResponse>(buildApiUrl("/camera/fall-detection/status")),
+  getCameraFallSnapshotUrl: (path: string) =>
+    `${buildApiUrl("/camera/fall-detection/snapshot")}?path=${encodeURIComponent(path)}&t=${Date.now()}`,
   getCameraSnapshotUrl: () => `${buildApiUrl("/camera/snapshot")}?t=${Date.now()}`,
   getCameraStreamUrl: () => `${buildApiUrl("/camera/stream.mjpg")}?t=${Date.now()}`,
   cameraFrameSocket: () => new WebSocket(`${WS_BASE}/ws/camera`),
@@ -1070,6 +1100,11 @@ export const api = {
   listAlarmQueue: () => requestJson<AlarmQueueItem[]>(`${API_BASE}/alarms/queue`),
   listMobilePushes: (limit = 10) =>
     requestJson<MobilePushRecord[]>(`${API_BASE}/alarms/mobile-pushes?limit=${limit}`),
+  ackActiveFallAlarms: () =>
+    requestJson<{ acknowledged_count: number; alarm_ids: string[] }>(
+      `${API_BASE}/alarms/fall/acknowledge-active`,
+      { method: "POST" },
+    ),
   ackAlarm: (alarmId: string) =>
     requestJson<AlarmRecord>(`${API_BASE}/alarms/${alarmId}/acknowledge`, { method: "POST" }),
   analyze: (payload: {
