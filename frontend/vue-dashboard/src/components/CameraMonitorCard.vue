@@ -30,9 +30,25 @@ const ptzBusy = ref<CameraPtzDirection | null>(null);
 const activePtz = ref<CameraPtzDirection | null>(null);
 const errorMessage = ref("");
 const audioNotice = ref("");
+const audioListening = ref(false);
+const webTalkActive = ref(false);
+const audioLevel = ref(0);
+const webTalkLevel = ref(0);
+const webTalkGatewayReady = ref(false);
+const webTalkDeviceReady = ref(false);
+const webTalkDeliveryState = ref("");
 let statusTimer: number | undefined;
 let streamStatusTimer: number | undefined;
 let frameSocket: WebSocket | undefined;
+let audioSocket: WebSocket | undefined;
+let audioContext: AudioContext | undefined;
+let audioNextTime = 0;
+let webTalkSocket: WebSocket | undefined;
+let webTalkStream: MediaStream | undefined;
+let webTalkAudioContext: AudioContext | undefined;
+let webTalkSource: MediaStreamAudioSourceNode | undefined;
+let webTalkProcessor: ScriptProcessorNode | undefined;
+let webTalkMute: GainNode | undefined;
 let frameWatchdog: number | undefined;
 let pendingFrame: Blob | undefined;
 let renderingFrame = false;
@@ -50,6 +66,13 @@ const statusLabel = computed(() => {
 const statusTone = computed(() => {
   if (!status.value?.configured) return "neutral";
   return status.value.online ? "online" : "offline";
+});
+
+const webTalkButtonLabel = computed(() => {
+  if (!webTalkActive.value) return "局域网对讲";
+  if (webTalkDeviceReady.value) return `停止对讲 ${webTalkLevel.value}%`;
+  if (webTalkGatewayReady.value) return `接入中 ${webTalkLevel.value}%`;
+  return `麦克风上行 ${webTalkLevel.value}%`;
 });
 
 const endpointLabel = computed(() => {
@@ -291,11 +314,260 @@ async function stopPtz() {
   }
 }
 
-function showAudioNotice(kind: "voice" | "talk") {
-  audioNotice.value =
-    kind === "voice"
-      ? "远程语音会用到浏览器麦克风和摄像头扬声器通道，下一步需要确认厂商 SDK/音频接口后再开启。"
-      : "监听/对讲需要摄像头音频流和上行对讲接口；我先不自动请求麦克风权限，避免误触发隐私授权。";
+async function toggleAudioListen() {
+  if (audioListening.value) {
+    stopAudioListen();
+    return;
+  }
+
+  try {
+    const audioStatus = await api.getCameraAudioStatus();
+    if (!audioStatus.listen_supported) {
+      audioNotice.value = audioStatus.error
+        ? `暂时没有拿到监听音频：${audioStatus.error}`
+        : "暂时没有拿到监听音频。请确认摄像头 RTSP 音频已开启。";
+      return;
+    }
+
+    audioContext = audioContext ?? new AudioContext({ sampleRate: 8000 });
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+    audioNextTime = audioContext.currentTime + 0.08;
+    audioSocket = api.cameraAudioSocket();
+    audioSocket.binaryType = "arraybuffer";
+    audioSocket.onopen = () => {
+      audioListening.value = true;
+      audioNotice.value = `正在监听摄像头麦克风：${audioStatus.audio_codec ?? "G711"} / ${audioStatus.sample_rate ?? 8000}Hz`;
+    };
+    audioSocket.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        playPcmChunk(event.data);
+      }
+    };
+    audioSocket.onerror = () => {
+      audioNotice.value = "监听音频连接失败，请确认后端和摄像头仍在同一局域网。";
+      stopAudioListen();
+    };
+    audioSocket.onclose = () => {
+      audioListening.value = false;
+      audioLevel.value = 0;
+      audioSocket = undefined;
+    };
+  } catch (error) {
+    audioNotice.value = error instanceof Error ? error.message : "监听启动失败";
+    stopAudioListen();
+  }
+}
+
+function playPcmChunk(buffer: ArrayBuffer) {
+  if (!audioContext || buffer.byteLength < 2) return;
+
+  const samples = new Int16Array(buffer);
+  const audioBuffer = audioContext.createBuffer(1, samples.length, 8000);
+  const channel = audioBuffer.getChannelData(0);
+  let peak = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = samples[index] / 32768;
+    channel[index] = value;
+    peak = Math.max(peak, Math.abs(value));
+  }
+  audioLevel.value = Math.round(peak * 100);
+
+  const source = audioContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(audioContext.destination);
+
+  const startAt = Math.max(audioContext.currentTime + 0.02, audioNextTime);
+  source.start(startAt);
+  audioNextTime = startAt + audioBuffer.duration;
+  if (audioNextTime - audioContext.currentTime > 0.6) {
+    audioNextTime = audioContext.currentTime + 0.12;
+  }
+}
+
+function stopAudioListen() {
+  const socket = audioSocket;
+  audioSocket = undefined;
+  if (socket && socket.readyState !== WebSocket.CLOSED) {
+    socket.close();
+  }
+  audioListening.value = false;
+  audioLevel.value = 0;
+}
+
+async function toggleWebTalkback() {
+  if (webTalkActive.value) {
+    stopWebTalkback();
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    audioNotice.value = "当前浏览器不支持麦克风采集，无法启动网页对讲。";
+    return;
+  }
+
+  try {
+    webTalkStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+    webTalkAudioContext = new AudioContext();
+    if (webTalkAudioContext.state === "suspended") {
+      await webTalkAudioContext.resume();
+    }
+
+    webTalkSocket = api.cameraWebTalkSocket();
+    webTalkSocket.binaryType = "arraybuffer";
+    webTalkSocket.onopen = () => {
+      if (!webTalkAudioContext || !webTalkStream) return;
+      webTalkSource = webTalkAudioContext.createMediaStreamSource(webTalkStream);
+      webTalkProcessor = webTalkAudioContext.createScriptProcessor(2048, 1, 1);
+      webTalkMute = webTalkAudioContext.createGain();
+      webTalkMute.gain.value = 0;
+      webTalkProcessor.onaudioprocess = (event) => {
+        const socket = webTalkSocket;
+        const context = webTalkAudioContext;
+        if (!socket || socket.readyState !== WebSocket.OPEN || !context) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const pcm = floatToPcm16(input, context.sampleRate, 8000);
+        webTalkLevel.value = pcm.peak;
+        socket.send(pcm.buffer);
+      };
+      webTalkSource.connect(webTalkProcessor);
+      webTalkProcessor.connect(webTalkMute);
+      webTalkMute.connect(webTalkAudioContext.destination);
+      webTalkActive.value = true;
+      audioNotice.value = "网页麦克风已启动：正在发送 8000Hz/mono/PCM16 到后端，并尝试接入摄像头对讲网关。";
+    };
+    webTalkSocket.onmessage = (event) => {
+      handleWebTalkStatusMessage(event.data);
+    };
+    webTalkSocket.onerror = () => {
+      audioNotice.value = "网页对讲 WebSocket 连接失败，请确认后端正在运行。";
+      stopWebTalkback();
+    };
+    webTalkSocket.onclose = () => {
+      cleanupWebTalk(false);
+    };
+  } catch (error) {
+    stopWebTalkback();
+    audioNotice.value = error instanceof Error ? error.message : "网页对讲启动失败，请确认已允许浏览器使用麦克风。";
+  }
+}
+
+function handleWebTalkStatusMessage(data: unknown) {
+  if (typeof data !== "string") return;
+
+  try {
+    const payload = JSON.parse(data) as { status?: Record<string, unknown> };
+    if (payload.status) {
+      applyWebTalkStatus(payload.status);
+    }
+  } catch {
+    // Ignore non-JSON frames; microphone audio is sent in the opposite direction.
+  }
+}
+
+function applyWebTalkStatus(statusPayload: Record<string, unknown>) {
+  webTalkGatewayReady.value = Boolean(statusPayload.gateway_ready);
+  webTalkDeviceReady.value = Boolean(statusPayload.device_talk_ready);
+  webTalkDeliveryState.value = String(statusPayload.delivery_state ?? "");
+
+  const peak = Number(statusPayload.peak_level ?? webTalkLevel.value);
+  if (Number.isFinite(peak)) {
+    webTalkLevel.value = Math.max(webTalkLevel.value, Math.round(peak));
+  }
+
+  const chunks = Number(statusPayload.chunks_received ?? 0);
+  const gatewayError = typeof statusPayload.gateway_error === "string" ? statusPayload.gateway_error : "";
+  const p2pStatus = statusPayload.p2p_status;
+
+  if (webTalkDeviceReady.value) {
+    audioNotice.value = `局域网对讲已送入摄像头通道：已发送 ${chunks} 个音频包，请以摄像头旁实际外放为准。`;
+    return;
+  }
+
+  if (gatewayError) {
+    audioNotice.value = `网页麦克风已到后端（${chunks} 个音频包），但摄像头对讲网关未就绪：${formatGatewayError(gatewayError)}。`;
+    return;
+  }
+
+  if (webTalkDeliveryState.value === "gateway_connecting") {
+    const suffix = p2pStatus !== null && p2pStatus !== undefined ? `，P2P 状态 ${p2pStatus}` : "";
+    audioNotice.value = `网页麦克风正在上行到后端，正在连接摄像头对讲网关${suffix}。`;
+    return;
+  }
+
+  audioNotice.value = `网页麦克风正在上行到后端：已发送 ${chunks} 个音频包，等待摄像头对讲网关确认。`;
+}
+
+function formatGatewayError(error: string) {
+  if (error.includes("P2PAPI_StartTalk_FAILED:-6")) {
+    return "厂商 P2P 会话未真正连上摄像头，暂时无法播放到摄像头扬声器";
+  }
+  if (error.includes("CAMERA_PASSWORD_NOT_CONFIGURED")) {
+    return "后端没有配置摄像头密码";
+  }
+  if (error.includes("P2PAPI_DLL_NOT_FOUND")) {
+    return "后端没有找到厂商 P2PAPI.dll";
+  }
+  return error;
+}
+
+function floatToPcm16(input: Float32Array, inputRate: number, outputRate: number) {
+  const ratio = Math.max(1, inputRate / outputRate);
+  const length = Math.max(1, Math.floor(input.length / ratio));
+  const output = new Int16Array(length);
+  let peak = 0;
+  for (let index = 0; index < length; index += 1) {
+    const sourceIndex = Math.min(input.length - 1, Math.floor(index * ratio));
+    const sample = Math.max(-1, Math.min(1, input[sourceIndex] ?? 0));
+    peak = Math.max(peak, Math.abs(sample));
+    output[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return {
+    buffer: output.buffer,
+    peak: Math.round(peak * 100),
+  };
+}
+
+function stopWebTalkback() {
+  const socket = webTalkSocket;
+  webTalkSocket = undefined;
+  if (socket && socket.readyState !== WebSocket.CLOSED) {
+    socket.close();
+  }
+  void api.stopCameraWebTalk().catch(() => undefined);
+  cleanupWebTalk(true);
+  audioNotice.value = "网页对讲已停止。";
+}
+
+function cleanupWebTalk(closeSocket: boolean) {
+  if (closeSocket && webTalkSocket && webTalkSocket.readyState !== WebSocket.CLOSED) {
+    webTalkSocket.close();
+  }
+  webTalkSocket = undefined;
+  webTalkProcessor?.disconnect();
+  webTalkSource?.disconnect();
+  webTalkMute?.disconnect();
+  webTalkProcessor = undefined;
+  webTalkSource = undefined;
+  webTalkMute = undefined;
+  webTalkStream?.getTracks().forEach((track) => track.stop());
+  webTalkStream = undefined;
+  void webTalkAudioContext?.close().catch(() => undefined);
+  webTalkAudioContext = undefined;
+  webTalkActive.value = false;
+  webTalkLevel.value = 0;
+  webTalkGatewayReady.value = false;
+  webTalkDeviceReady.value = false;
+  webTalkDeliveryState.value = "";
 }
 
 onMounted(() => {
@@ -310,6 +582,8 @@ onBeforeUnmount(() => {
   if (streamStatusTimer) window.clearInterval(streamStatusTimer);
   if (ptzStopTimer) window.clearTimeout(ptzStopTimer);
   if (activePtz.value) void stopPtz();
+  if (webTalkActive.value) stopWebTalkback();
+  stopAudioListen();
   closeCameraSocket();
 });
 </script>
@@ -416,13 +690,13 @@ onBeforeUnmount(() => {
         <RefreshCw :size="16" />
         刷新状态
       </button>
-      <button type="button" class="camera-action" @click="showAudioNotice('voice')">
-        <Mic :size="16" />
-        远程语音
-      </button>
-      <button type="button" class="camera-action" @click="showAudioNotice('talk')">
+      <button type="button" class="camera-action" :class="{ 'is-listening': audioListening }" @click="toggleAudioListen">
         <Volume2 :size="16" />
-        监听/对讲
+        {{ audioListening ? `监听中 ${audioLevel}%` : "开始监听" }}
+      </button>
+      <button type="button" class="camera-action" :class="{ 'is-talking': webTalkActive }" @click="toggleWebTalkback">
+        <Mic :size="16" />
+        {{ webTalkButtonLabel }}
       </button>
     </div>
   </article>
@@ -805,6 +1079,18 @@ onBeforeUnmount(() => {
   transform: translateY(-1px);
   background: #ffffff;
   box-shadow: 0 10px 22px rgba(15, 118, 110, 0.12);
+}
+
+.camera-action.is-listening {
+  border-color: rgba(5, 150, 105, 0.44);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.18), rgba(240, 253, 250, 0.92));
+  color: #047857;
+}
+
+.camera-action.is-talking {
+  border-color: rgba(220, 38, 38, 0.38);
+  background: linear-gradient(135deg, rgba(248, 113, 113, 0.18), rgba(255, 247, 237, 0.94));
+  color: #b91c1c;
 }
 
 .camera-action--primary {

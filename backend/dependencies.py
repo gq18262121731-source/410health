@@ -44,6 +44,9 @@ from backend.services.stream_service import StreamService
 from backend.services.user_service import UserService
 from backend.services.warning_service import WarningService
 from backend.services.camera_stream_hub import CameraFrameHub
+from backend.services.camera_audio_hub import CameraAudioHub
+from backend.services.camera_talk_service import CameraTalkService
+from backend.services.camera_web_talk_service import CameraWebTalkService
 from backend.services.websocket_manager import WebSocketManager
 from backend.schemas.health import VitalSignsPayload
 from iot.parser import T10PacketParser
@@ -57,6 +60,9 @@ _device_service = DeviceService(_user_service, database_url=_settings.database_u
 _stream_service = StreamService(retention_points=_settings.stream_retention_points)
 _websocket_manager = WebSocketManager()
 _camera_frame_hub = CameraFrameHub(_settings)
+_camera_audio_hub = CameraAudioHub(_settings)
+_camera_talk_service = CameraTalkService(_settings)
+_camera_web_talk_service = CameraWebTalkService(_settings)
 _alarm_priority_queue = AlarmPriorityQueue(redis_url=_settings.redis_url)
 _notification_service = NotificationService()
 _health_data_repository = HealthDataRepository(database_url=_settings.database_url)
@@ -203,6 +209,18 @@ def get_websocket_manager() -> WebSocketManager:
 
 def get_camera_frame_hub() -> CameraFrameHub:
     return _camera_frame_hub
+
+
+def get_camera_audio_hub() -> CameraAudioHub:
+    return _camera_audio_hub
+
+
+def get_camera_talk_service() -> CameraTalkService:
+    return _camera_talk_service
+
+
+def get_camera_web_talk_service() -> CameraWebTalkService:
+    return _camera_web_talk_service
 
 
 def get_health_data_repository() -> HealthDataRepository:

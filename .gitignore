@@ -14,3 +14,8 @@ backend/tmp_x.txt
 .omni_test
 .log
 .pdf
+logs/
+tmp_camera_probe/
+.idea/
+_stale_locked_pytest_dirs/
+摄像头说明书/

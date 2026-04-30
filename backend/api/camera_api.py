@@ -8,6 +8,9 @@ from pydantic import BaseModel
 
 from backend.config import get_settings
 from backend.dependencies import get_camera_frame_hub
+from backend.dependencies import get_camera_audio_hub
+from backend.dependencies import get_camera_talk_service
+from backend.dependencies import get_camera_web_talk_service
 from backend.services.camera_service import CameraService
 
 
@@ -37,6 +40,67 @@ async def camera_status() -> dict[str, object]:
 @router.get("/stream-status")
 async def camera_stream_status() -> dict[str, object]:
     return get_camera_frame_hub().status()
+
+
+@router.get("/audio/status")
+async def camera_audio_status() -> dict[str, object]:
+    status = await asyncio.to_thread(CameraService(get_settings()).check_audio_status)
+    return {
+        "configured": status.configured,
+        "listen_supported": status.listen_supported,
+        "talk_supported": status.talk_supported,
+        "checked_url": status.checked_url,
+        "audio_codec": status.audio_codec,
+        "sample_rate": status.sample_rate,
+        "channels": status.channels,
+        "source": status.source,
+        "sdk_available": status.sdk_available,
+        "sdk_arch": status.sdk_arch,
+        "sdk_loadable": status.sdk_loadable,
+        "sdk_message": status.sdk_message,
+        "gateway_configured": status.gateway_configured,
+        "activex_available": status.activex_available,
+        "activex_clsid": status.activex_clsid,
+        "activex_inproc_path": status.activex_inproc_path,
+        "activex_message": status.activex_message,
+        "error": status.error,
+    }
+
+
+@router.get("/audio/stream-status")
+async def camera_audio_stream_status() -> dict[str, object]:
+    return get_camera_audio_hub().status()
+
+
+@router.get("/talk/status")
+async def camera_talk_status() -> dict[str, object]:
+    return {
+        "local_activex": get_camera_talk_service().status(),
+        "web_microphone": get_camera_web_talk_service().status(),
+    }
+
+
+@router.post("/talk/start")
+async def camera_talk_start() -> dict[str, object]:
+    try:
+        return await asyncio.to_thread(get_camera_talk_service().start)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/talk/stop")
+async def camera_talk_stop() -> dict[str, object]:
+    return await asyncio.to_thread(get_camera_talk_service().stop)
+
+
+@router.get("/talk/web/status")
+async def camera_web_talk_status() -> dict[str, object]:
+    return get_camera_web_talk_service().status()
+
+
+@router.post("/talk/web/stop")
+async def camera_web_talk_stop() -> dict[str, object]:
+    return await asyncio.to_thread(get_camera_web_talk_service().stop)
 
 
 @router.get("/snapshot")

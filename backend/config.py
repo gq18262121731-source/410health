@@ -134,11 +134,21 @@ class Settings(BaseSettings):
     camera_rtsp_port: int = 10554
     camera_onvif_port: int = 10080
     camera_stream_rtsp_path: str = "/tcp/av0_1"
+    camera_audio_rtsp_path: str = "/tcp/av0_0"
+    camera_audio_sample_rate: int = 8000
     camera_probe_timeout_seconds: float = 3.0
     camera_snapshot_timeout_seconds: float = 8.0
     camera_stream_fps: float = 24.0
     camera_ptz_move_seconds: float = 0.35
     camera_ptz_speed: float = 0.45
+    camera_sdk_dll_dir: str = ""
+    camera_audio_gateway_url: str = ""
+    camera_activex_clsid: str = "1E125331-B4E3-4EE3-B3C1-24AD1A3E5DEB"
+    camera_activex_id: str = ""
+    camera_activex_dev_type: int = 924
+    camera_activex_port: int = 10080
+    camera_talk_max_seconds: int = 60
+    camera_p2p_dll_dir: str = r"C:\Program Files (x86)\IPCam ActiveX\925"
 
     sos_broadcast_window_seconds: int = 15
     health_score_floor: int = 35

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import subprocess
+import struct
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -26,7 +27,36 @@ class CameraStatus:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class CameraAudioStatus:
+    configured: bool
+    listen_supported: bool
+    talk_supported: bool
+    checked_url: str | None = None
+    audio_codec: str | None = None
+    sample_rate: int | None = None
+    channels: int | None = None
+    source: str = "rtsp"
+    sdk_available: bool = False
+    sdk_arch: str | None = None
+    sdk_loadable: bool = False
+    sdk_message: str | None = None
+    gateway_configured: bool = False
+    activex_available: bool = False
+    activex_clsid: str | None = None
+    activex_inproc_path: str | None = None
+    activex_message: str | None = None
+    error: str | None = None
+
+
 class CameraService:
+    _PE_MACHINE_TYPES = {
+        0x014C: "x86",
+        0x8664: "x64",
+        0x01C0: "ARM",
+        0x01C4: "ARMv7",
+        0xAA64: "ARM64",
+    }
     _PROFILE_TOKEN_CACHE: dict[tuple[str, int], str] = {}
     _PTZ_DIRECTIONS = {
         "up": (0.0, 1.0, 0.0),
@@ -103,6 +133,12 @@ class CameraService:
         normalized_path = self._normalize_path(path)
         return f"rtsp://{user}:{password}@{self._settings.camera_ip.strip()}:{port}{normalized_path}"
 
+    def _mask_url(self, url: str | None) -> str | None:
+        if not url:
+            return None
+        password = self._settings.camera_password
+        return url.replace(password, "***") if password else url
+
     def check_status(self) -> CameraStatus:
         checked_at = datetime.now(timezone.utc)
         ip = self._settings.camera_ip.strip()
@@ -142,6 +178,179 @@ class CameraService:
                 checked_at=checked_at,
                 error=f"{exc.__class__.__name__}: {exc}",
             )
+
+    def check_audio_status(self) -> CameraAudioStatus:
+        if not self.configured:
+            return CameraAudioStatus(
+                configured=False,
+                listen_supported=False,
+                talk_supported=False,
+                error="CAMERA_NOT_CONFIGURED",
+            )
+
+        try:
+            status = self._probe_rtsp_audio()
+        except Exception as exc:  # noqa: BLE001 - keep diagnostics available.
+            status = CameraAudioStatus(
+                configured=True,
+                listen_supported=False,
+                talk_supported=False,
+                error=f"{exc.__class__.__name__}: {exc}",
+            )
+        sdk_fields = self._probe_audio_sdk_fields()
+        activex_fields = self._probe_activex_fields()
+        fields = {**status.__dict__, **sdk_fields, **activex_fields}
+        fields["talk_supported"] = bool(
+            fields.get("talk_supported")
+            or fields.get("gateway_configured")
+            or fields.get("activex_available")
+        )
+        return CameraAudioStatus(**fields)
+
+    def _probe_rtsp_audio(self) -> CameraAudioStatus:
+        try:
+            import imageio_ffmpeg
+        except ImportError as exc:
+            raise RuntimeError("IMAGEIO_FFMPEG_NOT_INSTALLED") from exc
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        last_error = ""
+        timeout_seconds = max(2.0, min(self._settings.camera_probe_timeout_seconds, 5.0))
+        audio_url = self._build_rtsp_url(self._settings.camera_audio_rtsp_path, self._settings.camera_rtsp_port)
+        urls = [audio_url]
+        urls.extend(url for url in self.stream_rtsp_urls[:2] if url not in urls)
+        for url in urls:
+            cmd = [
+                ffmpeg,
+                "-nostdin",
+                "-hide_banner",
+                "-rtsp_transport",
+                "tcp",
+                "-timeout",
+                str(int(timeout_seconds * 1_000_000)),
+                "-probesize",
+                "5000000",
+                "-i",
+                url,
+                "-t",
+                "1",
+                "-vn",
+                "-f",
+                "null",
+                "-",
+            ]
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds + 3,
+                check=False,
+            )
+            output = self._mask_url(result.stderr.decode("utf-8", errors="replace")) or ""
+            audio_line = self._find_ffmpeg_audio_line(output)
+            if audio_line:
+                codec, sample_rate, channels = self._parse_ffmpeg_audio_line(audio_line)
+                return CameraAudioStatus(
+                    configured=True,
+                    listen_supported=True,
+                    talk_supported=False,
+                    checked_url=self._mask_url(url),
+                    audio_codec=codec,
+                    sample_rate=sample_rate,
+                    channels=channels,
+                )
+            last_error = output.strip()
+
+        return CameraAudioStatus(
+            configured=True,
+            listen_supported=False,
+            talk_supported=False,
+            checked_url=self._mask_url(urls[0]) if urls else None,
+            error=(last_error[-500:] if last_error else "CAMERA_AUDIO_TRACK_NOT_FOUND"),
+        )
+
+    def _probe_audio_sdk_fields(self) -> dict[str, object]:
+        from pathlib import Path
+
+        gateway_url = self._settings.camera_audio_gateway_url.strip()
+        configured_dir = self._settings.camera_sdk_dll_dir.strip()
+        default_dir = (
+            Path(__file__).resolve().parents[2]
+            / "摄像头说明书"
+            / "extracted"
+            / "SDK_phone (2)"
+            / "SDK_phone"
+            / "Lib"
+            / "win32"
+        )
+        sdk_dir = Path(configured_dir) if configured_dir else default_dir
+        dll = sdk_dir / "P2PAPI.dll"
+        fields: dict[str, object] = {
+            "sdk_available": dll.exists(),
+            "sdk_arch": None,
+            "sdk_loadable": False,
+            "sdk_message": None,
+            "gateway_configured": bool(gateway_url),
+        }
+        if not dll.exists():
+            fields["sdk_message"] = f"SDK_DLL_NOT_FOUND: {dll}"
+            return fields
+
+        arch = self._read_pe_machine(dll)
+        python_arch = f"{struct.calcsize('P') * 8}-bit"
+        fields["sdk_arch"] = arch
+        if arch == "x86" and struct.calcsize("P") == 8:
+            fields["sdk_message"] = "SDK_DLL_X86_WITH_64BIT_BACKEND: use 32-bit gateway process or request x64 SDK"
+            return fields
+
+        try:
+            import ctypes
+
+            ctypes.WinDLL(str(dll))
+            fields["sdk_loadable"] = True
+            fields["sdk_message"] = f"SDK_LOADABLE_WITH_{python_arch}_PYTHON"
+        except OSError as exc:
+            fields["sdk_message"] = f"{exc.__class__.__name__}: {exc}"
+        return fields
+
+    def _probe_activex_fields(self) -> dict[str, object]:
+        clsid = self._settings.camera_activex_clsid.strip().strip("{}")
+        fields: dict[str, object] = {
+            "activex_available": False,
+            "activex_clsid": clsid or None,
+            "activex_inproc_path": None,
+            "activex_message": None,
+        }
+        if not clsid:
+            fields["activex_message"] = "ACTIVEX_CLSID_NOT_CONFIGURED"
+            return fields
+
+        try:
+            import winreg
+        except ImportError:
+            fields["activex_message"] = "ACTIVEX_WINDOWS_ONLY"
+            return fields
+
+        registry_path = f"CLSID\\{{{clsid}}}\\InprocServer32"
+        registry_views = [
+            ("64-bit", getattr(winreg, "KEY_WOW64_64KEY", 0)),
+            ("32-bit", getattr(winreg, "KEY_WOW64_32KEY", 0)),
+            ("default", 0),
+        ]
+        checked: list[str] = []
+        for view_name, view_flag in registry_views:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, registry_path, 0, winreg.KEY_READ | view_flag) as key:
+                    value, _value_type = winreg.QueryValueEx(key, "")
+                    fields["activex_available"] = True
+                    fields["activex_inproc_path"] = str(value)
+                    fields["activex_message"] = f"ACTIVEX_REGISTERED_{view_name.upper()}"
+                    return fields
+            except OSError as exc:
+                checked.append(f"{view_name}: {exc.winerror if hasattr(exc, 'winerror') else exc}")
+
+        fields["activex_message"] = "ACTIVEX_NOT_REGISTERED: " + "; ".join(checked)
+        return fields
 
     def capture_jpeg(self) -> tuple[bytes, dict[str, str]]:
         if not self.configured:
@@ -465,3 +674,46 @@ class CameraService:
         if not normalized.startswith("/"):
             normalized = f"/{normalized}"
         return normalized
+
+    @staticmethod
+    def _find_ffmpeg_audio_line(output: str) -> str | None:
+        for line in output.splitlines():
+            if " Audio: " in line:
+                return line.strip()
+        return None
+
+    @staticmethod
+    def _parse_ffmpeg_audio_line(line: str) -> tuple[str | None, int | None, int | None]:
+        audio_part = line.split("Audio:", 1)[1].strip() if "Audio:" in line else line
+        fields = [part.strip() for part in audio_part.split(",")]
+        codec = fields[0] if fields else None
+        sample_rate: int | None = None
+        channels: int | None = None
+
+        for field in fields[1:]:
+            lower = field.lower()
+            if lower.endswith("hz"):
+                digits = "".join(ch for ch in field if ch.isdigit())
+                sample_rate = int(digits) if digits else None
+            elif lower == "mono":
+                channels = 1
+            elif lower == "stereo":
+                channels = 2
+            elif " channels" in lower:
+                digits = "".join(ch for ch in field if ch.isdigit())
+                channels = int(digits) if digits else None
+
+        return codec, sample_rate, channels
+
+    @classmethod
+    def _read_pe_machine(cls, path: "Path") -> str:
+        with path.open("rb") as file:
+            if file.read(2) != b"MZ":
+                return "not-pe"
+            file.seek(0x3C)
+            pe_offset = struct.unpack("<I", file.read(4))[0]
+            file.seek(pe_offset)
+            if file.read(4) != b"PE\0\0":
+                return "not-pe"
+            machine = struct.unpack("<H", file.read(2))[0]
+        return cls._PE_MACHINE_TYPES.get(machine, f"unknown-0x{machine:04x}")

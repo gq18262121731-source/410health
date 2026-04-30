@@ -29,7 +29,9 @@ from backend.models.device_model import DeviceIngestMode, DeviceStatus
 from backend.dependencies import (
     ensure_demo_overlay_history_window,
     get_alarm_service,
+    get_camera_audio_hub,
     get_camera_frame_hub,
+    get_camera_web_talk_service,
     get_data_generator,
     get_demo_data_status,
     get_device_service,
@@ -252,6 +254,37 @@ async def camera_frame_stream(websocket: WebSocket) -> None:
         await hub.disconnect(websocket)
     finally:
         await hub.disconnect(websocket)
+
+
+@app.websocket("/ws/camera/audio/listen")
+async def camera_audio_listen_stream(websocket: WebSocket) -> None:
+    hub = get_camera_audio_hub()
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
+
+
+@app.websocket("/ws/camera/talk/web")
+async def camera_web_talk_stream(websocket: WebSocket) -> None:
+    service = get_camera_web_talk_service()
+    await websocket.accept()
+    await asyncio.to_thread(service.start)
+    try:
+        await websocket.send_json({"type": "ready", "status": service.status()})
+        while True:
+            chunk = await websocket.receive_bytes()
+            status = await asyncio.to_thread(service.receive_pcm, chunk)
+            if status["chunks_received"] % 20 == 0:
+                await websocket.send_json({"type": "status", "status": status})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await asyncio.to_thread(service.stop)
 
 
 async def _mock_stream_loop() -> None:

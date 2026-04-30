@@ -827,6 +827,27 @@ export interface CameraStreamStatusResponse {
   active_url?: string | null;
 }
 
+export interface CameraAudioStatusResponse {
+  configured: boolean;
+  listen_supported: boolean;
+  talk_supported: boolean;
+  checked_url?: string | null;
+  audio_codec?: string | null;
+  sample_rate?: number | null;
+  channels?: number | null;
+  source: string;
+  sdk_available?: boolean;
+  sdk_arch?: string | null;
+  sdk_loadable?: boolean;
+  sdk_message?: string | null;
+  gateway_configured?: boolean;
+  activex_available?: boolean;
+  activex_clsid?: string | null;
+  activex_inproc_path?: string | null;
+  activex_message?: string | null;
+  error?: string | null;
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
 const WS_BASE = (import.meta.env.VITE_WS_BASE ?? "ws://localhost:8000").replace(/\/$/, "");
 
@@ -977,9 +998,17 @@ export async function streamCommunityAnalysis(
 export const api = {
   getCameraStatus: () => requestJson<CameraStatusResponse>(buildApiUrl("/camera/status")),
   getCameraStreamStatus: () => requestJson<CameraStreamStatusResponse>(buildApiUrl("/camera/stream-status")),
+  getCameraAudioStatus: () => requestJson<CameraAudioStatusResponse>(buildApiUrl("/camera/audio/status")),
   getCameraSnapshotUrl: () => `${buildApiUrl("/camera/snapshot")}?t=${Date.now()}`,
   getCameraStreamUrl: () => `${buildApiUrl("/camera/stream.mjpg")}?t=${Date.now()}`,
   cameraFrameSocket: () => new WebSocket(`${WS_BASE}/ws/camera`),
+  cameraAudioSocket: () => new WebSocket(`${WS_BASE}/ws/camera/audio/listen`),
+  cameraWebTalkSocket: () => new WebSocket(`${WS_BASE}/ws/camera/talk/web`),
+  getCameraTalkStatus: () => requestJson<Record<string, unknown>>(buildApiUrl("/camera/talk/status")),
+  startCameraTalk: () => requestJson<Record<string, unknown>>(buildApiUrl("/camera/talk/start"), { method: "POST" }),
+  stopCameraTalk: () => requestJson<Record<string, unknown>>(buildApiUrl("/camera/talk/stop"), { method: "POST" }),
+  getCameraWebTalkStatus: () => requestJson<Record<string, unknown>>(buildApiUrl("/camera/talk/web/status")),
+  stopCameraWebTalk: () => requestJson<Record<string, unknown>>(buildApiUrl("/camera/talk/web/stop"), { method: "POST" }),
   moveCamera: (direction: CameraPtzDirection, mode: "pulse" | "continuous" = "pulse") =>
     requestJson<CameraPtzResponse>(buildApiUrl("/camera/ptz"), {
       method: "POST",
