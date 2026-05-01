@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import '../../session/models/user_model.dart';
 import '../../session/services/session_manager.dart';
@@ -6,7 +7,14 @@ import '../repositories/auth_repository.dart';
 
 export '../models/register_models.dart';
 
-enum AuthStatus { initial, authenticating, authenticated, unauthenticated, error }
+enum AuthStatus {
+  initial,
+  authenticating,
+  authenticated,
+  unauthenticated,
+  error
+}
+
 enum RegisterStatus { idle, submitting, success, error }
 
 class AuthProvider extends ChangeNotifier {
@@ -58,7 +66,7 @@ class AuthProvider extends ChangeNotifier {
       _status = AuthStatus.authenticated;
     } catch (e) {
       _status = AuthStatus.error;
-      _errorMessage = '登录失败，请检查账号密码';
+      _errorMessage = _humanizeLoginError(e);
     }
     notifyListeners();
   }
@@ -114,9 +122,37 @@ class AuthProvider extends ChangeNotifier {
 
   static String _humanizeRegisterError(String raw) {
     if (raw.contains('PHONE_ALREADY_EXISTS')) return '该手机号已被注册，请更换手机号。';
-    if (raw.contains('LOGIN_USERNAME_ALREADY_EXISTS')) return '该账号名已被占用，请更换账号名。';
+    if (raw.contains('LOGIN_USERNAME_ALREADY_EXISTS'))
+      return '该账号名已被占用，请更换账号名。';
     if (raw.contains('409')) return '该账号信息已存在，请检查手机号或账号名。';
-    if (raw.contains('SocketException') || raw.contains('Connection')) return '无法连接到服务器，请检查网络后重试。';
+    if (raw.contains('SocketException') || raw.contains('Connection'))
+      return '无法连接到服务器，请检查网络后重试。';
     return '注册失败，请稍后重试。';
+  }
+
+  static String _humanizeLoginError(Object error) {
+    if (error is DioException) {
+      final statusCode = error.response?.statusCode;
+      if (statusCode == 401 || statusCode == 403) {
+        return '账号或密码不正确，请检查后重试。';
+      }
+      if (error.type == DioExceptionType.connectionTimeout ||
+          error.type == DioExceptionType.receiveTimeout ||
+          error.type == DioExceptionType.sendTimeout ||
+          error.type == DioExceptionType.connectionError) {
+        return '无法连接后端，请点右上角设置，确认服务器是 127.0.0.1:8010。';
+      }
+      if (statusCode != null) {
+        return '服务器返回异常（$statusCode），请稍后重试。';
+      }
+    }
+
+    final raw = error.toString();
+    if (raw.contains('SocketException') ||
+        raw.contains('Connection') ||
+        raw.contains('timed out')) {
+      return '无法连接后端，请点右上角设置，确认服务器是 127.0.0.1:8010。';
+    }
+    return '登录失败，请稍后重试。';
   }
 }

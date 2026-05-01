@@ -6,56 +6,46 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  Mic,
   Move,
   Pause,
   Play,
   RefreshCw,
   ShieldCheck,
   Volume2,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-vue-next";
 import { api, type CameraPtzDirection, type CameraStatusResponse, type CameraStreamStatusResponse } from "../api/client";
 
 const status = ref<CameraStatusResponse | null>(null);
+const streamStatus = ref<CameraStreamStatusResponse | null>(null);
 const frameCanvas = ref<HTMLCanvasElement | null>(null);
 const hasFrame = ref(false);
 const loadingStatus = ref(false);
 const autoRefresh = ref(true);
 const streamState = ref<"connecting" | "live" | "paused" | "offline">("connecting");
-const streamStatus = ref<CameraStreamStatusResponse | null>(null);
 const clientFps = ref(0);
-const ptzBusy = ref<CameraPtzDirection | null>(null);
 const activePtz = ref<CameraPtzDirection | null>(null);
+const ptzBusy = ref<CameraPtzDirection | null>(null);
 const errorMessage = ref("");
 const audioNotice = ref("");
 const audioListening = ref(false);
-const webTalkActive = ref(false);
 const audioLevel = ref(0);
-const webTalkLevel = ref(0);
-const webTalkGatewayReady = ref(false);
-const webTalkDeviceReady = ref(false);
-const webTalkDeliveryState = ref("");
+const showDiagnostics = ref(false);
+const frameAspectRatio = ref("16 / 9");
+
 let statusTimer: number | undefined;
 let streamStatusTimer: number | undefined;
 let frameSocket: WebSocket | undefined;
 let audioSocket: WebSocket | undefined;
 let audioContext: AudioContext | undefined;
 let audioNextTime = 0;
-let webTalkSocket: WebSocket | undefined;
-let webTalkStream: MediaStream | undefined;
-let webTalkAudioContext: AudioContext | undefined;
-let webTalkSource: MediaStreamAudioSourceNode | undefined;
-let webTalkProcessor: ScriptProcessorNode | undefined;
-let webTalkMute: GainNode | undefined;
 let frameWatchdog: number | undefined;
 let pendingFrame: Blob | undefined;
 let renderingFrame = false;
 let renderRequest: number | undefined;
 let clientFpsStartedAt = performance.now();
 let clientFpsFrames = 0;
-let ptzStopTimer: number | undefined;
+let ptzReleaseTimer: number | undefined;
+let joystickPointerId: number | null = null;
 
 const statusLabel = computed(() => {
   if (!status.value?.configured) return "未配置";
@@ -68,16 +58,25 @@ const statusTone = computed(() => {
   return status.value.online ? "online" : "offline";
 });
 
-const webTalkButtonLabel = computed(() => {
-  if (!webTalkActive.value) return "局域网对讲";
-  if (webTalkDeviceReady.value) return `停止对讲 ${webTalkLevel.value}%`;
-  if (webTalkGatewayReady.value) return `接入中 ${webTalkLevel.value}%`;
-  return `麦克风上行 ${webTalkLevel.value}%`;
+const streamLabel = computed(() => {
+  if (streamState.value === "live") return `实收 ${clientFps.value.toFixed(1)}fps`;
+  if (streamState.value === "paused") return "画面已暂停";
+  if (streamState.value === "offline") return "暂无视频帧";
+  return "连接中";
 });
 
 const endpointLabel = computed(() => {
   if (!status.value?.ip) return "等待后端配置";
   return `${status.value.ip}:${status.value.port}${status.value.path}`;
+});
+
+const sourceFps = computed(() => streamStatus.value?.source_fps ?? streamStatus.value?.measured_fps ?? 0);
+
+const listeningLabel = computed(() => {
+  if (!audioListening.value) return "监听未开启";
+  if (audioLevel.value >= 45) return `环境声较明显 ${audioLevel.value}%`;
+  if (audioLevel.value >= 12) return `正在监听 ${audioLevel.value}%`;
+  return "正在监听，环境较安静";
 });
 
 async function refreshStatus() {
@@ -100,13 +99,8 @@ async function refreshStreamStatus() {
   try {
     streamStatus.value = await api.getCameraStreamStatus();
   } catch {
-    // Status is diagnostic only; avoid disrupting the video path.
+    // 诊断信息读取失败不影响视频主链路。
   }
-}
-
-function refreshFrame() {
-  if (!autoRefresh.value) return;
-  startCameraSocket();
 }
 
 function resumeFrameRefresh() {
@@ -129,7 +123,8 @@ function toggleFrameRefresh() {
 }
 
 function handleFrameError() {
-  errorMessage.value = "实时画面暂时不可用，已保留云台控制。请确认后端和摄像头仍在同一局域网。";
+  streamState.value = "offline";
+  errorMessage.value = "实时画面暂时不可用。请确认后端正在运行，并且电脑仍连接摄像头所在局域网。";
 }
 
 async function setFrame(frame: Blob) {
@@ -142,6 +137,7 @@ async function setFrame(frame: Blob) {
       canvas.width = bitmap.width;
       canvas.height = bitmap.height;
     }
+    frameAspectRatio.value = `${bitmap.width} / ${bitmap.height}`;
     const context = canvas.getContext("2d", { alpha: false });
     context?.drawImage(bitmap, 0, 0);
     bitmap.close();
@@ -194,15 +190,14 @@ function startCameraSocket() {
   frameWatchdog = window.setTimeout(() => {
     if (streamState.value === "connecting") {
       streamState.value = "offline";
-      errorMessage.value = "后端已连接，但还没有收到摄像头视频帧。请确认电脑正连接摄像头局域网，并检查 /camera/stream-status。";
+      errorMessage.value = "后端已连接，但还没有收到摄像头视频帧。请检查局域网连接和 /camera/stream-status。";
     }
   }, 5000);
+
   frameSocket = api.cameraFrameSocket();
   frameSocket.binaryType = "blob";
   frameSocket.onmessage = (event) => {
-    if (event.data instanceof Blob) {
-      queueFrame(event.data);
-    }
+    if (event.data instanceof Blob) queueFrame(event.data);
   };
   frameSocket.onerror = () => {
     streamState.value = "offline";
@@ -213,7 +208,7 @@ function startCameraSocket() {
     frameSocket = undefined;
     if (shouldReconnect) {
       streamState.value = "connecting";
-      window.setTimeout(startCameraSocket, 1600);
+      window.setTimeout(startCameraSocket, 1200);
     }
   };
 }
@@ -229,47 +224,54 @@ function closeCameraSocket() {
   }
   const socket = frameSocket;
   frameSocket = undefined;
-  if (socket && socket.readyState !== WebSocket.CLOSED) {
-    socket.close();
+  if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
+}
+
+function joystickDirectionFromEvent(event: PointerEvent): CameraPtzDirection | null {
+  const target = event.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+  const x = event.clientX - rect.left - rect.width / 2;
+  const y = event.clientY - rect.top - rect.height / 2;
+  const distance = Math.hypot(x, y);
+  if (distance < rect.width * 0.16) return "stop";
+  if (Math.abs(x) > Math.abs(y)) return x > 0 ? "right" : "left";
+  return y > 0 ? "down" : "up";
+}
+
+function handleJoystickDown(event: PointerEvent) {
+  event.preventDefault();
+  const target = event.currentTarget as HTMLElement;
+  joystickPointerId = event.pointerId;
+  target.setPointerCapture?.(event.pointerId);
+  const direction = joystickDirectionFromEvent(event);
+  if (direction) void startPtz(direction);
+}
+
+function handleJoystickMove(event: PointerEvent) {
+  if (joystickPointerId !== event.pointerId) return;
+  event.preventDefault();
+  const direction = joystickDirectionFromEvent(event);
+  if (direction && direction !== activePtz.value) {
+    void startPtz(direction);
   }
 }
 
-function bindPtz(direction: CameraPtzDirection) {
-  return {
-    class: { "is-active": activePtz.value === direction },
-    disabled: false,
-    onPointerdown: (event: PointerEvent) => {
-      event.preventDefault();
-      const target = event.currentTarget as HTMLElement;
-      target.setPointerCapture?.(event.pointerId);
-      void startPtz(direction);
-    },
-    onPointerup: (event: PointerEvent) => {
-      event.preventDefault();
-      void stopPtz();
-    },
-    onPointercancel: () => {
-      void stopPtz();
-    },
-    onLostpointercapture: () => {
-      void stopPtz();
-    },
-  };
+function handleJoystickUp(event: PointerEvent) {
+  if (joystickPointerId !== event.pointerId) return;
+  event.preventDefault();
+  joystickPointerId = null;
+  void stopPtz();
 }
 
-async function moveCamera(direction: CameraPtzDirection) {
-  ptzBusy.value = direction;
-  errorMessage.value = "";
-  try {
-    await api.moveCamera(direction);
-    if (autoRefresh.value) {
-      startCameraSocket();
-    }
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "云台控制失败";
-  } finally {
-    ptzBusy.value = null;
+function stopPtzOnSafetyEvent() {
+  if (activePtz.value || joystickPointerId !== null) {
+    joystickPointerId = null;
+    void stopPtz();
   }
+}
+
+function handleVisibilityChange() {
+  if (document.hidden) stopPtzOnSafetyEvent();
 }
 
 async function startPtz(direction: CameraPtzDirection) {
@@ -278,16 +280,19 @@ async function startPtz(direction: CameraPtzDirection) {
     return;
   }
 
+  if (ptzReleaseTimer) {
+    window.clearTimeout(ptzReleaseTimer);
+    ptzReleaseTimer = undefined;
+  }
+  if (activePtz.value === direction) return;
+
   activePtz.value = direction;
   ptzBusy.value = direction;
   errorMessage.value = "";
-  if (ptzStopTimer) {
-    window.clearTimeout(ptzStopTimer);
-    ptzStopTimer = undefined;
-  }
 
   try {
     await api.moveCamera(direction, "continuous");
+    if (autoRefresh.value) startCameraSocket();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "云台控制失败";
     activePtz.value = null;
@@ -297,26 +302,23 @@ async function startPtz(direction: CameraPtzDirection) {
 }
 
 async function stopPtz() {
-  if (ptzStopTimer) {
-    window.clearTimeout(ptzStopTimer);
-  }
-  ptzStopTimer = window.setTimeout(() => {
-    ptzStopTimer = undefined;
-    activePtz.value = null;
+  if (ptzReleaseTimer) window.clearTimeout(ptzReleaseTimer);
+  activePtz.value = null;
+  ptzReleaseTimer = window.setTimeout(() => {
+    ptzReleaseTimer = undefined;
   }, 120);
 
   try {
     await api.moveCamera("stop", "continuous");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "云台停止失败";
-  } finally {
-    activePtz.value = null;
   }
 }
 
 async function toggleAudioListen() {
   if (audioListening.value) {
     stopAudioListen();
+    audioNotice.value = "监听已关闭。";
     return;
   }
 
@@ -324,29 +326,28 @@ async function toggleAudioListen() {
     const audioStatus = await api.getCameraAudioStatus();
     if (!audioStatus.listen_supported) {
       audioNotice.value = audioStatus.error
-        ? `暂时没有拿到监听音频：${audioStatus.error}`
-        : "暂时没有拿到监听音频。请确认摄像头 RTSP 音频已开启。";
+        ? `暂时没有拿到摄像头声音：${audioStatus.error}`
+        : "暂时没有拿到摄像头声音，请确认摄像头 RTSP 音频已开启。";
       return;
     }
 
     audioContext = audioContext ?? new AudioContext({ sampleRate: 8000 });
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
+    if (audioContext.state === "suspended") await audioContext.resume();
     audioNextTime = audioContext.currentTime + 0.08;
+
     audioSocket = api.cameraAudioSocket();
     audioSocket.binaryType = "arraybuffer";
     audioSocket.onopen = () => {
       audioListening.value = true;
-      audioNotice.value = `正在监听摄像头麦克风：${audioStatus.audio_codec ?? "G711"} / ${audioStatus.sample_rate ?? 8000}Hz`;
+      const codec = audioStatus.audio_codec ?? "G711/PCM";
+      const rate = audioStatus.sample_rate ?? 8000;
+      audioNotice.value = `监听已开启：正在播放摄像头周围声音（${codec} / ${rate}Hz）。`;
     };
     audioSocket.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        playPcmChunk(event.data);
-      }
+      if (event.data instanceof ArrayBuffer) playPcmChunk(event.data);
     };
     audioSocket.onerror = () => {
-      audioNotice.value = "监听音频连接失败，请确认后端和摄像头仍在同一局域网。";
+      audioNotice.value = "监听连接失败，请确认后端和摄像头仍在同一局域网。";
       stopAudioListen();
     };
     audioSocket.onclose = () => {
@@ -389,200 +390,29 @@ function playPcmChunk(buffer: ArrayBuffer) {
 function stopAudioListen() {
   const socket = audioSocket;
   audioSocket = undefined;
-  if (socket && socket.readyState !== WebSocket.CLOSED) {
-    socket.close();
-  }
+  if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
   audioListening.value = false;
   audioLevel.value = 0;
 }
 
-async function toggleWebTalkback() {
-  if (webTalkActive.value) {
-    stopWebTalkback();
-    return;
-  }
-
-  if (!navigator.mediaDevices?.getUserMedia) {
-    audioNotice.value = "当前浏览器不支持麦克风采集，无法启动网页对讲。";
-    return;
-  }
-
-  try {
-    webTalkStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
-    webTalkAudioContext = new AudioContext();
-    if (webTalkAudioContext.state === "suspended") {
-      await webTalkAudioContext.resume();
-    }
-
-    webTalkSocket = api.cameraWebTalkSocket();
-    webTalkSocket.binaryType = "arraybuffer";
-    webTalkSocket.onopen = () => {
-      if (!webTalkAudioContext || !webTalkStream) return;
-      webTalkSource = webTalkAudioContext.createMediaStreamSource(webTalkStream);
-      webTalkProcessor = webTalkAudioContext.createScriptProcessor(2048, 1, 1);
-      webTalkMute = webTalkAudioContext.createGain();
-      webTalkMute.gain.value = 0;
-      webTalkProcessor.onaudioprocess = (event) => {
-        const socket = webTalkSocket;
-        const context = webTalkAudioContext;
-        if (!socket || socket.readyState !== WebSocket.OPEN || !context) return;
-        const input = event.inputBuffer.getChannelData(0);
-        const pcm = floatToPcm16(input, context.sampleRate, 8000);
-        webTalkLevel.value = pcm.peak;
-        socket.send(pcm.buffer);
-      };
-      webTalkSource.connect(webTalkProcessor);
-      webTalkProcessor.connect(webTalkMute);
-      webTalkMute.connect(webTalkAudioContext.destination);
-      webTalkActive.value = true;
-      audioNotice.value = "网页麦克风已启动：正在发送 8000Hz/mono/PCM16 到后端，并尝试接入摄像头对讲网关。";
-    };
-    webTalkSocket.onmessage = (event) => {
-      handleWebTalkStatusMessage(event.data);
-    };
-    webTalkSocket.onerror = () => {
-      audioNotice.value = "网页对讲 WebSocket 连接失败，请确认后端正在运行。";
-      stopWebTalkback();
-    };
-    webTalkSocket.onclose = () => {
-      cleanupWebTalk(false);
-    };
-  } catch (error) {
-    stopWebTalkback();
-    audioNotice.value = error instanceof Error ? error.message : "网页对讲启动失败，请确认已允许浏览器使用麦克风。";
-  }
-}
-
-function handleWebTalkStatusMessage(data: unknown) {
-  if (typeof data !== "string") return;
-
-  try {
-    const payload = JSON.parse(data) as { status?: Record<string, unknown> };
-    if (payload.status) {
-      applyWebTalkStatus(payload.status);
-    }
-  } catch {
-    // Ignore non-JSON frames; microphone audio is sent in the opposite direction.
-  }
-}
-
-function applyWebTalkStatus(statusPayload: Record<string, unknown>) {
-  webTalkGatewayReady.value = Boolean(statusPayload.gateway_ready);
-  webTalkDeviceReady.value = Boolean(statusPayload.device_talk_ready);
-  webTalkDeliveryState.value = String(statusPayload.delivery_state ?? "");
-
-  const peak = Number(statusPayload.peak_level ?? webTalkLevel.value);
-  if (Number.isFinite(peak)) {
-    webTalkLevel.value = Math.max(webTalkLevel.value, Math.round(peak));
-  }
-
-  const chunks = Number(statusPayload.chunks_received ?? 0);
-  const gatewayError = typeof statusPayload.gateway_error === "string" ? statusPayload.gateway_error : "";
-  const p2pStatus = statusPayload.p2p_status;
-
-  if (webTalkDeviceReady.value) {
-    audioNotice.value = `局域网对讲已送入摄像头通道：已发送 ${chunks} 个音频包，请以摄像头旁实际外放为准。`;
-    return;
-  }
-
-  if (gatewayError) {
-    audioNotice.value = `网页麦克风已到后端（${chunks} 个音频包），但摄像头对讲网关未就绪：${formatGatewayError(gatewayError)}。`;
-    return;
-  }
-
-  if (webTalkDeliveryState.value === "gateway_connecting") {
-    const suffix = p2pStatus !== null && p2pStatus !== undefined ? `，P2P 状态 ${p2pStatus}` : "";
-    audioNotice.value = `网页麦克风正在上行到后端，正在连接摄像头对讲网关${suffix}。`;
-    return;
-  }
-
-  audioNotice.value = `网页麦克风正在上行到后端：已发送 ${chunks} 个音频包，等待摄像头对讲网关确认。`;
-}
-
-function formatGatewayError(error: string) {
-  if (error.includes("P2PAPI_StartTalk_FAILED:-6")) {
-    return "厂商 P2P 会话未真正连上摄像头，暂时无法播放到摄像头扬声器";
-  }
-  if (error.includes("CAMERA_PASSWORD_NOT_CONFIGURED")) {
-    return "后端没有配置摄像头密码";
-  }
-  if (error.includes("P2PAPI_DLL_NOT_FOUND")) {
-    return "后端没有找到厂商 P2PAPI.dll";
-  }
-  return error;
-}
-
-function floatToPcm16(input: Float32Array, inputRate: number, outputRate: number) {
-  const ratio = Math.max(1, inputRate / outputRate);
-  const length = Math.max(1, Math.floor(input.length / ratio));
-  const output = new Int16Array(length);
-  let peak = 0;
-  for (let index = 0; index < length; index += 1) {
-    const sourceIndex = Math.min(input.length - 1, Math.floor(index * ratio));
-    const sample = Math.max(-1, Math.min(1, input[sourceIndex] ?? 0));
-    peak = Math.max(peak, Math.abs(sample));
-    output[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-  }
-  return {
-    buffer: output.buffer,
-    peak: Math.round(peak * 100),
-  };
-}
-
-function stopWebTalkback() {
-  const socket = webTalkSocket;
-  webTalkSocket = undefined;
-  if (socket && socket.readyState !== WebSocket.CLOSED) {
-    socket.close();
-  }
-  void api.stopCameraWebTalk().catch(() => undefined);
-  cleanupWebTalk(true);
-  audioNotice.value = "网页对讲已停止。";
-}
-
-function cleanupWebTalk(closeSocket: boolean) {
-  if (closeSocket && webTalkSocket && webTalkSocket.readyState !== WebSocket.CLOSED) {
-    webTalkSocket.close();
-  }
-  webTalkSocket = undefined;
-  webTalkProcessor?.disconnect();
-  webTalkSource?.disconnect();
-  webTalkMute?.disconnect();
-  webTalkProcessor = undefined;
-  webTalkSource = undefined;
-  webTalkMute = undefined;
-  webTalkStream?.getTracks().forEach((track) => track.stop());
-  webTalkStream = undefined;
-  void webTalkAudioContext?.close().catch(() => undefined);
-  webTalkAudioContext = undefined;
-  webTalkActive.value = false;
-  webTalkLevel.value = 0;
-  webTalkGatewayReady.value = false;
-  webTalkDeviceReady.value = false;
-  webTalkDeliveryState.value = "";
-}
-
 onMounted(() => {
-  void refreshStatus().then(refreshFrame);
+  void refreshStatus().then(() => {
+    if (autoRefresh.value) startCameraSocket();
+  });
   void refreshStreamStatus();
   statusTimer = window.setInterval(refreshStatus, 8000);
   streamStatusTimer = window.setInterval(refreshStreamStatus, 3000);
+  window.addEventListener("blur", stopPtzOnSafetyEvent);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 });
 
 onBeforeUnmount(() => {
   if (statusTimer) window.clearInterval(statusTimer);
   if (streamStatusTimer) window.clearInterval(streamStatusTimer);
-  if (ptzStopTimer) window.clearTimeout(ptzStopTimer);
+  if (ptzReleaseTimer) window.clearTimeout(ptzReleaseTimer);
   if (activePtz.value) void stopPtz();
-  if (webTalkActive.value) stopWebTalkback();
+  window.removeEventListener("blur", stopPtzOnSafetyEvent);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   stopAudioListen();
   closeCameraSocket();
 });
@@ -590,115 +420,92 @@ onBeforeUnmount(() => {
 
 <template>
   <article class="camera-monitor-card">
-    <div class="camera-monitor-card__header">
+    <header class="camera-monitor-card__header">
       <div>
-        <p class="section-eyebrow">Live Home Check</p>
         <h3>家中实时看护</h3>
-        <p>前端只连接 Windows 后端 WebSocket，后端统一采集摄像头画面并转发，避免多个页面直连摄像头。</p>
       </div>
       <span class="camera-monitor-card__status" :class="`is-${statusTone}`">
         <ShieldCheck :size="15" />
         {{ statusLabel }}
       </span>
-    </div>
+    </header>
 
-    <div class="camera-monitor-card__stage">
-      <div class="camera-monitor-card__viewport" :class="{ 'has-frame': hasFrame }">
+    <section class="camera-monitor-card__stage">
+      <div class="camera-monitor-card__viewport" :class="{ 'has-frame': hasFrame }" :style="{ aspectRatio: frameAspectRatio }">
         <canvas
           v-show="hasFrame"
           ref="frameCanvas"
           class="camera-monitor-card__canvas"
-          aria-label="home camera realtime video"
+          aria-label="家中摄像头实时画面"
         />
         <div v-if="!hasFrame" class="camera-monitor-card__empty">
-          <Camera :size="32" />
-          <span>画面已暂停</span>
+          <Camera :size="34" />
+          <span>{{ streamState === "connecting" ? "正在连接摄像头画面" : "画面已暂停" }}</span>
         </div>
         <div class="camera-monitor-card__live-mark">
           <span />
-          {{
-            streamState === "live"
-              ? `实收 ${clientFps.toFixed(1)}fps`
-              : streamState === "paused"
-                ? "已暂停"
-                : streamState === "offline"
-                  ? "无视频帧"
-                  : "连接中"
-          }}
+          {{ streamLabel }}
         </div>
-
+        <div v-if="audioListening" class="camera-monitor-card__audio-mark">
+          <Volume2 :size="15" />
+          {{ listeningLabel }}
+        </div>
       </div>
-    </div>
+    </section>
 
-    <div class="camera-control-dock">
-      <div>
-        <p class="section-eyebrow">PTZ Remote</p>
-        <h4>模拟摇杆</h4>
-      </div>
-
-      <div class="camera-joystick" aria-label="摄像头模拟摇杆">
-        <button type="button" class="camera-joystick__zone is-up" aria-label="向上转动" v-bind="bindPtz('up')">
-          <ChevronUp :size="28" />
-        </button>
-        <button type="button" class="camera-joystick__zone is-left" aria-label="向左转动" v-bind="bindPtz('left')">
-          <ChevronLeft :size="28" />
-        </button>
-        <button type="button" class="camera-joystick__center" aria-label="停止转动" @click="stopPtz">
-          <Move :size="23" />
-        </button>
-        <button type="button" class="camera-joystick__zone is-right" aria-label="向右转动" v-bind="bindPtz('right')">
-          <ChevronRight :size="28" />
-        </button>
-        <button type="button" class="camera-joystick__zone is-down" aria-label="向下转动" v-bind="bindPtz('down')">
-          <ChevronDown :size="28" />
-        </button>
+    <section class="camera-control-dock" aria-label="摄像头云台控制">
+      <div class="camera-control-dock__copy">
+        <h4>云台控制</h4>
       </div>
 
-      <div class="camera-monitor-card__zoom">
-        <button type="button" :class="{ 'is-active': activePtz === 'zoom_out' }" v-bind="bindPtz('zoom_out')">
-          <ZoomOut :size="16" />
-          拉远
+      <div
+        class="camera-joystick"
+        :class="activePtz ? `is-${activePtz}` : ''"
+        role="application"
+        aria-label="摄像头模拟摇杆"
+        @pointerdown="handleJoystickDown"
+        @pointermove="handleJoystickMove"
+        @pointerup="handleJoystickUp"
+        @pointercancel="handleJoystickUp"
+        @lostpointercapture="handleJoystickUp"
+      >
+        <span class="camera-joystick__zone is-up"><ChevronUp :size="30" /></span>
+        <span class="camera-joystick__zone is-left"><ChevronLeft :size="30" /></span>
+        <span class="camera-joystick__zone is-right"><ChevronRight :size="30" /></span>
+        <span class="camera-joystick__zone is-down"><ChevronDown :size="30" /></span>
+        <span class="camera-joystick__center"><Move :size="23" /></span>
+      </div>
+
+      <div class="camera-monitor-card__actions" aria-label="摄像头操作">
+        <button type="button" class="camera-action camera-action--primary" @click="toggleFrameRefresh">
+          <Pause v-if="autoRefresh" :size="16" />
+          <Play v-else :size="16" />
+          {{ autoRefresh ? "暂停画面" : "继续查看" }}
         </button>
-        <button type="button" :class="{ 'is-active': activePtz === 'zoom_in' }" v-bind="bindPtz('zoom_in')">
-          <ZoomIn :size="16" />
-          拉近
+        <button type="button" class="camera-action" :disabled="loadingStatus" @click="refreshStatus">
+          <RefreshCw :size="16" />
+          刷新状态
+        </button>
+        <button type="button" class="camera-action" :class="{ 'is-listening': audioListening }" @click="toggleAudioListen">
+          <Volume2 :size="16" />
+          {{ audioListening ? `监听中 ${audioLevel}%` : "开始监听" }}
+        </button>
+        <button type="button" class="camera-action camera-action--ghost" @click="showDiagnostics = !showDiagnostics">
+          {{ showDiagnostics ? "收起诊断" : "查看诊断" }}
         </button>
       </div>
-    </div>
+    </section>
 
-    <div class="camera-monitor-card__meta">
+    <section v-if="showDiagnostics" class="camera-monitor-card__meta" aria-label="摄像头诊断信息">
       <span>{{ endpointLabel }}</span>
-      <span v-if="status?.latency_ms !== null && status?.latency_ms !== undefined">
-        延迟 {{ status.latency_ms }}ms
-      </span>
+      <span v-if="status?.latency_ms !== null && status?.latency_ms !== undefined">局域网延迟 {{ status.latency_ms }}ms</span>
       <span v-else>局域网 RTSP</span>
-      <span>24FPS WebSocket /ws/camera</span>
-      <span v-if="streamStatus">后端源流 {{ (streamStatus.source_fps ?? streamStatus.measured_fps ?? 0).toFixed(1) }}fps</span>
-      <span>ONVIF 云台 10080</span>
-    </div>
-
+      <span>前端实收 {{ clientFps.toFixed(1) }}fps</span>
+      <span v-if="streamStatus">摄像头源流 {{ sourceFps.toFixed(1) }}fps</span>
+      <span>云台 ONVIF 10080</span>
+    </section>
     <p v-if="errorMessage" class="camera-monitor-card__error">{{ errorMessage }}</p>
     <p v-if="audioNotice" class="camera-monitor-card__notice">{{ audioNotice }}</p>
-
-    <div class="camera-monitor-card__actions">
-      <button type="button" class="camera-action camera-action--primary" @click="toggleFrameRefresh">
-        <Pause v-if="autoRefresh" :size="16" />
-        <Play v-else :size="16" />
-        {{ autoRefresh ? "暂停画面" : "继续查看" }}
-      </button>
-      <button type="button" class="camera-action" :disabled="loadingStatus" @click="refreshStatus">
-        <RefreshCw :size="16" />
-        刷新状态
-      </button>
-      <button type="button" class="camera-action" :class="{ 'is-listening': audioListening }" @click="toggleAudioListen">
-        <Volume2 :size="16" />
-        {{ audioListening ? `监听中 ${audioLevel}%` : "开始监听" }}
-      </button>
-      <button type="button" class="camera-action" :class="{ 'is-talking': webTalkActive }" @click="toggleWebTalkback">
-        <Mic :size="16" />
-        {{ webTalkButtonLabel }}
-      </button>
-    </div>
   </article>
 </template>
 
@@ -706,14 +513,14 @@ onBeforeUnmount(() => {
 .camera-monitor-card {
   position: relative;
   display: grid;
-  gap: 14px;
-  padding: 18px;
+  gap: 15px;
+  padding: clamp(16px, 2vw, 20px);
   overflow: hidden;
   border: 1px solid rgba(13, 148, 136, 0.18);
   border-radius: 24px;
   background:
     radial-gradient(circle at 12% 0%, rgba(45, 212, 191, 0.2), transparent 28%),
-    linear-gradient(145deg, rgba(240, 253, 250, 0.96), rgba(255, 255, 255, 0.98) 46%, rgba(239, 246, 255, 0.92));
+    linear-gradient(145deg, rgba(240, 253, 250, 0.96), rgba(255, 255, 255, 0.98) 48%, rgba(239, 246, 255, 0.92));
   box-shadow: 0 16px 44px rgba(15, 118, 110, 0.12);
 }
 
@@ -725,24 +532,15 @@ onBeforeUnmount(() => {
 }
 
 .camera-monitor-card__header h3 {
-  margin: 2px 0 0;
-  font-size: 1.18rem;
+  margin: 0;
+  font-size: clamp(1.12rem, 2vw, 1.28rem);
   letter-spacing: -0.03em;
-}
-
-.camera-monitor-card__header p:last-child {
-  max-width: 680px;
-  margin: 7px 0 0;
-  color: var(--text-sub);
-  font-size: 0.88rem;
-  line-height: 1.7;
 }
 
 .camera-monitor-card__status,
 .camera-monitor-card__meta span,
 .camera-action,
-.camera-monitor-card__live-mark,
-.camera-monitor-card__zoom button {
+.camera-monitor-card__live-mark {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -753,7 +551,7 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   padding: 7px 12px;
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 .camera-monitor-card__status.is-online {
@@ -771,29 +569,11 @@ onBeforeUnmount(() => {
   color: var(--text-sub);
 }
 
-.camera-monitor-card__stage {
-  display: block;
-}
-
-.camera-control-dock {
-  display: grid;
-  grid-template-columns: minmax(120px, 0.34fr) auto minmax(180px, 0.42fr);
-  gap: 14px;
-  align-items: center;
-  border: 1px solid rgba(13, 148, 136, 0.14);
-  border-radius: 20px;
-  padding: 13px 14px;
-  background: rgba(255, 255, 255, 0.68);
-}
-
-.camera-control-dock h4 {
-  margin: 2px 0 0;
-  font-size: 1rem;
-}
-
 .camera-monitor-card__viewport {
   position: relative;
-  min-height: clamp(240px, 32vw, 430px);
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 0;
   overflow: hidden;
   border-radius: 19px;
   background:
@@ -802,18 +582,12 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2), 0 20px 36px rgba(15, 23, 42, 0.12);
 }
 
-.camera-monitor-card__viewport img,
-.camera-monitor-card__canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  min-height: inherit;
-  object-fit: cover;
-}
-
 .camera-monitor-card__canvas {
   position: absolute;
   inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .camera-monitor-card__viewport.has-frame .camera-monitor-card__empty {
@@ -828,7 +602,7 @@ onBeforeUnmount(() => {
   align-content: center;
   gap: 10px;
   color: rgba(255, 255, 255, 0.88);
-  font-weight: 700;
+  font-weight: 800;
 }
 
 .camera-monitor-card__live-mark {
@@ -852,19 +626,64 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.18);
 }
 
+.camera-monitor-card__audio-mark {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: rgba(4, 120, 87, 0.74);
+  color: #ecfdf5;
+  font-size: 0.78rem;
+  font-weight: 800;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 20px rgba(6, 95, 70, 0.18);
+}
+
+.camera-control-dock {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.28fr) auto minmax(240px, 0.5fr);
+  gap: 14px;
+  align-items: center;
+  border: 1px solid rgba(13, 148, 136, 0.14);
+  border-radius: 20px;
+  padding: 13px 14px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.camera-control-dock h4 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.camera-control-dock__copy {
+  color: #0f766e;
+  font-weight: 900;
+}
+
 .camera-joystick {
   position: relative;
-  width: clamp(146px, 18vw, 188px);
+  justify-self: center;
+  width: clamp(156px, 18vw, 196px);
   aspect-ratio: 1;
   border-radius: 999px;
+  cursor: grab;
   touch-action: none;
   user-select: none;
   background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.9) 0 21%, transparent 22%),
-    radial-gradient(circle at center, rgba(15, 118, 110, 0.14) 0 41%, rgba(15, 23, 42, 0.16) 42% 100%);
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.96) 0 19%, transparent 20%),
+    conic-gradient(from 45deg, rgba(13, 148, 136, 0.1), rgba(15, 23, 42, 0.16), rgba(13, 148, 136, 0.1)),
+    radial-gradient(circle at center, rgba(15, 118, 110, 0.12) 0 48%, rgba(15, 23, 42, 0.14) 49% 100%);
   box-shadow:
     inset 0 0 0 1px rgba(13, 148, 136, 0.12),
     0 18px 34px rgba(15, 118, 110, 0.12);
+}
+
+.camera-joystick:active {
+  cursor: grabbing;
 }
 
 .camera-joystick__zone,
@@ -873,157 +692,56 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 0;
   color: rgba(15, 118, 110, 0.72);
-  cursor: pointer;
-  touch-action: none;
-  user-select: none;
-  transition: transform var(--trans-base), color var(--trans-base), background var(--trans-base);
-  will-change: transform;
+  pointer-events: none;
+  transition: transform 140ms ease, color 140ms ease, background 140ms ease;
 }
 
 .camera-joystick__zone {
-  width: 36%;
-  height: 36%;
+  width: 40%;
+  height: 40%;
   border-radius: 999px;
-  background: transparent;
-}
-
-.camera-joystick__zone:hover:not(:disabled) {
-  color: #0f766e;
-  background: rgba(255, 255, 255, 0.46);
-  transform: scale(1.04);
-}
-
-.camera-joystick__zone.is-active,
-.camera-joystick__zone:active {
-  color: #0f766e;
-  background: rgba(255, 255, 255, 0.7);
-  transform: scale(1.1);
 }
 
 .camera-joystick__zone.is-up {
-  top: 3%;
-  left: 32%;
+  top: 2%;
+  left: 30%;
 }
 
 .camera-joystick__zone.is-left {
-  top: 32%;
-  left: 3%;
+  top: 30%;
+  left: 2%;
 }
 
 .camera-joystick__zone.is-right {
-  top: 32%;
-  right: 3%;
+  top: 30%;
+  right: 2%;
 }
 
 .camera-joystick__zone.is-down {
-  bottom: 3%;
-  left: 32%;
+  bottom: 2%;
+  left: 30%;
+}
+
+.camera-joystick.is-up .is-up,
+.camera-joystick.is-left .is-left,
+.camera-joystick.is-right .is-right,
+.camera-joystick.is-down .is-down {
+  color: #0f766e;
+  background: rgba(255, 255, 255, 0.68);
+  transform: scale(1.08);
 }
 
 .camera-joystick__center {
   top: 50%;
   left: 50%;
-  width: 28%;
+  width: 30%;
   aspect-ratio: 1;
   border-radius: 999px;
   transform: translate(-50%, -50%);
   background: rgba(255, 255, 255, 0.96);
   color: rgba(15, 118, 110, 0.7);
   box-shadow: 0 10px 24px rgba(15, 118, 110, 0.14);
-}
-
-.camera-joystick__center:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.92);
-  color: #0f766e;
-}
-
-.camera-joystick__center:active {
-  transform: translate(-50%, -50%) scale(0.96);
-}
-
-.camera-joystick__zone:disabled,
-.camera-joystick__center:disabled {
-  cursor: wait;
-  opacity: 0.64;
-}
-
-.camera-monitor-card__ptz {
-  display: grid;
-  align-content: center;
-  gap: 12px;
-  border: 1px solid rgba(13, 148, 136, 0.16);
-  border-radius: 19px;
-  padding: 14px;
-  background: rgba(255, 255, 255, 0.62);
-}
-
-.camera-monitor-card__ptz-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: #0f766e;
-  font-size: 0.86rem;
-  font-weight: 800;
-}
-
-.ptz-pad {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(42px, 1fr));
-  gap: 8px;
-}
-
-.ptz-pad button,
-.camera-monitor-card__zoom button {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  border: 1px solid rgba(13, 148, 136, 0.17);
-  border-radius: 15px;
-  background: rgba(255, 255, 255, 0.86);
-  color: #0f766e;
-  cursor: pointer;
-  justify-content: center;
-  font-weight: 800;
-  transition: transform var(--trans-base), box-shadow var(--trans-base), background var(--trans-base);
-}
-
-.ptz-pad button {
-  aspect-ratio: 1;
-}
-
-.ptz-pad button:hover:not(:disabled),
-.camera-monitor-card__zoom button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  background: #ffffff;
-  box-shadow: 0 10px 22px rgba(15, 118, 110, 0.12);
-}
-
-.camera-monitor-card__zoom button.is-active,
-.camera-monitor-card__zoom button:active {
-  background: #ecfeff;
-  box-shadow: 0 12px 24px rgba(15, 118, 110, 0.16);
-  transform: translateY(-1px) scale(1.02);
-}
-
-.ptz-pad button:disabled,
-.camera-monitor-card__zoom button:disabled {
-  cursor: wait;
-  opacity: 0.58;
-}
-
-.camera-monitor-card__zoom {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-}
-
-.camera-monitor-card__ptz-hint {
-  margin: 0;
-  color: var(--text-sub);
-  font-size: 0.78rem;
-  line-height: 1.5;
 }
 
 .camera-monitor-card__meta {
@@ -1039,7 +757,7 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.72);
   color: var(--text-sub);
   font-size: 0.8rem;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .camera-monitor-card__error,
@@ -1061,9 +779,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 9px;
+  justify-content: flex-end;
 }
 
 .camera-action {
+  min-height: 42px;
   border: 1px solid rgba(13, 148, 136, 0.18);
   border-radius: 999px;
   padding: 9px 13px;
@@ -1071,8 +791,8 @@ onBeforeUnmount(() => {
   color: var(--text-main);
   cursor: pointer;
   font-size: 0.84rem;
-  font-weight: 700;
-  transition: transform var(--trans-base), box-shadow var(--trans-base), background var(--trans-base);
+  font-weight: 800;
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
 }
 
 .camera-action:hover:not(:disabled) {
@@ -1087,12 +807,6 @@ onBeforeUnmount(() => {
   color: #047857;
 }
 
-.camera-action.is-talking {
-  border-color: rgba(220, 38, 38, 0.38);
-  background: linear-gradient(135deg, rgba(248, 113, 113, 0.18), rgba(255, 247, 237, 0.94));
-  color: #b91c1c;
-}
-
 .camera-action--primary {
   border-color: transparent;
   background: #0f766e;
@@ -1101,6 +815,11 @@ onBeforeUnmount(() => {
 
 .camera-action--primary:hover:not(:disabled) {
   background: #115e59;
+}
+
+.camera-action--ghost {
+  background: rgba(255, 255, 255, 0.42);
+  color: #0f766e;
 }
 
 .camera-action:disabled {
@@ -1114,8 +833,11 @@ onBeforeUnmount(() => {
   }
 
   .camera-joystick {
-    justify-self: center;
-    width: clamp(156px, 44vw, 210px);
+    width: clamp(168px, 46vw, 220px);
+  }
+
+  .camera-monitor-card__actions {
+    justify-content: center;
   }
 }
 

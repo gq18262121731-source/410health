@@ -16,7 +16,7 @@ class ServerEndpointConfig extends ChangeNotifier {
 
   ServerEndpointConfig(this._prefs) {
     _host = _prefs.getString(_keyHost) ?? _defaultHost();
-    _port = _prefs.getInt(_keyPort) ?? 8000;
+    _port = _prefs.getInt(_keyPort) ?? 8010;
     _scheme = _normalizeScheme(_prefs.getString(_keyScheme) ?? 'http');
   }
 
@@ -27,7 +27,8 @@ class ServerEndpointConfig extends ChangeNotifier {
 
   String get origin => '$_scheme://$_host:$_port';
   String get apiBaseUrl => '$origin/api/v1/';
-  String get wsBaseUrl => '${_scheme == 'https' ? 'wss' : 'ws'}://$_host:$_port';
+  String get wsBaseUrl =>
+      '${_scheme == 'https' ? 'wss' : 'ws'}://$_host:$_port';
 
   static String _normalizeScheme(String value) {
     return value.toLowerCase() == 'https' ? 'https' : 'http';

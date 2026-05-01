@@ -18,6 +18,7 @@ import 'features/care/providers/care_provider.dart';
 import 'features/care/repositories/care_repository.dart';
 import 'features/care/screens/elder_home_screen.dart';
 import 'features/care/screens/family_home_screen.dart';
+import 'features/camera/repositories/camera_repository.dart';
 import 'features/health/repositories/health_repository.dart';
 import 'features/session/services/session_manager.dart';
 import 'features/agent/repositories/agent_repository.dart';
@@ -84,6 +85,12 @@ class AppBootstrap extends StatelessWidget {
             endpointConfig: endpoint,
           ),
         ),
+        ProxyProvider2<ApiClient, ServerEndpointConfig, CameraRepository>(
+          update: (_, client, endpoint, __) => CameraRepository(
+            client,
+            endpointConfig: endpoint,
+          ),
+        ),
         ProxyProvider<ApiClient, AgentRepository>(
           update: (_, client, __) => AgentRepository(client),
         ),
@@ -91,7 +98,8 @@ class AppBootstrap extends StatelessWidget {
           create: (_) => AudioService(),
           dispose: (_, service) => service.dispose(),
         ),
-        ChangeNotifierProxyProvider2<AuthRepository, SessionManager, AuthProvider>(
+        ChangeNotifierProxyProvider2<AuthRepository, SessionManager,
+            AuthProvider>(
           create: (context) => AuthProvider(
             context.read<AuthRepository>(),
             context.read<SessionManager>(),
@@ -99,7 +107,8 @@ class AppBootstrap extends StatelessWidget {
           update: (context, authRepo, session, prevAuth) =>
               prevAuth ?? AuthProvider(authRepo, session),
         ),
-        ChangeNotifierProxyProvider2<CareRepository, SessionManager, CareProvider>(
+        ChangeNotifierProxyProvider2<CareRepository, SessionManager,
+            CareProvider>(
           create: (context) => CareProvider(
             context.read<CareRepository>(),
             context.read<SessionManager>(),
@@ -114,7 +123,8 @@ class AppBootstrap extends StatelessWidget {
           create: (context) => AlarmProvider(context.read<AlarmRepository>()),
           update: (context, repo, prev) => prev ?? AlarmProvider(repo),
         ),
-        ChangeNotifierProxyProvider2<VoiceRepository, AudioService, VoiceProvider>(
+        ChangeNotifierProxyProvider2<VoiceRepository, AudioService,
+            VoiceProvider>(
           create: (context) => VoiceProvider(
             context.read<VoiceRepository>(),
             context.read<AudioService>(),
@@ -125,7 +135,8 @@ class AppBootstrap extends StatelessWidget {
             return provider;
           },
         ),
-        ChangeNotifierProxyProvider2<AgentRepository, AudioService, AgentProvider>(
+        ChangeNotifierProxyProvider2<AgentRepository, AudioService,
+            AgentProvider>(
           create: (context) => AgentProvider(
             context.read<AgentRepository>(),
             context.read<AudioService>(),
@@ -266,7 +277,8 @@ class _AiHealthAppState extends State<AiHealthApp> {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
-            textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            textStyle:
+                const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
         ),
         outlinedButtonTheme: OutlinedButtonThemeData(
@@ -321,7 +333,8 @@ class _AiHealthAppState extends State<AiHealthApp> {
     if (status == AuthStatus.initial) {
       return const Scaffold(
         backgroundColor: Color(0xFFF8FAFC),
-        body: Center(child: CircularProgressIndicator(color: Color(0xFF2563EB))),
+        body:
+            Center(child: CircularProgressIndicator(color: Color(0xFF2563EB))),
       );
     }
 

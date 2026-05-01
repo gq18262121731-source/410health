@@ -5,6 +5,9 @@ import '../../../widgets/logout_action.dart';
 import '../../agent/widgets/ai_chat_dialog.dart';
 import '../../alarm/providers/alarm_provider.dart';
 import '../../alarm/screens/alarm_center_screen.dart';
+import '../../camera/providers/camera_provider.dart';
+import '../../camera/repositories/camera_repository.dart';
+import '../../camera/screens/family_camera_screen.dart';
 import '../../health/providers/health_provider.dart';
 import '../../health/repositories/health_repository.dart';
 import '../../health/screens/device_detail_screen.dart';
@@ -230,7 +233,8 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
             const Text(
               '等老人账号与家庭账号建立关联后，这里会显示对应的健康监测对象和设备状态。',
               textAlign: TextAlign.center,
-              style: TextStyle(color: AppColors.textSub, fontSize: 22, height: 1.5),
+              style: TextStyle(
+                  color: AppColors.textSub, fontSize: 22, height: 1.5),
             ),
           ],
         ),
@@ -252,6 +256,8 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
         _buildSectionTitle('我的关注'),
         ...subjects.map(_buildSubjectCard),
         const SizedBox(height: 16),
+        _buildCameraEntry(context),
+        const SizedBox(height: 16),
         _buildVoiceEntry(context),
         const SizedBox(height: 24),
         _buildSectionTitle('AI 健康对话'),
@@ -269,7 +275,9 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
         border: Border.all(
           color: AppColors.border,
         ),
-        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))],
+        boxShadow: const [
+          BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))
+        ],
       ),
       child: const Row(
         children: <Widget>[
@@ -278,7 +286,8 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
           Expanded(
             child: Text(
               '已开启自动刷新，会持续同步家庭关注对象的最新监测状态。',
-              style: TextStyle(color: AppColors.textSub, fontSize: 20, height: 1.4),
+              style: TextStyle(
+                  color: AppColors.textSub, fontSize: 20, height: 1.4),
             ),
           ),
         ],
@@ -480,7 +489,8 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
             const SizedBox(height: 18),
             const Text(
               '当前还没有绑定手环，绑定后即可查看实时指标、异常告警和趋势曲线。',
-              style: TextStyle(color: AppColors.textSub, fontSize: 22, height: 1.5),
+              style: TextStyle(
+                  color: AppColors.textSub, fontSize: 22, height: 1.5),
             ),
           ],
         ),
@@ -504,7 +514,10 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
         const SizedBox(height: 4),
         Text(
           label,
-          style: const TextStyle(color: AppColors.textSub, fontSize: 20, fontWeight: FontWeight.w500),
+          style: const TextStyle(
+              color: AppColors.textSub,
+              fontSize: 20,
+              fontWeight: FontWeight.w500),
         ),
       ],
     );
@@ -553,10 +566,94 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
                       fontSize: 28,
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  SizedBox(height: 8),
                   Text(
                     '语音转文字与合成播报',
                     style: TextStyle(color: AppColors.textSub, fontSize: 20),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: AppColors.textMuted),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCameraEntry(BuildContext context) {
+    return InkWell(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute<void>(
+            builder: (BuildContext context) => ChangeNotifierProvider(
+              create: (BuildContext context) => CameraProvider(
+                context.read<CameraRepository>(),
+              )..start(),
+              child: const FamilyCameraScreen(),
+            ),
+          ),
+        );
+      },
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: <Color>[
+              AppColors.primary.withValues(alpha: 0.12),
+              AppColors.secondary.withValues(alpha: 0.06),
+              AppColors.surface,
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.primary.withValues(alpha: 0.18)),
+          boxShadow: const [
+            BoxShadow(
+              color: Colors.black12,
+              blurRadius: 4,
+              offset: Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          children: <Widget>[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(
+                Icons.videocam_outlined,
+                color: AppColors.primary,
+                size: 28,
+              ),
+            ),
+            const SizedBox(width: 16),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    '家中实时看护',
+                    style: TextStyle(
+                      color: AppColors.textMain,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 28,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    '查看实时画面与控制云台，远程通话将在移动端单独接入',
+                    style: TextStyle(
+                      color: AppColors.textSub,
+                      fontSize: 20,
+                      height: 1.35,
+                    ),
                   ),
                 ],
               ),
@@ -599,7 +696,10 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
             color: AppColors.surface,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: AppColors.border),
-            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))],
+            boxShadow: const [
+              BoxShadow(
+                  color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))
+            ],
           ),
           child: Row(
             children: <Widget>[
