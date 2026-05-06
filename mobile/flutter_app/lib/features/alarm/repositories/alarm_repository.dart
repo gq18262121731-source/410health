@@ -1,14 +1,20 @@
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/network/server_endpoint_config.dart';
+import '../../session/services/session_manager.dart';
 import '../models/alarm_model.dart';
 
 class AlarmRepository {
   final ApiClient _apiClient;
   final ServerEndpointConfig _endpointConfig;
+  final SessionManager _sessionManager;
 
-  AlarmRepository(this._apiClient, {required ServerEndpointConfig endpointConfig})
-      : _endpointConfig = endpointConfig;
+  AlarmRepository(
+    this._apiClient, {
+    required ServerEndpointConfig endpointConfig,
+    required SessionManager sessionManager,
+  })  : _endpointConfig = endpointConfig,
+        _sessionManager = sessionManager;
 
   Future<List<AlarmRecord>> getAlarms({bool activeOnly = false}) async {
     final response = await _apiClient.get('alarms', queryParameters: {'active_only': activeOnly});
@@ -30,6 +36,10 @@ class AlarmRepository {
   }
 
   WebSocketChannel connectToAlarms() {
-    return WebSocketChannel.connect(Uri.parse('${_endpointConfig.wsBaseUrl}/ws/alarms'));
+    final token = _sessionManager.token;
+    final uri = (token != null && token.trim().isNotEmpty)
+        ? Uri.parse('${_endpointConfig.wsBaseUrl}/ws/alarms?token=${Uri.encodeQueryComponent(token)}')
+        : Uri.parse('${_endpointConfig.wsBaseUrl}/ws/alarms');
+    return WebSocketChannel.connect(uri);
   }
 }

@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import base64
 import io
+import json
+import mimetypes
+import re
 import logging
 import wave
+from pathlib import Path
 from typing import Any, Literal
 
 from openai import OpenAI
@@ -107,6 +111,197 @@ class VoiceService:
             wav_file.writeframes(pcm_bytes)
         return base64.b64encode(buffer.getvalue()).decode("ascii")
 
+    @staticmethod
+    def _extract_message_text(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                text_value = item.get("text")
+                if isinstance(text_value, str):
+                    parts.append(text_value)
+                    continue
+                nested_text = item.get("content")
+                if isinstance(nested_text, str):
+                    parts.append(nested_text)
+            return "".join(parts)
+        return str(content)
+
+    @staticmethod
+    def _strip_code_fence(raw: str) -> str:
+        text = (raw or "").strip()
+        if not text.startswith("```"):
+            return text
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        return text.strip()
+
+    @classmethod
+    def _extract_json_payload(cls, raw: str) -> dict[str, object] | None:
+        text = cls._strip_code_fence(raw)
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        candidate = text[start : end + 1]
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _normalize_review_value(value: object, mapping: dict[str, str], *, default: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return default
+        return mapping.get(normalized, default)
+
+    @classmethod
+    def _normalize_fall_review_payload(
+        cls,
+        payload: dict[str, object],
+        *,
+        raw_text: str,
+        model_id: str,
+    ) -> dict[str, object]:
+        judgement_map = {
+            "fall": "fall",
+            "confirmed_fall": "fall",
+            "real_fall": "fall",
+            "跌倒": "fall",
+            "确认跌倒": "fall",
+            "possible_fall": "possible_fall",
+            "possible": "possible_fall",
+            "suspected_fall": "possible_fall",
+            "疑似跌倒": "possible_fall",
+            "可能跌倒": "possible_fall",
+            "no_fall": "no_fall",
+            "non_fall": "no_fall",
+            "not_fall": "no_fall",
+            "false_alarm": "no_fall",
+            "不是跌倒": "no_fall",
+            "非跌倒": "no_fall",
+            "uncertain": "uncertain",
+            "unknown": "uncertain",
+            "inconclusive": "uncertain",
+            "无法判断": "uncertain",
+            "不确定": "uncertain",
+        }
+        confidence_map = {
+            "high": "high",
+            "medium": "medium",
+            "low": "low",
+            "高": "high",
+            "中": "medium",
+            "中等": "medium",
+            "低": "low",
+        }
+        action_map = {
+            "keep_alarm": "keep_alarm",
+            "keep": "keep_alarm",
+            "保留告警": "keep_alarm",
+            "维持告警": "keep_alarm",
+            "downgrade": "downgrade",
+            "no_fall": "downgrade",
+            "cancel_alarm": "downgrade",
+            "cancel": "downgrade",
+            "false_alarm": "downgrade",
+            "dismiss": "downgrade",
+            "suppress": "downgrade",
+            "降级": "downgrade",
+            "取消告警": "downgrade",
+            "needs_human_review": "needs_human_review",
+            "review": "needs_human_review",
+            "人工复核": "needs_human_review",
+        }
+
+        judgement = cls._normalize_review_value(
+            payload.get("judgement"),
+            judgement_map,
+            default="uncertain",
+        )
+        confidence = cls._normalize_review_value(
+            payload.get("confidence"),
+            confidence_map,
+            default="low",
+        )
+        recommended_action = cls._normalize_review_value(
+            payload.get("recommended_action"),
+            action_map,
+            default="needs_human_review",
+        )
+
+        if judgement == "no_fall" and confidence in {"high", "medium"}:
+            recommended_action = "downgrade"
+        elif judgement == "fall":
+            recommended_action = "keep_alarm"
+
+        risk_cues = payload.get("risk_cues")
+        false_positive_cues = payload.get("false_positive_cues")
+        return {
+            "status": "ok",
+            "provider": "dashscope-compatible",
+            "model": model_id,
+            "judgement": judgement,
+            "confidence": confidence,
+            "recommended_action": recommended_action,
+            "reason": str(payload.get("reason") or "").strip(),
+            "visible_person_count": int(payload.get("visible_person_count") or 0),
+            "risk_cues": list(risk_cues) if isinstance(risk_cues, list) else [],
+            "false_positive_cues": list(false_positive_cues) if isinstance(false_positive_cues, list) else [],
+            "raw_text": raw_text,
+        }
+
+    @staticmethod
+    def _build_fall_review_prompt(event: dict[str, object] | None) -> str:
+        event = event or {}
+        injury = event.get("injury") if isinstance(event.get("injury"), dict) else {}
+        fall_score = event.get("fall_score")
+        state = event.get("state")
+        severity = event.get("severity")
+        injury_level = injury.get("level") if isinstance(injury, dict) else None
+        down_seconds = injury.get("down_seconds") if isinstance(injury, dict) else None
+        context_lines = [
+            "请作为养老监护系统的第二道跌倒复核器，只根据这张抓拍图判断是否应该维持跌倒告警。",
+            "重点识别误报场景：弯腰捡东西、快速坐下、躺床、蹲下、画面边缘半身、遮挡、非人体目标、监控畸变。",
+            "如果单张图片证据不足，不要强行判定为真实跌倒，应返回 uncertain 或 no_fall。",
+            "下面是第一道检测的参考信息，你可以参考，但不要盲从：",
+            f"- fall_score: {fall_score}",
+            f"- state: {state}",
+            f"- severity: {severity}",
+            f"- injury_level: {injury_level}",
+            f"- down_seconds: {down_seconds}",
+            "请严格只返回 JSON，不要输出解释文字，不要使用 Markdown 代码块。",
+            (
+                'JSON 格式：'
+                '{"judgement":"fall|possible_fall|no_fall|uncertain",'
+                '"confidence":"high|medium|low",'
+                '"reason":"一句简短理由",'
+                '"recommended_action":"keep_alarm|downgrade|needs_human_review",'
+                '"visible_person_count":0,'
+                '"risk_cues":["最多3个短词"],'
+                '"false_positive_cues":["最多3个短词"]}'
+            ),
+        ]
+        return "\n".join(context_lines)
+
     def _build_health_context(self, device_mac: str | None) -> str:
         if not device_mac or self._device_service is None:
             return ""
@@ -138,6 +333,101 @@ class VoiceService:
         except Exception as exc:
             logger.debug("Failed to build health context for omni chat: %s", exc)
             return ""
+
+    def review_fall_snapshot(
+        self,
+        snapshot_path: str | Path,
+        *,
+        event: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Use the configured Qwen omni model to review a fall snapshot."""
+        if not self._configured:
+            return {"status": "not_configured", "provider": "dashscope-compatible"}
+
+        path = Path(snapshot_path).expanduser().resolve()
+        if not path.is_file():
+            return {"status": "snapshot_missing", "snapshot_path": str(path)}
+
+        mime_type, _encoding = mimetypes.guess_type(path.name)
+        mime_type = mime_type or "image/jpeg"
+        image_b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        model_id = self._settings.qwen_omni_model_id
+        prompt = self._build_fall_review_prompt(event)
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a safety-critical fall alarm reviewer for an elder-care monitoring system. "
+                    "Reply in Simplified Chinese JSON only. "
+                    "Base the decision on the visible image evidence first, and use the provided detector fields only as weak reference. "
+                    "Do not invent motion that is not visible in the image."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{image_b64}",
+                        },
+                    },
+                ],
+            },
+        ]
+
+        try:
+            client = self._build_compatible_client()
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=messages,
+                stream=False,
+                temperature=0.1,
+                max_tokens=280,
+            )
+        except Exception as exc:
+            logger.warning("Fall snapshot review failed: %s", exc)
+            return {
+                "status": "error",
+                "provider": "dashscope-compatible",
+                "model": model_id,
+                "error": str(exc),
+            }
+
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return {
+                "status": "empty",
+                "provider": "dashscope-compatible",
+                "model": model_id,
+            }
+
+        message = getattr(choices[0], "message", None)
+        raw_text = self._extract_message_text(getattr(message, "content", None)).strip()
+        if not raw_text:
+            return {
+                "status": "empty",
+                "provider": "dashscope-compatible",
+                "model": model_id,
+            }
+
+        payload = self._extract_json_payload(raw_text)
+        if payload is None:
+            logger.warning("Fall snapshot review returned non-JSON payload: %s", raw_text[-800:])
+            return {
+                "status": "invalid_json",
+                "provider": "dashscope-compatible",
+                "model": model_id,
+                "raw_text": raw_text[-800:],
+            }
+
+        return self._normalize_fall_review_payload(
+            payload,
+            raw_text=raw_text,
+            model_id=model_id,
+        )
 
     @staticmethod
     def _build_elder_voice_style_prompt(*, has_health_context: bool) -> str:

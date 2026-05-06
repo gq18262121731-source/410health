@@ -3,10 +3,10 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/network/server_endpoint_config.dart';
+import '../../../core/theme/app_colors.dart';
+import '../../../widgets/logout_action.dart';
 import '../../alarm/providers/alarm_provider.dart';
 import '../../care/providers/care_provider.dart';
-import '../../../widgets/logout_action.dart';
-import '../../../core/theme/app_colors.dart';
 
 class ServerSettingsScreen extends StatefulWidget {
   const ServerSettingsScreen({super.key});
@@ -24,6 +24,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
   bool _isTesting = false;
   bool _isSaving = false;
   String? _testResult;
+  bool _lastTestPassed = false;
 
   @override
   void initState() {
@@ -49,6 +50,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
     setState(() {
       _isTesting = true;
       _testResult = null;
+      _lastTestPassed = false;
     });
 
     final config = context.read<ServerEndpointConfig>();
@@ -64,6 +66,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
 
     setState(() {
       _isTesting = false;
+      _lastTestPassed = error == null;
       _testResult = error ?? '连接成功，后端健康检查通过。';
     });
   }
@@ -75,9 +78,28 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
 
     setState(() {
       _isSaving = true;
+      _testResult = null;
+      _lastTestPassed = false;
     });
 
     final config = context.read<ServerEndpointConfig>();
+    final error = await config.testConnection(
+      host: _hostController.text,
+      port: int.parse(_portController.text),
+      scheme: _scheme,
+    );
+
+    if (error != null) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isSaving = false;
+        _testResult = error;
+      });
+      return;
+    }
+
     await config.save(
       host: _hostController.text,
       port: int.parse(_portController.text),
@@ -96,6 +118,8 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
 
     setState(() {
       _isSaving = false;
+      _lastTestPassed = true;
+      _testResult = '连接成功，已切换到 ${config.origin}';
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -113,7 +137,10 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: const Text('服务器设置', style: TextStyle(color: AppColors.textMain, fontWeight: FontWeight.bold)),
+        title: const Text(
+          '服务器设置',
+          style: TextStyle(color: AppColors.textMain, fontWeight: FontWeight.bold),
+        ),
         backgroundColor: Colors.transparent,
         elevation: 0,
         iconTheme: const IconThemeData(color: AppColors.textMain),
@@ -153,7 +180,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
               TextFormField(
                 controller: _hostController,
                 style: const TextStyle(color: AppColors.textMain, fontWeight: FontWeight.bold),
-                decoration: _inputDecoration(hintText: '例如 192.168.1.23'),
+                decoration: _inputDecoration(hintText: '例如 192.168.8.249'),
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
                     return '请输入服务器地址';
@@ -177,6 +204,11 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
                   }
                   return null;
                 },
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '当前项目的移动端应连接后端服务，默认端口是 8000。像 9000/9001 这类前端开发端口不能用于登录。',
+                style: TextStyle(color: AppColors.textSub, height: 1.5),
               ),
               const SizedBox(height: 20),
               Row(
@@ -223,14 +255,12 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: _testResult!.contains('成功')
-                        ? Colors.green.withOpacity(0.12)
-                        : Colors.orange.withOpacity(0.12),
+                    color: _lastTestPassed
+                        ? Colors.green.withValues(alpha: 0.12)
+                        : Colors.orange.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
-                      color: _testResult!.contains('成功')
-                          ? AppColors.success
-                          : AppColors.warning,
+                      color: _lastTestPassed ? AppColors.success : AppColors.warning,
                     ),
                   ),
                   child: Text(
@@ -270,7 +300,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
           ),
           const SizedBox(height: 12),
           const Text(
-            'Android 真机接入同一局域网时，请把这里改成运行 python run.py 后在终端屏幕上提示的服务端局域网 IP。',
+            'Android 真机接入同一局域网时，这里应填写运行后端服务那台电脑的局域网 IP 和 8000 端口，例如 http://192.168.8.249:8000。',
             style: TextStyle(color: AppColors.textSub, height: 1.5),
           ),
         ],

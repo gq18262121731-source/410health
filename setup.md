@@ -174,6 +174,42 @@ AT+TYPE=4  持续 2 秒，补抓广播包里的 SOS
 
 广播包进来后，系统会保留最近一次回应包里的电量、步数、血压、环境温度、表面温度，只用广播包补 `sos_flag` 和实时心率/体温。
 
+如果你现在插了两个采集器，推荐直接改成“双采集器固定分工”：
+
+```env
+DATA_MODE=serial
+USE_MOCK_DATA=false
+SERIAL_ENABLED=true
+SERIAL_BAUDRATE=115200
+SERIAL_MAC_FILTER=535708000000
+SERIAL_AUTO_CONFIGURE=true
+
+SERIAL_DUAL_COLLECTOR_ENABLED=true
+SERIAL_BROADCAST_PORT=COM4
+SERIAL_RESPONSE_PORT=COM3
+
+SERIAL_APPLY_PACKET_TYPE=true
+SERIAL_ENABLE_BROADCAST_SOS_OVERLAY=false
+```
+
+这组配置会让后端分别下发：
+
+```text
+# 广播采集器
+AT+SCANSTOP
+AT+UUID=NO
+AT+TYPE=4
+AT+SCANSTART
+
+# 回应采集器
+AT+SCANSTOP
+AT+UUID=NO
+AT+TYPE=5
+AT+SCANSTART
+```
+
+这样两个采集器就不用再来回切换，广播包和回应包会按同一个设备 MAC 在后端自动汇合。
+
 如果你后续要切回演示模式，可把 `.env` 改回：
 
 ```env

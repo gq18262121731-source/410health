@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,6 +8,7 @@ import 'core/network/api_client.dart';
 import 'core/network/server_endpoint_config.dart';
 import 'core/theme/app_colors.dart';
 import 'features/auth/providers/auth_provider.dart';
+import 'features/auth/screens/community_mobile_notice_screen.dart';
 import 'features/auth/repositories/auth_repository.dart';
 import 'features/auth/screens/login_screen.dart';
 import 'features/alarm/repositories/alarm_repository.dart';
@@ -18,11 +21,14 @@ import 'features/care/providers/care_provider.dart';
 import 'features/care/repositories/care_repository.dart';
 import 'features/care/screens/elder_home_screen.dart';
 import 'features/care/screens/family_home_screen.dart';
+import 'features/camera/repositories/camera_repository.dart';
 import 'features/health/repositories/health_repository.dart';
 import 'features/session/services/session_manager.dart';
 import 'features/agent/repositories/agent_repository.dart';
 import 'features/agent/providers/agent_provider.dart';
 import 'core/services/audio_service.dart';
+import 'core/services/app_notification_service.dart';
+import 'core/services/mobile_device_registration_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -69,10 +75,12 @@ class AppBootstrap extends StatelessWidget {
         ProxyProvider<ApiClient, CareRepository>(
           update: (_, client, __) => CareRepository(client),
         ),
-        ProxyProvider2<ApiClient, ServerEndpointConfig, AlarmRepository>(
-          update: (_, client, endpoint, __) => AlarmRepository(
+        ProxyProvider3<ApiClient, ServerEndpointConfig, SessionManager,
+            AlarmRepository>(
+          update: (_, client, endpoint, session, __) => AlarmRepository(
             client,
             endpointConfig: endpoint,
+            sessionManager: session,
           ),
         ),
         ProxyProvider<ApiClient, VoiceRepository>(
@@ -84,6 +92,12 @@ class AppBootstrap extends StatelessWidget {
             endpointConfig: endpoint,
           ),
         ),
+        ProxyProvider2<ApiClient, ServerEndpointConfig, CameraRepository>(
+          update: (_, client, endpoint, __) => CameraRepository(
+            client,
+            endpointConfig: endpoint,
+          ),
+        ),
         ProxyProvider<ApiClient, AgentRepository>(
           update: (_, client, __) => AgentRepository(client),
         ),
@@ -91,15 +105,31 @@ class AppBootstrap extends StatelessWidget {
           create: (_) => AudioService(),
           dispose: (_, service) => service.dispose(),
         ),
-        ChangeNotifierProxyProvider2<AuthRepository, SessionManager, AuthProvider>(
+        Provider<AppNotificationService>(
+          create: (_) => AppNotificationService(),
+        ),
+        ProxyProvider3<AuthRepository, SessionManager, AppNotificationService,
+            MobileDeviceRegistrationService>(
+          update:
+              (_, authRepository, sessionManager, notificationService, __) =>
+                  MobileDeviceRegistrationService(
+            authRepository,
+            sessionManager,
+            notificationService,
+          ),
+        ),
+        ChangeNotifierProxyProvider3<AuthRepository, SessionManager,
+            MobileDeviceRegistrationService, AuthProvider>(
           create: (context) => AuthProvider(
             context.read<AuthRepository>(),
             context.read<SessionManager>(),
+            context.read<MobileDeviceRegistrationService>(),
           ),
-          update: (context, authRepo, session, prevAuth) =>
-              prevAuth ?? AuthProvider(authRepo, session),
+          update: (context, authRepo, session, registrationService, prevAuth) =>
+              prevAuth ?? AuthProvider(authRepo, session, registrationService),
         ),
-        ChangeNotifierProxyProvider2<CareRepository, SessionManager, CareProvider>(
+        ChangeNotifierProxyProvider2<CareRepository, SessionManager,
+            CareProvider>(
           create: (context) => CareProvider(
             context.read<CareRepository>(),
             context.read<SessionManager>(),
@@ -114,7 +144,8 @@ class AppBootstrap extends StatelessWidget {
           create: (context) => AlarmProvider(context.read<AlarmRepository>()),
           update: (context, repo, prev) => prev ?? AlarmProvider(repo),
         ),
-        ChangeNotifierProxyProvider2<VoiceRepository, AudioService, VoiceProvider>(
+        ChangeNotifierProxyProvider2<VoiceRepository, AudioService,
+            VoiceProvider>(
           create: (context) => VoiceProvider(
             context.read<VoiceRepository>(),
             context.read<AudioService>(),
@@ -125,7 +156,8 @@ class AppBootstrap extends StatelessWidget {
             return provider;
           },
         ),
-        ChangeNotifierProxyProvider2<AgentRepository, AudioService, AgentProvider>(
+        ChangeNotifierProxyProvider2<AgentRepository, AudioService,
+            AgentProvider>(
           create: (context) => AgentProvider(
             context.read<AgentRepository>(),
             context.read<AudioService>(),
@@ -163,6 +195,8 @@ class AiHealthApp extends StatefulWidget {
 class _AiHealthAppState extends State<AiHealthApp> {
   AuthProvider? _authProvider;
   AlarmProvider? _alarmProvider;
+  AppNotificationService? _notificationService;
+  MobileDeviceRegistrationService? _mobileDeviceRegistrationService;
   bool _didScheduleSessionCheck = false;
 
   @override
@@ -175,6 +209,9 @@ class _AiHealthAppState extends State<AiHealthApp> {
     super.didChangeDependencies();
     final authProvider = context.read<AuthProvider>();
     _alarmProvider ??= context.read<AlarmProvider>();
+    _notificationService ??= context.read<AppNotificationService>();
+    _mobileDeviceRegistrationService ??=
+        context.read<MobileDeviceRegistrationService>();
     if (!identical(_authProvider, authProvider)) {
       _authProvider?.removeListener(_handleAuthChanged);
       _authProvider = authProvider;
@@ -212,13 +249,17 @@ class _AiHealthAppState extends State<AiHealthApp> {
 
     final role = authProvider.user?.role.toLowerCase();
     final shouldListenForAlarms =
-        authProvider.status == AuthStatus.authenticated && role != 'elder';
+        authProvider.status == AuthStatus.authenticated && role == 'family';
 
     if (shouldListenForAlarms) {
+      unawaited(_notificationService?.initialize());
+      unawaited(_notificationService?.requestPermissionsIfNeeded());
+      unawaited(_mobileDeviceRegistrationService?.syncCurrentInstallation());
       alarmProvider.ensureStarted();
       return;
     }
 
+    unawaited(_notificationService?.clearAllSosNotifications());
     alarmProvider.reset();
   }
 
@@ -266,7 +307,8 @@ class _AiHealthAppState extends State<AiHealthApp> {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(12),
             ),
-            textStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            textStyle:
+                const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
         ),
         outlinedButtonTheme: OutlinedButtonThemeData(
@@ -321,7 +363,8 @@ class _AiHealthAppState extends State<AiHealthApp> {
     if (status == AuthStatus.initial) {
       return const Scaffold(
         backgroundColor: Color(0xFFF8FAFC),
-        body: Center(child: CircularProgressIndicator(color: Color(0xFF2563EB))),
+        body:
+            Center(child: CircularProgressIndicator(color: Color(0xFF2563EB))),
       );
     }
 
@@ -330,7 +373,10 @@ class _AiHealthAppState extends State<AiHealthApp> {
       if (user?.role == 'elder') {
         return const ElderHomeScreen();
       }
-      return const FamilyHomeScreen();
+      if (user?.role == 'family') {
+        return const FamilyHomeScreen();
+      }
+      return const CommunityMobileNoticeScreen();
     }
 
     return const LoginScreen();

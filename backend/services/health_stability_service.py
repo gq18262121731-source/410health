@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Callable, Mapping
 
 from backend.config import Settings, get_settings
-from backend.ml.preprocess import validate_inference_record
+from backend.logger import get_logger
+from backend.ml.preprocess import DataValidationError, VALUE_RANGES, validate_inference_record
 from backend.ml.rule_engine import RISK_ORDER, HardThresholdResult, HealthRuleEngine
 
 
 EventValue = float | bool | dict[str, float]
+LOGGER = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +160,8 @@ class HealthStabilityService:
         vitals: Mapping[str, Any],
     ) -> StabilitySnapshot:
         normalized_timestamp = self._normalize_timestamp(timestamp)
-        raw_vitals = self._normalize_vitals(vitals)
+        fallback_vitals = state.history[-1].vitals if state.history else None
+        raw_vitals = self._normalize_vitals(vitals, fallback_vitals=fallback_vitals)
         state.history.append(BufferedPoint(timestamp=normalized_timestamp, vitals=raw_vitals))
         self._trim_history(state.history, normalized_timestamp)
 
@@ -184,8 +187,16 @@ class HealthStabilityService:
             raw_abnormal_tags=raw_abnormal_tags,
         )
 
-    def _normalize_vitals(self, vitals: Mapping[str, Any]) -> dict[str, Any]:
-        validated = validate_inference_record(vitals)
+    def _normalize_vitals(
+        self,
+        vitals: Mapping[str, Any],
+        *,
+        fallback_vitals: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            validated = validate_inference_record(vitals)
+        except DataValidationError:
+            validated = self._repair_inference_record(vitals, fallback_vitals=fallback_vitals)
         return {
             "heart_rate": float(validated["heart_rate"]),
             "spo2": float(validated["spo2"]),
@@ -196,18 +207,87 @@ class HealthStabilityService:
             "data_accuracy": float(validated.get("data_accuracy", 100.0)),
         }
 
+    def _repair_inference_record(
+        self,
+        vitals: Mapping[str, Any],
+        *,
+        fallback_vitals: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        repaired: dict[str, Any] = dict(vitals)
+        repair_notes: list[str] = []
+
+        for column, (minimum, maximum) in VALUE_RANGES.items():
+            raw_value = vitals.get(column)
+            fallback_value = fallback_vitals.get(column) if fallback_vitals else None
+            normalized_value, repair_note = self._sanitize_numeric_value(
+                column=column,
+                raw_value=raw_value,
+                fallback_value=fallback_value,
+                minimum=minimum,
+                maximum=maximum,
+            )
+            repaired[column] = normalized_value
+            if repair_note:
+                repair_notes.append(repair_note)
+
+        repaired["fall_detection"] = bool(vitals.get("fall_detection", False))
+
+        if repair_notes:
+            LOGGER.warning(
+                "Repaired invalid vitals before stability scoring: notes=%s raw=%s fallback=%s repaired=%s",
+                "; ".join(repair_notes),
+                dict(vitals),
+                dict(fallback_vitals) if fallback_vitals else None,
+                repaired,
+            )
+
+        return validate_inference_record(repaired)
+
+    def _sanitize_numeric_value(
+        self,
+        *,
+        column: str,
+        raw_value: Any,
+        fallback_value: Any,
+        minimum: float,
+        maximum: float,
+    ) -> tuple[float, str | None]:
+        numeric_value = self._coerce_float(raw_value)
+        if numeric_value is not None and minimum <= numeric_value <= maximum:
+            return numeric_value, None
+
+        fallback_numeric = self._coerce_float(fallback_value)
+        if fallback_numeric is not None and minimum <= fallback_numeric <= maximum:
+            return fallback_numeric, f"{column} reused fallback {fallback_numeric}"
+
+        if numeric_value is None:
+            clamped = maximum if column == "data_accuracy" else minimum
+            return clamped, f"{column} missing, clamped to {clamped}"
+
+        clamped = min(max(numeric_value, minimum), maximum)
+        return clamped, f"{column} out of range ({numeric_value}), clamped to {clamped}"
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     def _normalize_timestamp(self, value: Any, fallback_index: int | None = None) -> datetime:
         if isinstance(value, datetime):
             timestamp = value
         elif isinstance(value, str) and value.strip():
             timestamp = datetime.fromisoformat(value)
         else:
-            base = datetime.now(UTC)
+            base = datetime.now(timezone.utc)
             offset = fallback_index or 0
             timestamp = base + timedelta(seconds=offset * self.default_sample_interval_seconds)
         if timestamp.tzinfo is None:
-            return timestamp.replace(tzinfo=UTC)
-        return timestamp.astimezone(UTC)
+            return timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.astimezone(timezone.utc)
 
     def _trim_history(self, history: deque[BufferedPoint], now: datetime) -> None:
         window_start = now - timedelta(seconds=max(self.window_seconds, self.settings.stability_warning_aggregation_seconds))

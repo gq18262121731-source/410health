@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException
 
-from backend.dependencies import get_care_service, get_user_service
+from backend.dependencies import get_care_service, get_notification_service, get_user_service, require_session_user
 from backend.models.auth_model import AuthAccountPreview, LoginRequest, LoginResponse, SessionUser
+from backend.models.notification_model import MobilePushDeviceRecord, MobilePushDeviceUpsertRequest
 from backend.models.user_register_model import (
     CommunityRegisterRequest,
     ElderRegisterRequest,
@@ -29,6 +30,13 @@ def _raise_registration_error(exc: ValueError) -> None:
     if code in {"PHONE_ALREADY_EXISTS", "LOGIN_USERNAME_ALREADY_EXISTS"}:
         raise HTTPException(status_code=409, detail=code) from exc
     raise HTTPException(status_code=400, detail=code) from exc
+
+
+def _require_session(authorization: str | None) -> SessionUser:
+    try:
+        return require_session_user(authorization)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @router.get("/mock-accounts", response_model=list[AuthAccountPreview])
@@ -85,3 +93,30 @@ async def me(authorization: str | None = Header(default=None)) -> SessionUser:
     if not user:
         raise HTTPException(status_code=401, detail="登录状态已失效")
     return user
+
+
+@router.get("/mobile-devices", response_model=list[MobilePushDeviceRecord])
+async def list_mobile_devices(authorization: str | None = Header(default=None)) -> list[MobilePushDeviceRecord]:
+    user = _require_session(authorization)
+    return get_notification_service().list_mobile_devices_for_user(user.id)
+
+
+@router.post("/mobile-devices", response_model=MobilePushDeviceRecord)
+async def register_mobile_device(
+    payload: MobilePushDeviceUpsertRequest,
+    authorization: str | None = Header(default=None),
+) -> MobilePushDeviceRecord:
+    user = _require_session(authorization)
+    return get_notification_service().register_mobile_device(user=user, payload=payload)
+
+
+@router.delete("/mobile-devices/{installation_id}", response_model=MobilePushDeviceRecord)
+async def revoke_mobile_device(
+    installation_id: str,
+    authorization: str | None = Header(default=None),
+) -> MobilePushDeviceRecord:
+    user = _require_session(authorization)
+    revoked = get_notification_service().revoke_mobile_device(user_id=user.id, installation_id=installation_id)
+    if revoked is None:
+        raise HTTPException(status_code=404, detail="MOBILE_DEVICE_NOT_FOUND")
+    return revoked

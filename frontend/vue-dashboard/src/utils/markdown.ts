@@ -31,9 +31,9 @@ export function unwrapOuterMarkdownFence(input: string): string {
     const match = text.match(openingRegex);
     
     if (match) {
-      const fenceStart = match.index;
+      const fenceStart = match.index ?? 0;
       // If the fence is found VERY late in the text, it's probably NOT an outer wrapper.
-      if (fenceStart !== undefined && fenceStart > 200) {
+      if (fenceStart > 200) {
         break;
       }
       

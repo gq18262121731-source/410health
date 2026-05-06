@@ -1,13 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+
 import '../models/alarm_model.dart';
 import '../repositories/alarm_repository.dart';
 
 enum AlarmLoadStatus { initial, loading, loaded, error }
 
 class AlarmProvider extends ChangeNotifier {
+  static const Duration _fallbackRefreshInterval = Duration(seconds: 12);
+
   final AlarmRepository _repository;
 
   AlarmLoadStatus _status = AlarmLoadStatus.initial;
@@ -19,8 +23,10 @@ class AlarmProvider extends ChangeNotifier {
   WebSocketChannel? _channel;
   StreamSubscription? _subscription;
   Timer? _reconnectTimer;
+  Timer? _fallbackRefreshTimer;
   int _reconnectAttempts = 0;
   bool _started = false;
+  bool _refreshInFlight = false;
 
   AlarmProvider(this._repository);
 
@@ -44,21 +50,44 @@ class AlarmProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final results = await Future.wait([
-        _repository.getAlarms(),
-        _repository.getAlarmQueue(),
-        _repository.getMobilePushes(),
-      ]);
+      List<AlarmRecord>? alarms;
+      List<AlarmQueueItem>? queue;
+      List<MobilePushRecord> pushes = <MobilePushRecord>[];
 
-      _alarms = results[0] as List<AlarmRecord>;
-      _queue = results[1] as List<AlarmQueueItem>;
-      _pushes = results[2] as List<MobilePushRecord>;
-      
+      try {
+        alarms = await _repository.getAlarms();
+      } catch (_) {
+        alarms = null;
+      }
+
+      try {
+        queue = await _repository.getAlarmQueue();
+      } catch (_) {
+        queue = null;
+      }
+
+      try {
+        pushes = await _repository.getMobilePushes();
+      } catch (_) {
+        pushes = <MobilePushRecord>[];
+      }
+
+      if (alarms == null && queue == null) {
+        throw StateError('failed to load core alarm state');
+      }
+
+      _alarms = alarms ?? <AlarmRecord>[];
+      _queue = queue ?? <AlarmQueueItem>[];
+      _pushes = pushes;
+      // Fold the current active queue into the visible alarm list before the
+      // websocket is connected so SOS popups are not delayed on app startup.
+      _reconcileActiveQueue(null);
+
       _status = AlarmLoadStatus.loaded;
       notifyListeners();
 
       _connectWebSocket();
-    } catch (e) {
+    } catch (_) {
       _status = AlarmLoadStatus.error;
       _errorMessage = '获取告警信息失败';
       notifyListeners();
@@ -70,13 +99,12 @@ class AlarmProvider extends ChangeNotifier {
     try {
       _channel = _repository.connectToAlarms();
       _subscription = _channel!.stream.listen(
-        (message) {
-          _handleWsMessage(message);
-        },
+        _handleWsMessage,
         onError: (_) => _handleWsDisconnect(),
         onDone: () => _handleWsDisconnect(),
       );
       _reconnectAttempts = 0;
+      _stopFallbackRefresh();
     } catch (_) {
       _handleWsDisconnect();
     }
@@ -85,36 +113,17 @@ class AlarmProvider extends ChangeNotifier {
   void _handleWsMessage(dynamic message) {
     try {
       final data = jsonDecode(message as String);
-      if (data is! Map<String, dynamic>) return;
+      if (data is! Map<String, dynamic>) {
+        return;
+      }
 
-      // 后端可能发两种格式：
-      // 1. 单条 AlarmRecord（broadcast_alarm）
-      // 2. {type: "alarm_queue", queue: [...]}（broadcast_alarm_queue）
       final msgType = data['type'] as String?;
-
       if (msgType == 'alarm_queue') {
-        // 全量刷新队列
-        final rawQueue = data['queue'] as List<dynamic>?;
-        if (rawQueue != null) {
-          _queue = rawQueue
-              .map((e) => AlarmQueueItem.fromJson(e as Map<String, dynamic>))
-              .toList();
-        }
-        // 同步更新 alarms 列表（从 queue 中提取）
-        for (final item in _queue) {
-          final newAlarm = item.alarm;
-          final index = _alarms.indexWhere((a) => a.id == newAlarm.id);
-          if (index != -1) {
-            _alarms[index] = newAlarm;
-          } else {
-            _alarms.insert(0, newAlarm);
-          }
-        }
+        _reconcileActiveQueue(data['queue'] as List<dynamic>?);
         notifyListeners();
         return;
       }
 
-      // 单条报警推送
       if (data.containsKey('id') && data.containsKey('alarm_type')) {
         final newAlarm = AlarmRecord.fromJson(data);
         final index = _alarms.indexWhere((a) => a.id == newAlarm.id);
@@ -123,20 +132,81 @@ class AlarmProvider extends ChangeNotifier {
         } else {
           _alarms.insert(0, newAlarm);
         }
+        _sortAlarms();
         notifyListeners();
       }
     } catch (_) {}
   }
 
+  void _reconcileActiveQueue(List<dynamic>? rawQueue) {
+    if (rawQueue != null) {
+      _queue = rawQueue
+          .map((e) => AlarmQueueItem.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+
+    final queueAlarmById = <String, AlarmRecord>{
+      for (final item in _queue) item.alarm.id: item.alarm,
+    };
+
+    _alarms = _alarms.map((alarm) {
+      final queued = queueAlarmById[alarm.id];
+      if (queued != null) {
+        return queued;
+      }
+      if (!alarm.acknowledged) {
+        return AlarmRecord(
+          id: alarm.id,
+          deviceMac: alarm.deviceMac,
+          alarmType: alarm.alarmType,
+          alarmLevel: alarm.alarmLevel,
+          alarmPriority: alarm.alarmPriority,
+          message: alarm.message,
+          createdAt: alarm.createdAt,
+          acknowledged: true,
+          anomalyProbability: alarm.anomalyProbability,
+          metadata: alarm.metadata,
+        );
+      }
+      return alarm;
+    }).toList();
+
+    for (final queued in queueAlarmById.values) {
+      final index = _alarms.indexWhere((alarm) => alarm.id == queued.id);
+      if (index != -1) {
+        _alarms[index] = queued;
+      } else {
+        _alarms.insert(0, queued);
+      }
+    }
+
+    _sortAlarms();
+  }
+
+  void _sortAlarms() {
+    _alarms.sort((a, b) {
+      final aTime = a.createdAtDateTime ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bTime = b.createdAtDateTime ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bTime.compareTo(aTime);
+    });
+  }
+
   Future<void> acknowledge(String alarmId) async {
+    final index = _alarms.indexWhere((a) => a.id == alarmId);
+    bool previousAcknowledged = false;
+    if (index != -1) {
+      previousAcknowledged = _alarms[index].acknowledged;
+      _alarms[index].acknowledged = true;
+      notifyListeners();
+    }
     try {
       await _repository.acknowledgeAlarm(alarmId);
-      final index = _alarms.indexWhere((a) => a.id == alarmId);
+    } catch (_) {
       if (index != -1) {
-        _alarms[index].acknowledged = true;
+        _alarms[index].acknowledged = previousAcknowledged;
         notifyListeners();
       }
-    } catch (_) {}
+    }
   }
 
   void reset() {
@@ -147,6 +217,7 @@ class AlarmProvider extends ChangeNotifier {
     _pushes = [];
     _errorMessage = null;
     _reconnectTimer?.cancel();
+    _stopFallbackRefresh();
     _closeWebSocket();
     notifyListeners();
   }
@@ -158,10 +229,83 @@ class AlarmProvider extends ChangeNotifier {
     init();
   }
 
+  Future<void> resyncAfterForegroundResume() async {
+    if (!_started) {
+      await ensureStarted();
+      return;
+    }
+    await init();
+  }
+
+  void _startFallbackRefresh() {
+    if (_fallbackRefreshTimer != null) {
+      return;
+    }
+    _fallbackRefreshTimer = Timer.periodic(_fallbackRefreshInterval, (_) {
+      unawaited(_refreshFromFallbackPath());
+    });
+  }
+
+  void _stopFallbackRefresh() {
+    _fallbackRefreshTimer?.cancel();
+    _fallbackRefreshTimer = null;
+  }
+
+  Future<void> _refreshFromFallbackPath() async {
+    if (!_started || _refreshInFlight) {
+      return;
+    }
+    _refreshInFlight = true;
+    try {
+      List<AlarmRecord>? alarms;
+      List<AlarmQueueItem>? queue;
+
+      try {
+        alarms = await _repository.getAlarms();
+      } catch (_) {
+        alarms = null;
+      }
+
+      try {
+        queue = await _repository.getAlarmQueue();
+      } catch (_) {
+        queue = null;
+      }
+
+      if (alarms == null && queue == null) {
+        return;
+      }
+
+      if (alarms != null) {
+        _alarms = alarms;
+      }
+      if (queue != null) {
+        _queue = queue;
+      }
+      _reconcileActiveQueue(null);
+      if (_status != AlarmLoadStatus.loaded) {
+        _status = AlarmLoadStatus.loaded;
+        _errorMessage = null;
+      }
+      notifyListeners();
+    } finally {
+      _refreshInFlight = false;
+    }
+  }
+
   void _handleWsDisconnect() {
+    _channel = null;
+    _subscription = null;
+    if (!_started) {
+      return;
+    }
+    _startFallbackRefresh();
     _reconnectTimer?.cancel();
     final delay = Duration(seconds: (1 << _reconnectAttempts).clamp(1, 30));
     _reconnectTimer = Timer(delay, () {
+      if (!_started) {
+        return;
+      }
       _reconnectAttempts++;
       _connectWebSocket();
     });
@@ -170,11 +314,14 @@ class AlarmProvider extends ChangeNotifier {
   void _closeWebSocket() {
     _subscription?.cancel();
     _channel?.sink.close();
+    _subscription = null;
+    _channel = null;
   }
 
   @override
   void dispose() {
     _reconnectTimer?.cancel();
+    _stopFallbackRefresh();
     _closeWebSocket();
     super.dispose();
   }

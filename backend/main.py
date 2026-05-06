@@ -15,6 +15,7 @@ _serial_logger = logging.getLogger("serial_runtime")
 from backend.api.alarm_api import router as alarm_router
 from backend.api.agent_api import router as agent_router
 from backend.api.auth_api import router as auth_router
+from backend.api.camera_api import router as camera_router
 from backend.api.care_api import router as care_router
 from backend.api.chat_api import router as chat_router
 from backend.api.device_api import router as device_router
@@ -28,18 +29,26 @@ from backend.models.device_model import DeviceIngestMode, DeviceStatus
 from backend.dependencies import (
     ensure_demo_overlay_history_window,
     get_alarm_service,
+    get_camera_audio_hub,
+    get_camera_detection_frame_hub,
+    get_care_service,
+    get_camera_frame_hub,
     get_data_generator,
     get_demo_data_status,
     get_device_service,
+    get_fall_detection_service,
     get_parser,
     get_settings_dependency,
     get_websocket_manager,
     ingest_sample,
     publish_next_demo_overlay_sample,
     refresh_demo_overlay_samples,
+    resolve_alarm_visible_device_macs,
+    resolve_session_user_by_token,
 )
 from iot.mqtt_listener import MQTTGatewayListener
 from iot.serial_reader import SerialGatewayReader
+from backend.serial_runtime_lock import SerialRuntimeLock, SerialRuntimeLockError
 
 
 settings = get_settings()
@@ -65,6 +74,11 @@ async def _list_active_mock_macs() -> list[str]:
         return [mac for mac, count in _active_mock_watchers.items() if count > 0]
 
 
+async def _start_fall_detection_after_startup() -> None:
+    await asyncio.sleep(1.0)
+    await get_fall_detection_service().start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -79,10 +93,18 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_serial_stream_loop()))
     if settings.data_mode == "mqtt" and settings.mqtt_enabled:
         tasks.append(asyncio.create_task(_mqtt_stream_loop()))
+    if settings.camera_stream_keep_warm:
+        await get_camera_frame_hub().start_keep_warm()
+    tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
     app.state.background_tasks = tasks
     try:
         yield
     finally:
+        await get_fall_detection_service().stop()
+        await get_camera_audio_hub().shutdown()
+        if settings.camera_stream_keep_warm:
+            await get_camera_frame_hub().stop_keep_warm()
+        await get_camera_detection_frame_hub().stop_keep_warm()
         for task in tasks:
             task.cancel()
             with suppress(asyncio.CancelledError):
@@ -99,10 +121,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 允许所有来源
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 app.include_router(device_router, prefix=settings.api_v1_prefix)
@@ -116,6 +139,7 @@ app.include_router(care_router, prefix=settings.api_v1_prefix)
 app.include_router(voice_router, prefix=settings.api_v1_prefix)
 app.include_router(omni_router, prefix=settings.api_v1_prefix)
 app.include_router(auth_router, prefix=settings.api_v1_prefix)
+app.include_router(camera_router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/healthz")
@@ -163,6 +187,9 @@ async def system_info() -> dict[str, object]:
         "serial_runtime": {
             "enabled": cfg.serial_runtime_enabled,
             "port": cfg.serial_port or "auto-detect",
+            "dual_collector_enabled": cfg.serial_dual_collector_enabled,
+            "broadcast_port": cfg.serial_broadcast_port or None,
+            "response_port": cfg.serial_response_port or None,
             "baudrate": cfg.serial_baudrate,
             "collection_strategy": cfg.serial_collection_strategy,
             "packet_type": cfg.serial_packet_type,
@@ -171,6 +198,7 @@ async def system_info() -> dict[str, object]:
             "broadcast_sos_overlay": cfg.serial_enable_broadcast_sos_overlay,
             "response_cycle_seconds": cfg.serial_response_cycle_seconds,
             "broadcast_cycle_seconds": cfg.serial_broadcast_cycle_seconds,
+            "command_delay_seconds": cfg.serial_command_delay_seconds,
             "active_target_mac": active_target_mac,
             "active_target_device_name": active_target_name,
             "target_locked": active_target_mac is not None,
@@ -222,19 +250,70 @@ async def health_stream(device_mac: str, websocket: WebSocket) -> None:
 @app.websocket("/ws/alarms")
 async def alarm_stream(websocket: WebSocket) -> None:
     manager = get_websocket_manager()
-    await manager.connect_alarm(websocket)
+    query_token = websocket.query_params.get("token")
+    auth_header = websocket.headers.get("authorization")
+    header_token = None
+    if auth_header:
+        scheme, _, token = auth_header.partition(" ")
+        if scheme.lower() == "bearer" and token.strip():
+            header_token = token.strip()
+
+    session_token = query_token or header_token
+    session_user = resolve_session_user_by_token(session_token)
+    if session_token and session_user is None:
+        await websocket.close(code=4401, reason="invalid_session")
+        return
+
+    visible_device_macs = resolve_alarm_visible_device_macs(session_user) if session_user else None
+    allow_all = session_user is None or session_user.role.value in {"community", "admin"}
+    await manager.connect_alarm(
+        websocket,
+        allow_all=allow_all,
+        visible_device_macs=visible_device_macs,
+    )
     try:
-        await websocket.send_json(
-            {
-                "type": "alarm_queue",
-                "queue": [item.model_dump(mode="json") for item in get_alarm_service().queue_items(active_only=True)],
-                "snapshot": get_alarm_service().queue_snapshot(),
-            }
+        initial_payload = {
+            "type": "alarm_queue",
+            "queue": [item.model_dump(mode="json") for item in get_alarm_service().queue_items(active_only=True)],
+            "snapshot": get_alarm_service().queue_snapshot(),
+        }
+        scoped_initial_payload = manager.scope_alarm_payload_for_viewer(
+            initial_payload,
+            allow_all=allow_all,
+            visible_device_macs=visible_device_macs,
         )
+        if scoped_initial_payload is not None:
+            await websocket.send_json(scoped_initial_payload)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         await manager.disconnect_alarm(websocket)
+
+
+@app.websocket("/ws/camera")
+async def camera_frame_stream(websocket: WebSocket) -> None:
+    hub = get_camera_frame_hub()
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
+
+
+@app.websocket("/ws/camera/audio/listen")
+async def camera_audio_stream(websocket: WebSocket) -> None:
+    hub = get_camera_audio_hub()
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
 
 
 async def _mock_stream_loop() -> None:
@@ -276,12 +355,31 @@ async def _demo_overlay_stream_loop() -> None:
 
 
 async def _serial_stream_loop() -> None:
+    lock_path = settings.data_dir / "locks" / "serial-runtime.lock"
+    lock_retry_seconds = 5.0
+
+    while True:
+        try:
+            with SerialRuntimeLock(lock_path):
+                _serial_logger.info("Serial runtime lock acquired: %s", lock_path)
+                await _run_serial_stream_locked()
+        except SerialRuntimeLockError:
+            _serial_logger.warning(
+                "Serial runtime already active in another backend process, retrying in %.1fs: %s",
+                lock_retry_seconds,
+                lock_path,
+            )
+            await asyncio.sleep(lock_retry_seconds)
+
+
+async def _run_serial_stream_locked() -> None:
     loop = asyncio.get_running_loop()
     reader = SerialGatewayReader(get_parser())
 
-    def publish_from_thread(sample):
+    def publish_from_thread(sample, collector_role: str = "serial"):
         _serial_logger.info(
-            'Serial sample: mac=%s type=%s hr=%s spo2=%s temp=%s steps=%s bp=%s sos=%s',
+            'Serial sample[%s]: mac=%s type=%s hr=%s spo2=%s temp=%s steps=%s bp=%s sos=%s',
+            collector_role,
             sample.device_mac,
             sample.packet_type,
             sample.heart_rate,
@@ -293,7 +391,8 @@ async def _serial_stream_loop() -> None:
         )
         if sample.sos_flag:
             _serial_logger.warning(
-                '🚨 SOS DETECTED from %s (trigger=%s, value=%s, type=%s) — forwarding to ingest immediately',
+                'SOS DETECTED[%s] from %s (trigger=%s, value=%s, type=%s) forwarding to ingest immediately',
+                collector_role,
                 sample.device_mac,
                 sample.sos_trigger,
                 sample.sos_value,
@@ -309,6 +408,71 @@ async def _serial_stream_loop() -> None:
                 _serial_logger.error("Ingest failed for %s: %s", sample.device_mac, exc)
         future.add_done_callback(_on_done)
 
+    if settings.serial_dual_collector_enabled:
+        broadcast_port = (settings.serial_broadcast_port or "").strip() or None
+        response_port = (settings.serial_response_port or settings.serial_port or "").strip() or None
+        if not broadcast_port or not response_port:
+            raise RuntimeError(
+                "Dual serial collector mode requires both SERIAL_BROADCAST_PORT and SERIAL_RESPONSE_PORT."
+            )
+        _serial_logger.info(
+            "Dual serial collectors enabled: broadcast_port=%s (TYPE=4), response_port=%s (TYPE=5), mac_filter=%s",
+            broadcast_port,
+            response_port,
+            settings.serial_mac_filter,
+        )
+
+        await asyncio.gather(
+            asyncio.to_thread(
+                reader.run,
+                port=broadcast_port,
+                baudrate=settings.serial_baudrate,
+                collection_strategy=settings.serial_collection_strategy,
+                packet_type=4,
+                mac_filter=settings.serial_mac_filter,
+                detection_keywords=settings.serial_detection_keywords,
+                fallback_device_mac=settings.serial_fallback_device_mac or None,
+                auto_configure=settings.serial_auto_configure,
+                disable_uuid_output=settings.serial_disable_uuid_output,
+                apply_mac_filter=settings.serial_apply_mac_filter,
+                apply_packet_type=True,
+                enable_broadcast_sos_overlay=False,
+                response_cycle_seconds=settings.serial_response_cycle_seconds,
+                broadcast_cycle_seconds=settings.serial_broadcast_cycle_seconds,
+                command_delay_seconds=settings.serial_command_delay_seconds,
+                target_mac_provider=lambda: get_device_service().get_active_serial_target_mac(),
+                on_sample=lambda sample: publish_from_thread(sample, "broadcast"),
+            ),
+            asyncio.to_thread(
+                reader.run,
+                port=response_port,
+                baudrate=settings.serial_baudrate,
+                collection_strategy=settings.serial_collection_strategy,
+                packet_type=5,
+                mac_filter=settings.serial_mac_filter,
+                detection_keywords=settings.serial_detection_keywords,
+                fallback_device_mac=settings.serial_fallback_device_mac or None,
+                auto_configure=settings.serial_auto_configure,
+                disable_uuid_output=settings.serial_disable_uuid_output,
+                apply_mac_filter=settings.serial_apply_mac_filter,
+                apply_packet_type=True,
+                enable_broadcast_sos_overlay=False,
+                response_cycle_seconds=settings.serial_response_cycle_seconds,
+                broadcast_cycle_seconds=settings.serial_broadcast_cycle_seconds,
+                command_delay_seconds=settings.serial_command_delay_seconds,
+                target_mac_provider=lambda: get_device_service().get_active_serial_target_mac(),
+                on_sample=lambda sample: publish_from_thread(sample, "response"),
+            ),
+        )
+        return
+
+    _serial_logger.info(
+        "Single serial collector enabled: port=%s, packet_type=%s, overlay=%s, mac_filter=%s",
+        settings.serial_port or "auto-detect",
+        settings.serial_packet_type,
+        settings.serial_enable_broadcast_sos_overlay,
+        settings.serial_mac_filter,
+    )
     await asyncio.to_thread(
         reader.run,
         port=settings.serial_port or None,
@@ -325,8 +489,9 @@ async def _serial_stream_loop() -> None:
         enable_broadcast_sos_overlay=settings.serial_enable_broadcast_sos_overlay,
         response_cycle_seconds=settings.serial_response_cycle_seconds,
         broadcast_cycle_seconds=settings.serial_broadcast_cycle_seconds,
+        command_delay_seconds=settings.serial_command_delay_seconds,
         target_mac_provider=lambda: get_device_service().get_active_serial_target_mac(),
-        on_sample=publish_from_thread,
+        on_sample=lambda sample: publish_from_thread(sample, "single"),
     )
 
 

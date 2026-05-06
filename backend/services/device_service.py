@@ -228,7 +228,9 @@ class DeviceService:
             updated = device.model_copy(update=update_data)
             self._devices[updated.mac_address] = updated
             self._upsert_device(updated)
-            if device.ingest_mode == DeviceIngestMode.SERIAL:
+            if updated.ingest_mode == DeviceIngestMode.SERIAL:
+                self._set_active_serial_target_locked(updated.mac_address)
+            elif device.ingest_mode == DeviceIngestMode.SERIAL:
                 self._refresh_active_serial_target_locked()
             log = DeviceBindLogRecord(
                 device_id=device.id,
@@ -299,6 +301,8 @@ class DeviceService:
             self._devices[updated.mac_address] = updated
             self._upsert_device(updated)
             if updated.ingest_mode == DeviceIngestMode.SERIAL:
+                self._set_active_serial_target_locked(updated.mac_address)
+            elif device.ingest_mode == DeviceIngestMode.SERIAL:
                 self._refresh_active_serial_target_locked()
             log = DeviceBindLogRecord(
                 device_id=updated.id,
@@ -550,8 +554,6 @@ class DeviceService:
         if (
             device is None
             or device.ingest_mode != DeviceIngestMode.SERIAL
-            or device.bind_status != DeviceBindStatus.BOUND
-            or not device.user_id
             or device.bind_status == DeviceBindStatus.DISABLED
         ):
             self._active_serial_target_mac = None
@@ -565,8 +567,6 @@ class DeviceService:
                 device
                 for device in self._devices.values()
                 if device.ingest_mode == DeviceIngestMode.SERIAL
-                and device.bind_status == DeviceBindStatus.BOUND
-                and device.user_id
                 and device.bind_status != DeviceBindStatus.DISABLED
             ),
             key=lambda item: (item.created_at, item.mac_address),

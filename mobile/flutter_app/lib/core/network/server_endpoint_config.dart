@@ -80,19 +80,19 @@ class ServerEndpointConfig extends ChangeNotifier {
       if (response.statusCode == 200 && data is Map && data['status'] == 'ok') {
         return null;
       }
-      return '服务器已响应，但健康检查结果异常。';
+      return '服务器有响应，但这不是可用的后端健康检查接口。请确认填写的是后端服务地址，例如 http://<局域网IP>:8000。';
     } on DioException catch (error) {
       if (error.type == DioExceptionType.connectionTimeout ||
           error.type == DioExceptionType.receiveTimeout) {
-        return '连接超时，请确认服务器地址和端口是否正确。';
+        return '连接超时，请确认平板和服务器在同一局域网，并检查地址和端口是否正确。';
       }
       final message = error.message?.trim();
       if (message != null && message.isNotEmpty) {
         return '连接失败：$message';
       }
-      return '连接失败，请检查手机和服务器是否在同一局域网。';
+      return '连接失败，请检查平板和服务器是否在同一局域网。';
     } catch (_) {
-      return '连接失败，请检查服务器是否已经启动。';
+      return '连接失败，请检查后端服务是否已经启动。';
     }
   }
 }

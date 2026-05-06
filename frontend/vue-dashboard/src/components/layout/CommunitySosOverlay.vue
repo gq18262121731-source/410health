@@ -26,7 +26,12 @@ const deviceName = computed(() => {
 
 const elderName = computed(() => {
   const value = props.alarm?.metadata?.elder_name;
-  return typeof value === "string" && value.trim() ? value : "未归属设备";
+  return typeof value === "string" && value.trim() ? value : "未绑定老人";
+});
+
+const apartment = computed(() => {
+  const value = props.alarm?.metadata?.apartment;
+  return typeof value === "string" && value.trim() ? value : "待确认";
 });
 
 const triggeredAt = computed(() => {
@@ -48,8 +53,12 @@ const triggeredAt = computed(() => {
 
         <div class="sos-overlay__grid">
           <article class="sos-card">
-            <span>老人/设备</span>
+            <span>老人 / 设备</span>
             <strong>{{ elderName }} / {{ deviceName }}</strong>
+          </article>
+          <article class="sos-card">
+            <span>房间 / 位置</span>
+            <strong>{{ apartment }}</strong>
           </article>
           <article class="sos-card">
             <span>触发方式</span>
@@ -69,6 +78,7 @@ const triggeredAt = computed(() => {
           <p v-if="additionalCount > 0" class="sos-overlay__queue">
             当前还有 {{ additionalCount }} 条 SOS 待处理。
           </p>
+          <p v-else class="sos-overlay__queue-placeholder"></p>
           <button
             type="button"
             class="sos-overlay__button"
@@ -173,6 +183,12 @@ const triggeredAt = computed(() => {
   justify-content: space-between;
   gap: 16px;
   align-items: center;
+  min-height: 48px;
+}
+
+.sos-overlay__queue-placeholder {
+  margin: 0;
+  flex: 1;
 }
 
 .sos-overlay__button {
@@ -183,6 +199,7 @@ const triggeredAt = computed(() => {
   color: #730719;
   font-weight: 800;
   cursor: pointer;
+  flex-shrink: 0;
   box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
 }
 

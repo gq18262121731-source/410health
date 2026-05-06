@@ -14,3 +14,19 @@ backend/tmp_x.txt
 .omni_test
 .log
 .pdf
+
+# 测试和临时文件
+test_*.jpg
+test_*.py
+tmp_*/
+*.err.log
+*.out.log
+logs/
+verify_*.ps1
+simple_api_test.jpg
+local_cam_*.jpg
+direct_test_snapshot.jpg
+
+# 备份文件
+*.zip
+*.bak

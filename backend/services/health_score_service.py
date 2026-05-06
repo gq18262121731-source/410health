@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from backend.logger import get_logger
 from backend.ml.inference import HealthInferenceEngine, InferenceError, ModelArtifactMissingError
 from backend.ml.preprocess import DataValidationError
 from backend.ml.rule_engine import HealthRuleEngine, RISK_ORDER
@@ -11,6 +12,8 @@ from backend.repositories.warning_repo import WarningRepository
 from backend.repositories.wearable_repo import WearableRepository
 from backend.schemas.health import AlertPrediction, AlertSummary, HealthScoreRequest, HealthScoreResponse, VitalSignsPayload
 from backend.services.health_stability_service import HealthStabilityService, StabilitySnapshot
+
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -75,7 +78,7 @@ class HealthScoreService:
                 vitals=vitals.model_dump(mode="python"),
                 stateful=stateful_stability,
             )
-            response = self._score_snapshot(
+            response = self._score_snapshot_with_fallback(
                 snapshot=snapshot,
                 elderly_id=elderly_id,
                 device_id=device_id,
@@ -88,12 +91,6 @@ class HealthScoreService:
                 message=str(exc),
                 status_code=400,
                 details={"payload": vitals.model_dump(mode="json")},
-            ) from exc
-        except ModelArtifactMissingError as exc:
-            raise ServiceError(
-                code="MODEL_ARTIFACT_MISSING",
-                message=str(exc),
-                status_code=503,
             ) from exc
         except InferenceError as exc:
             raise ServiceError(
@@ -150,7 +147,7 @@ class HealthScoreService:
                 evaluated_at = latest_timestamp
             elif isinstance(latest_timestamp, str) and latest_timestamp.strip():
                 evaluated_at = datetime.fromisoformat(latest_timestamp)
-            return self._score_snapshot(
+            return self._score_snapshot_with_fallback(
                 snapshot=snapshot,
                 elderly_id=elderly_id,
                 device_id=device_id,
@@ -164,18 +161,45 @@ class HealthScoreService:
                 status_code=400,
                 details={"window_size": len(window_points)},
             ) from exc
-        except ModelArtifactMissingError as exc:
-            raise ServiceError(
-                code="MODEL_ARTIFACT_MISSING",
-                message=str(exc),
-                status_code=503,
-            ) from exc
         except InferenceError as exc:
             raise ServiceError(
                 code="INFERENCE_ERROR",
                 message=str(exc),
                 status_code=500,
             ) from exc
+
+    def _score_snapshot_with_fallback(
+        self,
+        *,
+        snapshot: StabilitySnapshot,
+        elderly_id: str,
+        device_id: str,
+        evaluated_at: datetime,
+        stateful_stability: bool,
+    ) -> HealthScoreResponse:
+        try:
+            return self._score_snapshot(
+                snapshot=snapshot,
+                elderly_id=elderly_id,
+                device_id=device_id,
+                evaluated_at=evaluated_at,
+                stateful_stability=stateful_stability,
+            )
+        except ModelArtifactMissingError as exc:
+            LOGGER.warning(
+                "Static health model artifacts missing; using rule-only fallback for device=%s elderly=%s: %s",
+                device_id,
+                elderly_id,
+                exc,
+            )
+            return self._build_rule_only_response(
+                snapshot=snapshot,
+                elderly_id=elderly_id,
+                device_id=device_id,
+                evaluated_at=evaluated_at,
+                stateful_stability=stateful_stability,
+                score_adjustment_reason="Model artifacts missing; rule-only fallback applied.",
+            )
 
     def _score_snapshot(
         self,
@@ -253,6 +277,73 @@ class HealthScoreService:
             recommendation_code=str(recommendation_code),
             stability_mode=snapshot.stability_mode,
             stabilized_vitals=VitalSignsPayload(**snapshot.stabilized_vitals),
+            active_events=list(snapshot.active_events),
+            score_adjustment_reason=score_adjustment_reason,
+        )
+
+    def _build_rule_only_response(
+        self,
+        *,
+        snapshot: StabilitySnapshot,
+        elderly_id: str,
+        device_id: str,
+        evaluated_at: datetime,
+        stateful_stability: bool,
+        score_adjustment_reason: str,
+    ) -> HealthScoreResponse:
+        vitals = snapshot.stabilized_vitals
+        rule_assessment = self.rule_engine.assess(vitals)
+        adjusted_score = float(rule_assessment.rule_health_score)
+
+        if stateful_stability:
+            previous_score = self.stability_service.get_last_score(device_id)
+            if previous_score is not None and adjusted_score < previous_score:
+                adjusted_score = max(adjusted_score, previous_score - self.score_max_drop_per_sample)
+            self.stability_service.set_last_score(device_id, adjusted_score)
+
+        event_severity = self._highest_severity_optional([event["severity"] for event in snapshot.active_events])
+        risk_level = self._highest_severity(
+            [
+                self.rule_engine.determine_risk_level(adjusted_score),
+                rule_assessment.hard_threshold.level,
+                event_severity,
+            ]
+        )
+        recommendation_code = self.rule_engine.recommendation_code(
+            risk_level,
+            hard_threshold_level=rule_assessment.hard_threshold.level,
+            abnormal_tags=rule_assessment.abnormal_tags,
+        )
+        sub_scores = {
+            **rule_assessment.sub_scores,
+            "rule_health_score": round(float(rule_assessment.rule_health_score), 4),
+            "model_health_score": round(float(rule_assessment.rule_health_score), 4),
+            "final_health_score": round(float(adjusted_score), 4),
+        }
+
+        return HealthScoreResponse(
+            elderly_id=elderly_id,
+            device_id=device_id,
+            timestamp=evaluated_at,
+            health_score=round(float(adjusted_score), 4),
+            final_health_score=round(float(adjusted_score), 4),
+            rule_health_score=round(float(rule_assessment.rule_health_score), 4),
+            model_health_score=round(float(rule_assessment.rule_health_score), 4),
+            risk_level=risk_level,
+            risk_score_raw=round(max(0.0, min(1.0, 1.0 - (adjusted_score / 100.0))), 6),
+            sub_scores=sub_scores,
+            alerts=AlertSummary(
+                hr_alert=AlertPrediction(label="High" if vitals["heart_rate"] > 120 else ("Low" if vitals["heart_rate"] < 50 else "Normal")),
+                spo2_alert=AlertPrediction(label="Low" if vitals["spo2"] < 93 else "Normal"),
+                bp_alert=AlertPrediction(label="High" if vitals["sbp"] >= 140 or vitals["dbp"] >= 90 else ("Low" if vitals["sbp"] < 90 or vitals["dbp"] < 60 else "Normal")),
+                temp_alert=AlertPrediction(label="Abnormal" if vitals["body_temp"] >= 37.6 or vitals["body_temp"] < 35.0 else "Normal"),
+                hard_threshold_level=rule_assessment.hard_threshold.level,
+            ),
+            abnormal_tags=rule_assessment.abnormal_tags,
+            trigger_reasons=list(rule_assessment.hard_threshold.trigger_reasons),
+            recommendation_code=str(recommendation_code),
+            stability_mode=f"{snapshot.stability_mode}_rule_fallback",
+            stabilized_vitals=VitalSignsPayload(**vitals),
             active_events=list(snapshot.active_events),
             score_adjustment_reason=score_adjustment_reason,
         )

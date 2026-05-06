@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from backend.dependencies import (
     get_community_clusterer,
@@ -39,14 +39,18 @@ async def ingest_health_sample(payload: HealthSample) -> IngestResponse:
     return await ingest_sample(payload)
 
 
-@router.get("/realtime/{device_mac}", response_model=HealthSample)
-async def get_realtime_sample(device_mac: str) -> HealthSample:
+@router.get(
+    "/realtime/{device_mac}",
+    response_model=HealthSample | None,
+    responses={204: {"description": "No realtime sample available yet"}},
+)
+async def get_realtime_sample(device_mac: str) -> HealthSample | Response:
     device = get_device_service().get_device(device_mac)
     if device and device.status == DeviceStatus.OFFLINE:
-        raise HTTPException(status_code=404, detail="Device is offline")
+        return Response(status_code=204)
     sample = get_display_latest_sample(device_mac, device.ingest_mode if device else None)
     if not sample:
-        raise HTTPException(status_code=404, detail="No realtime sample available")
+        return Response(status_code=204)
     return sample
 
 

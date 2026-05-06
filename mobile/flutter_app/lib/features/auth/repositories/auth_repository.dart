@@ -20,6 +20,14 @@ class AuthRepository {
     return SessionUser.fromJson(response.data);
   }
 
+  Future<void> registerMobileDevice(Map<String, dynamic> payload) async {
+    await _apiClient.post('auth/mobile-devices', data: payload);
+  }
+
+  Future<void> revokeMobileDevice(String installationId) async {
+    await _apiClient.delete('auth/mobile-devices/$installationId');
+  }
+
   Future<RegisterResponse> registerElder(ElderRegisterRequest request) async {
     final response = await _apiClient.post('auth/register/elder', data: request.toJson());
     return RegisterResponse.fromJson(response.data);

@@ -8,6 +8,7 @@ class AlarmRecord {
   final String createdAt;
   bool acknowledged;
   final double? anomalyProbability;
+  final Map<String, dynamic> metadata;
 
   AlarmRecord({
     required this.id,
@@ -19,6 +20,7 @@ class AlarmRecord {
     required this.createdAt,
     this.acknowledged = false,
     this.anomalyProbability,
+    this.metadata = const {},
   });
 
   factory AlarmRecord.fromJson(Map<String, dynamic> json) {
@@ -33,6 +35,7 @@ class AlarmRecord {
       createdAt: json['created_at'] as String,
       acknowledged: json['acknowledged'] == true,
       anomalyProbability: (json['anomaly_probability'] as num?)?.toDouble(),
+      metadata: _parseMetadata(json['metadata']),
     );
   }
 
@@ -46,6 +49,7 @@ class AlarmRecord {
       'created_at': createdAt,
       'acknowledged': acknowledged,
       'anomaly_probability': anomalyProbability,
+      'metadata': metadata,
     };
   }
 
@@ -77,6 +81,47 @@ class AlarmRecord {
     return _formatDate(parsed);
   }
 
+  String? get elderName => _readNonEmptyString(metadata['elder_name']);
+
+  String? get deviceName => _readNonEmptyString(metadata['device_name']);
+
+  String? get apartment => _readNonEmptyString(metadata['apartment']);
+
+  String? get sosTrigger => _readNonEmptyString(metadata['sos_trigger']);
+
+  String get sosTriggerLabel {
+    switch (sosTrigger) {
+      case 'long_press':
+        return '长按手环按钮';
+      case 'double_click':
+        return '双击手环按钮';
+      default:
+        return '紧急求助';
+    }
+  }
+
+  String get headlineDisplay {
+    if (elderName != null && apartment != null) {
+      return '$elderName / $apartment';
+    }
+    if (elderName != null) {
+      return elderName!;
+    }
+    if (deviceName != null) {
+      return deviceName!;
+    }
+    return deviceMac;
+  }
+
+  String get detailDisplay {
+    final parts = <String>[];
+    if (deviceName != null) {
+      parts.add(deviceName!);
+    }
+    parts.add(sosTriggerLabel);
+    return parts.join(' · ');
+  }
+
   static int? _parseAlarmPriority(dynamic rawLevel) {
     if (rawLevel is num) {
       return rawLevel.toInt();
@@ -85,6 +130,21 @@ class AlarmRecord {
       return int.tryParse(rawLevel);
     }
     return null;
+  }
+
+  static Map<String, dynamic> _parseMetadata(dynamic rawMetadata) {
+    if (rawMetadata is Map) {
+      return Map<String, dynamic>.from(rawMetadata);
+    }
+    return const {};
+  }
+
+  static String? _readNonEmptyString(dynamic rawValue) {
+    if (rawValue is! String) {
+      return null;
+    }
+    final normalized = rawValue.trim();
+    return normalized.isEmpty ? null : normalized;
   }
 
   static String _normalizeAlarmLevel(dynamic rawLevel) {

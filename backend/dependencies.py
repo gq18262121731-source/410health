@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import os
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from agent.analysis_service import HealthDataAnalysisService
 from agent.context_assembler import AgentContextAssembler
@@ -20,20 +27,26 @@ from ai.data_generator import SyntheticHealthDataGenerator
 from ai.health_score_model import BaselineTracker, HealthScoreService as DemoHealthScoreService
 from backend.config import get_settings
 from backend.models.auth_model import SessionUser
-from backend.models.device_model import DeviceIngestMode, DeviceRecord, DeviceStatus, ingest_source_matches_mode
+from backend.models.alarm_model import AlarmLayer, AlarmPriority, AlarmRecord, AlarmType
+from backend.models.device_model import DeviceBindStatus, DeviceIngestMode, DeviceRecord, DeviceStatus, ingest_source_matches_mode
 from backend.models.health_model import HealthSample, IngestResponse, IngestionSource
 from backend.models.analytics_model import AgentElderSubject, WindowKind
 from backend.models.user_model import UserRole
 from backend.ml.inference import HealthInferenceEngine
 from backend.repositories.score_repo import ScoreRepository
+from backend.repositories.mobile_push_device_repo import MobilePushDeviceRepository
 from backend.repositories.warning_repo import WarningRepository
 from backend.repositories.wearable_repo import WearableRepository
 from backend.services.alarm_priority_queue import AlarmPriorityQueue
 from backend.services.alarm_service import AlarmService
+from backend.services.camera_audio_hub import CameraAudioHub
+from backend.services.camera_stream_hub import CameraDetectionFrameHub, CameraFrameHub
 from backend.services.community_insight_service import CommunityInsightService
 from backend.services.care_service import CareService
 from backend.services.device_service import DeviceService
 from backend.services.explanation_service import ExplanationService
+from backend.services.fall_event_catalog_service import FallEventCatalogService
+from backend.services.fall_detection_service import FallDetectionService
 from backend.services.health_data_repository import HealthDataRepository
 from backend.services.health_score_service import HealthScoreService as StructuredHealthScoreService
 from backend.services.health_stability_service import HealthStabilityService
@@ -41,19 +54,57 @@ from backend.services.notification_service import NotificationService
 from backend.services.relation_service import RelationService
 from backend.services.stream_service import StreamService
 from backend.services.user_service import UserService
+from backend.services.voice_service import VoiceService
 from backend.services.warning_service import WarningService
 from backend.services.websocket_manager import WebSocketManager
+from backend.schemas.health import VitalSignsPayload
 from iot.parser import T10PacketParser
 
 
+logger = logging.getLogger(__name__)
 _settings = get_settings()
 _user_service = UserService()
 _relation_service = RelationService(_user_service)
 _device_service = DeviceService(_user_service, database_url=_settings.database_url)
 _stream_service = StreamService(retention_points=_settings.stream_retention_points)
 _websocket_manager = WebSocketManager()
+_camera_frame_hub = CameraFrameHub(
+    _settings.model_copy(
+        update={
+            "camera_stream_profile": "quality",
+            "camera_stream_rtsp_path": "/udp/av0_0",
+            "camera_stream_quality_path": "/udp/av0_0",
+            "camera_stream_smooth_path": "/tcp/av0_1",
+            "camera_stream_fps": 12.0,
+            "camera_stream_width": 1024,
+            "camera_stream_jpeg_quality": 6,
+            "camera_stream_send_timeout_seconds": 0.8,
+        }
+    )
+)
+_camera_detection_frame_hub = CameraDetectionFrameHub(
+    _settings.model_copy(
+        update={
+            "camera_stream_profile": "balanced",
+            "camera_stream_rtsp_path": "/tcp/av0_1",
+            "camera_stream_quality_path": "/udp/av0_0",
+            "camera_stream_smooth_path": "/tcp/av0_1",
+            "camera_stream_fps": 12.0,
+            "camera_stream_width": 0,
+            "camera_stream_send_timeout_seconds": 1.2,
+            "camera_stream_keep_warm": False,
+        }
+    ),
+    event_provider=lambda: (
+        _fall_detection_service.status().get("last_event")
+        if "_fall_detection_service" in globals()
+        else None
+    ),
+)
+_camera_audio_hub = CameraAudioHub(_settings)
 _alarm_priority_queue = AlarmPriorityQueue(redis_url=_settings.redis_url)
-_notification_service = NotificationService()
+_mobile_push_device_repo = MobilePushDeviceRepository(_settings.database_url)
+_notification_service = NotificationService(_mobile_push_device_repo)
 _health_data_repository = HealthDataRepository(database_url=_settings.database_url)
 _realtime_detector = RealtimeAnomalyDetector(
     window_size=_settings.realtime_window_size,
@@ -128,6 +179,8 @@ _community_insight_service = CommunityInsightService(
     rag_service=_rag_service,
     repository=_health_data_repository,
 )
+_voice_service = VoiceService(_settings, device_service=_device_service)
+_fall_event_catalog = FallEventCatalogService(Path(__file__).resolve().parent / "configs" / "fall_event_catalog.json")
 _structured_inference_engine = HealthInferenceEngine(_settings)
 _structured_stability_service = HealthStabilityService(_settings)
 _wearable_repo = WearableRepository(_settings.database_url)
@@ -142,6 +195,930 @@ _structured_health_score_service = StructuredHealthScoreService(
 )
 _warning_service = WarningService(health_score_service=_structured_health_score_service)
 _last_community_alarm_at: datetime | None = None
+_fall_alarm_seen_keys: dict[str, float] = {}
+_fall_alarm_dedupe_ttl_seconds = 90.0
+
+
+@dataclass
+class _FallTrackState:
+    first_seen_monotonic: float
+    last_seen_monotonic: float
+    confirmed_hits: list[float] = field(default_factory=list)
+    active_incident_id: str | None = None
+    admitted_at_monotonic: float | None = None
+    last_normal_at_monotonic: float | None = None
+
+
+_fall_track_states: dict[str, _FallTrackState] = {}
+
+
+def _fall_event_is_suspected_candidate(event: dict[str, object]) -> bool:
+    state = str(event.get("state") or "").strip().lower()
+    if state != "suspected_fall":
+        return False
+    scores = event.get("scores") if isinstance(event.get("scores"), dict) else {}
+    fall_score = _coerce_float(event.get("fall_score"), default=0.0)
+    posture = _coerce_float(scores.get("posture"), default=0.0)
+    detector = _coerce_float(scores.get("detector"), default=0.0)
+    down_seconds = _fall_event_down_seconds(event)
+    return (
+        fall_score >= max(0.18, float(_settings.fall_detection_min_alert_score or 0.0))
+        or (posture >= 0.22 and down_seconds >= 0.8)
+        or (posture >= 0.3 and detector >= 0.1)
+    )
+
+
+def _fall_event_catalog_match(event: dict[str, object]) -> dict[str, object] | None:
+    return _fall_event_catalog.match(event)
+
+
+def _fall_alert_priority_from_catalog_or_state(
+    *,
+    catalog_match: dict[str, object] | None,
+    severity: str,
+    injury_level: str,
+    state: str,
+) -> AlarmPriority:
+    catalog_level = str((catalog_match or {}).get("alert_level") or "").strip().upper()
+    if catalog_level == "CRITICAL":
+        return AlarmPriority.CRITICAL
+    if catalog_level == "WARNING":
+        return AlarmPriority.WARNING
+    if catalog_level == "NOTICE":
+        return AlarmPriority.NOTICE
+    return _fall_alarm_priority(severity=severity, injury_level=injury_level, state=state)
+
+
+def _fall_alert_presentation(
+    event: dict[str, object],
+    *,
+    catalog_match: dict[str, object] | None,
+) -> dict[str, object]:
+    template = (catalog_match or {}).get("template") if isinstance((catalog_match or {}).get("template"), dict) else {}
+    title = str((template or {}).get("title") or "").strip()
+    lead = str((template or {}).get("lead") or "").strip()
+    actions = (catalog_match or {}).get("recommended_actions")
+    return {
+        "catalog_code": str((catalog_match or {}).get("code") or "").strip() or "unclassified_fall_event",
+        "catalog_name": str((catalog_match or {}).get("name") or "").strip() or "未分类跌倒事件",
+        "title": title or "检测到异常事件",
+        "lead": lead or "系统已检测到异常姿态，请尽快查看现场。",
+        "show_immediate_popup": bool((catalog_match or {}).get("show_immediate_popup")),
+        "requires_multimodal_review": bool((catalog_match or {}).get("requires_multimodal_review")),
+        "recommended_actions": list(actions) if isinstance(actions, list) else [],
+        "review_status": "pending" if bool((catalog_match or {}).get("requires_multimodal_review")) else "not_required",
+        "event_state": str(event.get("state") or ""),
+    }
+
+
+async def _broadcast_fall_review_pending(
+    *,
+    incident_id: str,
+    track_id: str,
+    event: dict[str, object],
+    presentation: dict[str, object],
+) -> None:
+    await _websocket_manager.broadcast_alarm(
+        {
+            "type": "fall_alarm_pending_review",
+            "device_mac": _settings.fall_detection_target_device_mac,
+            "incident_id": incident_id,
+            "track_id": track_id,
+            "title": "系统正在复核现场，请稍等",
+            "lead": "已检测到异常姿态，系统正在结合快照分析老人当前状态。",
+            "expected_seconds": max(3, int(_settings.fall_detection_multimodal_timeout_seconds or 8)),
+            "catalog_code": presentation.get("catalog_code"),
+            "event": event,
+        }
+    )
+
+
+async def _broadcast_fall_review_finalized(
+    *,
+    incident_id: str,
+    track_id: str,
+    event: dict[str, object],
+    presentation: dict[str, object],
+    review: dict[str, object] | None,
+) -> None:
+    await _websocket_manager.broadcast_alarm(
+        {
+            "type": "fall_alarm_finalized",
+            "device_mac": _settings.fall_detection_target_device_mac,
+            "incident_id": incident_id,
+            "track_id": track_id,
+            "catalog_code": presentation.get("catalog_code"),
+            "presentation": presentation,
+            "event": event,
+            "review": review or {},
+        }
+    )
+
+
+def _fall_event_is_alarm_candidate(event: dict[str, object]) -> bool:
+    event_type = str(event.get("event_type") or "").strip().lower()
+    state = str(event.get("state") or "").strip().lower()
+    if event_type == "fall_confirmed":
+        return True
+    if state in {
+        "confirmed_fall",
+        "post_fall_monitoring",
+        "recovery_watch",
+        "injury_watch",
+        "abnormal_recovery",
+        "needs_assistance",
+        "emergency",
+    }:
+        return True
+    return _fall_event_is_suspected_candidate(event)
+
+
+async def _handle_fall_detection_event(event: dict[str, object]) -> None:
+    track_state, now_monotonic = _record_fall_track_activity(event)
+    event_type = str(event.get("event_type") or "")
+    state = str(event.get("state") or "")
+    injury = event.get("injury") if isinstance(event.get("injury"), dict) else {}
+    injury_level = str(injury.get("level") or "I0") if isinstance(injury, dict) else "I0"
+    if not _fall_event_is_alarm_candidate(event):
+        return
+
+    filter_reasons = _fall_event_filter_reasons(
+        event,
+        track_state=track_state,
+        now_monotonic=now_monotonic,
+    )
+    if filter_reasons:
+        logger.info(
+            "Fall event suppressed before alarm creation: track=%s event=%s state=%s reasons=%s score=%s source=%s",
+            event.get("track_id"),
+            event_type,
+            state,
+            ",".join(filter_reasons),
+            event.get("fall_score"),
+            event.get("source"),
+        )
+        return
+
+    catalog_match = _fall_event_catalog_match(event)
+    severity = str(event.get("severity") or "NONE")
+    fall_score = float(event.get("fall_score") or 0.0)
+    incident_id = _ensure_fall_incident_id(event, track_state=track_state, now_monotonic=now_monotonic)
+    track_id = str(event.get("track_id") or "unknown")
+    presentation = _fall_alert_presentation(event, catalog_match=catalog_match)
+    event["presentation"] = presentation
+
+    dedupe_key = f"{track_id}:{event_type}:{state}:{injury_level}"
+    now_monotonic = time.monotonic()
+    expired_keys = [
+        key
+        for key, seen_at in _fall_alarm_seen_keys.items()
+        if now_monotonic - seen_at > _fall_alarm_dedupe_ttl_seconds
+    ]
+    for key in expired_keys:
+        _fall_alarm_seen_keys.pop(key, None)
+    if dedupe_key in _fall_alarm_seen_keys:
+        logger.info(
+            "Fall event suppressed by dedupe: track=%s event=%s state=%s injury=%s",
+            track_id,
+            event_type,
+            state,
+            injury_level,
+        )
+        return
+    _fall_alarm_seen_keys[dedupe_key] = now_monotonic
+
+    advice = (
+        str(injury.get("advice") or "Please inspect the live camera view as soon as possible.")
+        if isinstance(injury, dict)
+        else "Please inspect the live camera view as soon as possible."
+    )
+    priority = _fall_alert_priority_from_catalog_or_state(
+        catalog_match=catalog_match,
+        severity=severity,
+        injury_level=injury_level,
+        state=state,
+    )
+    alarm_type = (
+        AlarmType.FALL_INJURY_RISK
+        if injury_level in {"I2", "I3", "I4", "I5"}
+        or state in {"injury_watch", "abnormal_recovery", "needs_assistance", "emergency"}
+        else AlarmType.FALL_DETECTED
+    )
+    title = str(presentation.get("title") or "跌倒告警").strip()
+    lead = str(presentation.get("lead") or "").strip()
+    alarm = AlarmRecord(
+        device_mac=_settings.fall_detection_target_device_mac,
+        alarm_type=alarm_type,
+        alarm_level=priority,
+        alarm_layer=AlarmLayer.REALTIME,
+        message=f"{title}: {lead or advice}",
+        anomaly_probability=max(0.0, min(1.0, fall_score)),
+        metadata={
+            "source": "fall_detection_model",
+            "event": event,
+            "severity": severity,
+            "injury_level": injury_level,
+            "track_id": track_id,
+            "incident_id": incident_id,
+            "presentation": presentation,
+        },
+    )
+    alarms = _alarm_service.evaluate_alarm_records([enrich_alarm_context(alarm)])
+    if not alarms:
+        logger.info(
+            "Fall event produced no active alarm after evaluation: track=%s event=%s state=%s injury=%s score=%.3f",
+            track_id,
+            event_type,
+            state,
+            injury_level,
+            fall_score,
+        )
+        return
+    _health_data_repository.persist_alerts(alarms)
+    for item in alarms:
+        await _websocket_manager.broadcast_alarm(item.model_dump(mode="json"))
+    await _websocket_manager.broadcast_alarm_queue(
+        {
+            "type": "alarm_queue",
+            "queue": [item.model_dump(mode="json") for item in _alarm_service.queue_items(active_only=True)],
+            "snapshot": _alarm_service.queue_snapshot(),
+        }
+    )
+
+    review_needed = bool((catalog_match or {}).get("requires_multimodal_review")) or catalog_match is None
+    if review_needed:
+        await _broadcast_fall_review_pending(
+            incident_id=incident_id,
+            track_id=track_id,
+            event=event,
+            presentation=presentation,
+        )
+
+    multimodal_review: dict[str, object] | None = None
+    if review_needed:
+        multimodal_review = await _maybe_run_fall_multimodal_review(event)
+        if multimodal_review is not None:
+            event["multimodal_review"] = multimodal_review
+            presentation["review_status"] = "completed"
+            if _should_suppress_fall_alarm_after_multimodal_review(event, multimodal_review):
+                presentation["title"] = "系统复核后倾向于误报"
+                presentation["lead"] = "系统已完成二次复核，当前更像误报或非跌倒动作，但仍建议人工确认。"
+        else:
+            multimodal_review = {
+                "status": "fallback",
+                "judgement": "uncertain",
+                "confidence": "low",
+                "recommended_action": "needs_human_review",
+                "reason": "多模态复核暂未返回明确结果，请人工查看现场并继续观察。",
+            }
+            event["multimodal_review"] = multimodal_review
+            presentation["review_status"] = "fallback"
+            presentation["title"] = "系统复核暂未完成"
+            presentation["lead"] = "系统未能及时给出明确复核结论，请先按跌倒风险处理并人工确认现场。"
+        await _broadcast_fall_review_finalized(
+            incident_id=incident_id,
+            track_id=track_id,
+            event=event,
+            presentation=presentation,
+            review=multimodal_review,
+        )
+
+    logger.info(
+        "Fall alarm broadcast: count=%d latest_type=%s latest_level=%s track=%s state=%s injury=%s",
+        len(alarms),
+        alarms[-1].alarm_type.value,
+        alarms[-1].alarm_level.value,
+        track_id,
+        state,
+        injury_level,
+    )
+
+
+async def ingest_fall_detection_event(event: dict[str, object]) -> AlarmRecord | None:
+    before_ids = {alarm.id for alarm in _alarm_service.list_alarms(active_only=True)}
+    await _handle_fall_detection_event(event)
+    active_alarms = _alarm_service.list_alarms(active_only=True)
+    new_items = [
+        alarm for alarm in active_alarms
+        if alarm.id not in before_ids
+        and alarm.alarm_type in {AlarmType.FALL_DETECTED, AlarmType.FALL_INJURY_RISK}
+    ]
+    if new_items:
+        new_items.sort(key=lambda item: item.created_at, reverse=True)
+        return new_items[0]
+    incident_id = str(event.get("incident_id") or "").strip()
+    if incident_id:
+        for alarm in reversed(active_alarms):
+            if str((alarm.metadata or {}).get("incident_id") or "") == incident_id:
+                return alarm
+    return None
+
+
+def _fall_event_passes_alarm_filters(
+    event: dict[str, object],
+    *,
+    track_state: _FallTrackState | None = None,
+    now_monotonic: float | None = None,
+) -> bool:
+    return (
+        _fall_event_passes_score_filter(event)
+        and _fall_event_passes_roi_filter(event)
+        and _fall_event_passes_bbox_filter(event)
+        and _fall_event_passes_branch_support_filter(event)
+        and _fall_event_passes_temporal_filter(
+            event,
+            track_state=track_state,
+            now_monotonic=now_monotonic,
+        )
+    )
+
+
+def _fall_event_filter_reasons(
+    event: dict[str, object],
+    *,
+    track_state: _FallTrackState | None = None,
+    now_monotonic: float | None = None,
+) -> list[str]:
+    reasons: list[str] = []
+    if not _fall_event_passes_score_filter(event):
+        reasons.append("score")
+    if not _fall_event_passes_roi_filter(event):
+        reasons.append("roi")
+    if not _fall_event_passes_bbox_filter(event):
+        reasons.append("bbox")
+    if not _fall_event_passes_branch_support_filter(event):
+        reasons.append("support")
+    if not _fall_event_passes_temporal_filter(
+        event,
+        track_state=track_state,
+        now_monotonic=now_monotonic,
+    ):
+        reasons.append("temporal")
+    return reasons
+
+
+def _fall_event_passes_score_filter(event: dict[str, object]) -> bool:
+    threshold = max(0.0, min(1.0, float(_settings.fall_detection_min_alert_score or 0.0)))
+    if threshold <= 0:
+        return True
+    try:
+        fall_score = float(event.get("fall_score") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return fall_score >= threshold
+
+
+def _fall_event_passes_roi_filter(event: dict[str, object]) -> bool:
+    if not _settings.fall_detection_roi_enabled:
+        return True
+    if event.get("source") == "fall_detection_demo" or event.get("demo") is True:
+        return True
+    if _fall_event_bypasses_roi(event):
+        return True
+
+    roi = _parse_fall_detection_roi()
+    if roi is None:
+        logger.warning("Fall detection ROI is enabled but invalid; event admission is fail-open.")
+        return True
+
+    bbox = event.get("bbox")
+    normalized_bbox = _normalize_fall_bbox(bbox, event)
+    if normalized_bbox is None:
+        logger.debug("Fall detection event has no usable bbox; event admission is fail-open.")
+        return True
+
+    x1, y1, x2, y2 = normalized_bbox
+    bbox_area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    if bbox_area <= 0:
+        return False
+
+    rx1, ry1, rx2, ry2 = roi
+    ix1 = max(x1, rx1)
+    iy1 = max(y1, ry1)
+    ix2 = min(x2, rx2)
+    iy2 = min(y2, ry2)
+    intersection_area = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    overlap = intersection_area / bbox_area
+    return overlap >= max(0.0, min(1.0, float(_settings.fall_detection_roi_min_overlap or 0.0)))
+
+
+def _fall_event_passes_bbox_filter(event: dict[str, object]) -> bool:
+    if event.get("source") == "fall_detection_demo" or event.get("demo") is True:
+        return True
+
+    bbox = event.get("bbox")
+    normalized_bbox = _normalize_fall_bbox(bbox, event)
+    if normalized_bbox is None:
+        return True
+
+    x1, y1, x2, y2 = normalized_bbox
+    bbox_width = max(0.0, x2 - x1)
+    bbox_height = max(0.0, y2 - y1)
+    bbox_area = bbox_width * bbox_height
+    min_area = max(0.0, min(1.0, float(_settings.fall_detection_min_bbox_area_ratio or 0.0)))
+    if bbox_area < min_area:
+        return False
+
+    margin = max(0.0, min(0.25, float(_settings.fall_detection_edge_margin_ratio or 0.0)))
+    if margin <= 0:
+        return True
+
+    touches_left_or_right = x1 <= margin or x2 >= (1.0 - margin)
+    touches_top_or_bottom = y1 <= margin or y2 >= (1.0 - margin)
+    touches_edge = touches_left_or_right or touches_top_or_bottom
+    min_partial_height = max(0.0, min(1.0, float(_settings.fall_detection_edge_partial_min_height_ratio or 0.0)))
+    if touches_top_or_bottom and bbox_height < min_partial_height and not _fall_event_has_detector_support(event):
+        return False
+
+    return not touches_edge or _fall_event_is_high_confidence(event)
+
+
+def _fall_event_passes_branch_support_filter(event: dict[str, object]) -> bool:
+    if event.get("source") == "fall_detection_demo" or event.get("demo") is True:
+        return True
+    if _fall_event_is_high_confidence(event):
+        return True
+
+    scores = event.get("scores") if isinstance(event.get("scores"), dict) else {}
+    posture = _coerce_float(scores.get("posture"), default=0.0)
+    support_max = max(
+        _coerce_float(scores.get("gru"), default=0.0),
+        _coerce_float(scores.get("hybrid"), default=0.0),
+        _coerce_float(scores.get("semantic"), default=0.0),
+        _coerce_float(scores.get("detector"), default=0.0),
+    )
+    if posture < 0.75:
+        return True
+    return support_max >= 0.12
+
+
+def _fall_event_has_detector_support(event: dict[str, object]) -> bool:
+    scores = event.get("scores") if isinstance(event.get("scores"), dict) else {}
+    detector = _coerce_float(scores.get("detector"), default=0.0)
+    return detector >= 0.4
+
+
+def _fall_event_passes_temporal_filter(
+    event: dict[str, object],
+    *,
+    track_state: _FallTrackState | None = None,
+    now_monotonic: float | None = None,
+) -> bool:
+    if event.get("source") == "fall_detection_demo" or event.get("demo") is True:
+        return True
+
+    if now_monotonic is None:
+        now_monotonic = time.monotonic()
+
+    if track_state and track_state.active_incident_id:
+        event.setdefault("incident_id", track_state.active_incident_id)
+        return True
+
+    down_seconds = _fall_event_down_seconds(event)
+    min_down_seconds = max(0.0, float(_settings.fall_detection_min_down_seconds or 0.0))
+    high_confidence = _fall_event_is_high_confidence(event)
+
+    if track_state is None:
+        return high_confidence and down_seconds >= min_down_seconds
+
+    track_age = max(0.0, now_monotonic - track_state.first_seen_monotonic)
+    confirmation_window = max(1.0, float(_settings.fall_detection_confirmation_window_seconds or 1.0))
+    track_state.confirmed_hits = [
+        hit for hit in track_state.confirmed_hits if now_monotonic - hit <= confirmation_window
+    ]
+    confirmed_hits = len(track_state.confirmed_hits)
+    min_confirmed_hits = max(1, int(_settings.fall_detection_min_confirmed_hits or 1))
+    min_track_age = max(0.0, float(_settings.fall_detection_min_track_age_seconds or 0.0))
+
+    event_type = str(event.get("event_type") or "").strip().lower()
+    state = str(event.get("state") or "").strip().lower()
+    severity = str(event.get("severity") or "").strip().upper()
+    injury = event.get("injury") if isinstance(event.get("injury"), dict) else {}
+    injury_level = str(injury.get("level") or "").strip().upper() if isinstance(injury, dict) else ""
+    scores = event.get("scores") if isinstance(event.get("scores"), dict) else {}
+    fall_score = _coerce_float(event.get("fall_score"), default=0.0)
+    hybrid = _coerce_float(scores.get("hybrid"), default=0.0)
+    semantic = _coerce_float(scores.get("semantic"), default=0.0)
+    explicit_confirmation = event_type == "fall_confirmed" or state == "confirmed_fall"
+    if (
+        explicit_confirmation
+        and confirmed_hits >= 1
+        and (
+            high_confidence
+            or (
+                fall_score >= max(0.55, float(_settings.fall_detection_min_alert_score or 0.0))
+                and hybrid >= 0.6
+                and semantic >= 0.25
+                and (severity in {"L2", "L3", "L4", "L5"} or injury_level in {"I2", "I3", "I4", "I5"})
+            )
+        )
+    ):
+        return True
+
+    if high_confidence and track_age >= min_track_age:
+        return True
+    if down_seconds >= min_down_seconds and confirmed_hits >= 1:
+        return True
+    return confirmed_hits >= min_confirmed_hits and track_age >= min_track_age
+
+
+def _fall_event_bypasses_roi(event: dict[str, object]) -> bool:
+    event_type = str(event.get("event_type") or "")
+    state = str(event.get("state") or "")
+    if event_type != "fall_confirmed" and state != "confirmed_fall":
+        return False
+    try:
+        fall_score = float(event.get("fall_score") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    threshold = max(0.0, min(1.0, float(_settings.fall_detection_confirmed_roi_bypass_score or 0.0)))
+    return fall_score >= threshold
+
+
+def _parse_fall_detection_roi() -> tuple[float, float, float, float] | None:
+    raw = (_settings.fall_detection_roi_rect or "").strip()
+    if not raw:
+        return None
+    try:
+        parts = [float(part.strip()) for part in raw.replace(";", ",").split(",")]
+    except ValueError:
+        return None
+    if len(parts) != 4:
+        return None
+    x1, y1, x2, y2 = parts
+    x1, x2 = sorted((max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))))
+    y1, y2 = sorted((max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return x1, y1, x2, y2
+
+
+def _normalize_fall_bbox(
+    bbox: object,
+    event: dict[str, object] | None = None,
+) -> tuple[float, float, float, float] | None:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        coords = [float(value) for value in bbox]
+    except (TypeError, ValueError):
+        return None
+
+    x1, y1, x2, y2 = coords
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
+        return (
+            max(0.0, min(1.0, x1)),
+            max(0.0, min(1.0, y1)),
+            max(0.0, min(1.0, x2)),
+            max(0.0, min(1.0, y2)),
+        )
+
+    frame_width, frame_height = _fall_event_frame_dimensions(event)
+    return (
+        max(0.0, min(1.0, x1 / frame_width)),
+        max(0.0, min(1.0, y1 / frame_height)),
+        max(0.0, min(1.0, x2 / frame_width)),
+        max(0.0, min(1.0, y2 / frame_height)),
+    )
+
+
+def _fall_event_frame_dimensions(event: dict[str, object] | None = None) -> tuple[float, float]:
+    configured_width = max(1.0, float(_settings.fall_detection_frame_width or 1.0))
+    configured_height = max(1.0, float(_settings.fall_detection_frame_height or 1.0))
+    if isinstance(event, dict):
+        try:
+            event_width = float(event.get("frame_width") or 0.0)
+            event_height = float(event.get("frame_height") or 0.0)
+        except (TypeError, ValueError):
+            event_width = 0.0
+            event_height = 0.0
+        if event_width > 1.0 and event_height > 1.0:
+            return event_width, event_height
+
+    stream_width = max(0, int(_settings.camera_stream_width or 0))
+    source = str(event.get("source") or "") if isinstance(event, dict) else ""
+    if stream_width <= 0 or "stream.mjpg" not in source:
+        return configured_width, configured_height
+
+    aspect_height = max(1.0, configured_height)
+    aspect_width = max(1.0, configured_width)
+    stream_height = max(1.0, round(stream_width * (aspect_height / aspect_width)))
+    return float(stream_width), float(stream_height)
+
+
+def _record_fall_track_activity(event: dict[str, object]) -> tuple[_FallTrackState | None, float]:
+    now_monotonic = time.monotonic()
+    ttl_seconds = max(30.0, float(_settings.fall_detection_track_state_ttl_seconds or 30.0))
+    stale_keys = [
+        key
+        for key, value in _fall_track_states.items()
+        if now_monotonic - value.last_seen_monotonic > ttl_seconds
+    ]
+    for key in stale_keys:
+        _fall_track_states.pop(key, None)
+
+    track_key = _fall_track_key(event)
+    if not track_key:
+        return None, now_monotonic
+
+    state = _fall_track_states.get(track_key)
+    if state is None:
+        state = _FallTrackState(
+            first_seen_monotonic=now_monotonic,
+            last_seen_monotonic=now_monotonic,
+        )
+        _fall_track_states[track_key] = state
+    else:
+        reopen_seconds = max(1.0, float(_settings.fall_detection_incident_reopen_seconds or 1.0))
+        if now_monotonic - state.last_seen_monotonic > reopen_seconds:
+            state.first_seen_monotonic = now_monotonic
+            state.confirmed_hits.clear()
+            state.active_incident_id = None
+            state.admitted_at_monotonic = None
+        state.last_seen_monotonic = now_monotonic
+
+    event_type = str(event.get("event_type") or "")
+    current_state = str(event.get("state") or "")
+    if event_type == "fall_confirmed" or current_state in {
+        "confirmed_fall",
+        "post_fall_monitoring",
+        "recovery_watch",
+        "injury_watch",
+        "abnormal_recovery",
+        "needs_assistance",
+        "emergency",
+    } or _fall_event_is_suspected_candidate(event):
+        state.confirmed_hits.append(now_monotonic)
+
+    confirmation_window = max(1.0, float(_settings.fall_detection_confirmation_window_seconds or 1.0))
+    state.confirmed_hits = [
+        hit for hit in state.confirmed_hits if now_monotonic - hit <= confirmation_window
+    ]
+
+    if current_state == "normal":
+        state.active_incident_id = None
+        state.admitted_at_monotonic = None
+        state.last_normal_at_monotonic = now_monotonic
+
+    return state, now_monotonic
+
+
+def _fall_track_key(event: dict[str, object]) -> str | None:
+    track_id = str(event.get("track_id") or "").strip()
+    if not track_id:
+        return None
+    source = str(event.get("source") or "camera").strip() or "camera"
+    return f"{source}|{track_id}"
+
+
+def _ensure_fall_incident_id(
+    event: dict[str, object],
+    *,
+    track_state: _FallTrackState | None = None,
+    now_monotonic: float | None = None,
+) -> str:
+    existing = str(event.get("incident_id") or "").strip()
+    if existing:
+        return existing
+
+    if now_monotonic is None:
+        now_monotonic = time.monotonic()
+
+    if track_state and track_state.active_incident_id:
+        event["incident_id"] = track_state.active_incident_id
+        return track_state.active_incident_id
+
+    source = str(event.get("source") or "camera").strip() or "camera"
+    track_id = str(event.get("track_id") or "unknown").strip() or "unknown"
+    source_slug = "".join(ch if ch.isalnum() else "-" for ch in source).strip("-").lower() or "camera"
+    incident_id = f"{source_slug}-{track_id}-{int(now_monotonic * 1000)}"
+    event["incident_id"] = incident_id
+    if track_state is not None:
+        track_state.active_incident_id = incident_id
+        track_state.admitted_at_monotonic = now_monotonic
+    return incident_id
+
+
+def _fall_event_is_high_confidence(event: dict[str, object]) -> bool:
+    if event.get("source") == "fall_detection_demo" or event.get("demo") is True:
+        return True
+
+    scores = event.get("scores") if isinstance(event.get("scores"), dict) else {}
+    fall_score = _coerce_float(event.get("fall_score"), default=0.0)
+    threshold = max(0.0, min(1.0, float(_settings.fall_detection_high_confidence_score or 0.0)))
+    injury_level = str((event.get("injury") or {}).get("level") if isinstance(event.get("injury"), dict) else "")
+    severity = str(event.get("severity") or "")
+    hybrid = _coerce_float(scores.get("hybrid"), default=0.0)
+    semantic = _coerce_float(scores.get("semantic"), default=0.0)
+    detector = _coerce_float(scores.get("detector"), default=0.0)
+
+    if fall_score >= threshold:
+        return True
+    if injury_level in {"I3", "I4", "I5"} or severity in {"L3", "L4", "L5"}:
+        return True
+    if hybrid >= threshold and semantic >= 0.18:
+        return True
+    return detector >= 0.6 and fall_score >= max(0.45, threshold - 0.12)
+
+
+def _fall_event_down_seconds(event: dict[str, object]) -> float:
+    injury = event.get("injury") if isinstance(event.get("injury"), dict) else {}
+    return max(0.0, _coerce_float(injury.get("down_seconds") if isinstance(injury, dict) else 0.0, default=0.0))
+
+
+def _coerce_float(value: object, *, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _should_suppress_fall_alarm_after_multimodal_review(
+    event: dict[str, object],
+    review: dict[str, object],
+) -> bool:
+    judgement = str(review.get("judgement") or "").strip().lower()
+    confidence = str(review.get("confidence") or "").strip().lower()
+    action = str(review.get("recommended_action") or "").strip().lower()
+    if judgement != "no_fall":
+        return False
+    if confidence in {"high", "medium"}:
+        return True
+
+    scores = event.get("scores") if isinstance(event.get("scores"), dict) else {}
+    detector_score = _coerce_float(scores.get("detector"), default=0.0)
+    down_seconds = _fall_event_down_seconds(event)
+    severity = str(event.get("severity") or "").strip().upper()
+    injury = event.get("injury") if isinstance(event.get("injury"), dict) else {}
+    injury_level = str(injury.get("level") or "").strip().upper() if isinstance(injury, dict) else ""
+    if severity in {"L3", "L4", "L5"} or injury_level in {"I3", "I4", "I5"}:
+        return False
+
+    bbox = _normalize_fall_bbox(event.get("bbox"), event)
+    bbox_tall = False
+    if bbox is not None:
+        x1, y1, x2, y2 = bbox
+        bbox_width = max(0.0, x2 - x1)
+        bbox_height = max(0.0, y2 - y1)
+        bbox_tall = bbox_height >= max(0.18, bbox_width * 1.12)
+
+    false_positive_cues = review.get("false_positive_cues")
+    benign_false_positive_cues = {
+        "快速坐下",
+        "弯腰捡东西",
+        "坐姿正常",
+        "正常坐姿",
+        "桌前办公",
+        "正常操作电脑",
+        "坐着办公",
+    }
+    review_mentions_known_false_positive = any(
+        isinstance(item, str) and item.strip() in benign_false_positive_cues
+        for item in (false_positive_cues if isinstance(false_positive_cues, list) else [])
+    )
+    reason_text = str(review.get("reason") or "").strip()
+    reason_looks_benign = any(
+        token in reason_text for token in ("操作电脑", "坐姿", "弯腰", "没有明显的跌倒迹象", "无跌倒风险")
+    )
+
+    if action == "downgrade" and detector_score <= 0.12 and (bbox_tall or down_seconds < 3.0):
+        return True
+    if review_mentions_known_false_positive and detector_score <= 0.12 and (bbox_tall or reason_looks_benign):
+        return True
+    return False
+
+
+async def _maybe_run_fall_multimodal_review(event: dict[str, object]) -> dict[str, object] | None:
+    if not _settings.fall_detection_multimodal_enabled:
+        return None
+
+    snapshot_path = str(event.get("snapshot_path") or "").strip()
+    if not snapshot_path:
+        return None
+
+    if not Path(snapshot_path).is_file():
+        return None
+
+    try:
+        fall_score = float(event.get("fall_score") or 0.0)
+    except (TypeError, ValueError):
+        fall_score = 0.0
+    if fall_score < max(0.0, min(1.0, float(_settings.fall_detection_multimodal_min_score or 0.0))):
+        return None
+
+    provider = _resolve_fall_multimodal_provider()
+    if provider in {"disabled", "none"}:
+        return None
+    if provider == "qwen_omni":
+        return await asyncio.to_thread(
+            _voice_service.review_fall_snapshot,
+            snapshot_path,
+            event=event,
+        )
+    if provider == "siliconflow_script":
+        return await _run_legacy_fall_multimodal_review(snapshot_path)
+    return None
+
+
+def _resolve_fall_multimodal_provider() -> str:
+    explicit = str(_settings.fall_detection_multimodal_provider or "auto").strip().lower()
+    if explicit in {"disabled", "none"}:
+        return "disabled"
+    if explicit == "qwen_omni":
+        return "qwen_omni"
+    if explicit == "siliconflow_script":
+        return "siliconflow_script"
+    if _settings.dashscope_api_key.strip() and _settings.qwen_omni_model_id:
+        return "qwen_omni"
+    api_key = (_settings.siliconflow_api_key or "").strip() or os.environ.get("SILICONFLOW_API_KEY", "").strip()
+    if api_key:
+        return "siliconflow_script"
+    return "none"
+
+
+async def _run_legacy_fall_multimodal_review(snapshot_path: str) -> dict[str, object] | None:
+    api_key = (_settings.siliconflow_api_key or "").strip() or os.environ.get("SILICONFLOW_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    model_root = Path(_settings.fall_detection_model_root)
+    python = Path(_settings.fall_detection_python)
+    script = model_root / "scripts" / "llm_fall_review.py"
+    config = model_root / "configs" / "llm_review.yaml"
+    if not script.is_file() or not python.is_file() or not config.is_file():
+        logger.info(
+            "Multimodal review skipped due to missing assets: python=%s script=%s config=%s",
+            python.is_file(),
+            script.is_file(),
+            config.is_file(),
+        )
+        return None
+
+    cmd = [
+        str(python),
+        str(script),
+        "--image",
+        snapshot_path,
+        "--config",
+        str(config),
+    ]
+    env = os.environ.copy()
+    env["SILICONFLOW_API_KEY"] = api_key
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(model_root),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=max(5, int(_settings.fall_detection_multimodal_timeout_seconds or 45)),
+        )
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        logger.warning("Multimodal review timed out for snapshot=%s", snapshot_path)
+        return {"status": "timeout"}
+
+    if process.returncode != 0:
+        logger.warning(
+            "Multimodal review failed: rc=%s stderr=%s",
+            process.returncode,
+            stderr.decode("utf-8", errors="replace")[-800:],
+        )
+        return {"status": "error", "stderr": stderr.decode("utf-8", errors="replace")[-800:]}
+
+    raw = stdout.decode("utf-8", errors="replace").strip()
+    if not raw:
+        return {"status": "empty"}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Multimodal review returned non-JSON payload: %s", raw[-800:])
+        return {"status": "invalid_json", "raw": raw[-800:]}
+
+    review = parsed.get("review") if isinstance(parsed, dict) else None
+    if isinstance(review, dict):
+        review["status"] = "ok"
+        return review
+    return {"status": "ok", "raw": parsed}
+
+
+def _fall_alarm_priority(*, severity: str, injury_level: str, state: str) -> AlarmPriority:
+    if injury_level in {"I4", "I5"} or severity == "L4" or state in {"needs_assistance", "emergency"}:
+        return AlarmPriority.CRITICAL
+    if injury_level == "I3" or severity == "L3" or state == "abnormal_recovery":
+        return AlarmPriority.CRITICAL
+    if injury_level == "I2" or severity == "L2":
+        return AlarmPriority.WARNING
+    return AlarmPriority.NOTICE
+
+
+_fall_detection_service = FallDetectionService(_settings, _handle_fall_detection_event)
 
 
 # NOTE: ingest_sample is defined further below (after helper functions)
@@ -194,6 +1171,37 @@ def get_alarm_service() -> AlarmService:
 
 def get_websocket_manager() -> WebSocketManager:
     return _websocket_manager
+
+
+def get_camera_frame_hub() -> CameraFrameHub:
+    return _camera_frame_hub
+
+
+def get_camera_detection_frame_hub() -> CameraFrameHub:
+    return _camera_detection_frame_hub
+
+
+def get_camera_audio_hub() -> CameraAudioHub:
+    return _camera_audio_hub
+
+
+def get_fall_detection_service() -> FallDetectionService:
+    return _fall_detection_service
+
+
+def get_fall_multimodal_review_status() -> dict[str, object]:
+    return {
+        "enabled": _settings.fall_detection_multimodal_enabled,
+        "configured_provider": _settings.fall_detection_multimodal_provider,
+        "resolved_provider": _resolve_fall_multimodal_provider(),
+        "dashscope_configured": bool(_settings.dashscope_api_key.strip()),
+        "qwen_omni_model": _settings.qwen_omni_model_id,
+        "siliconflow_configured": bool(
+            (_settings.siliconflow_api_key or "").strip() or os.environ.get("SILICONFLOW_API_KEY", "").strip()
+        ),
+        "min_score": _settings.fall_detection_multimodal_min_score,
+        "timeout_seconds": _settings.fall_detection_multimodal_timeout_seconds,
+    }
 
 
 def get_health_data_repository() -> HealthDataRepository:
@@ -333,6 +1341,10 @@ def get_explanation_service() -> ExplanationService:
     return _explanation_service
 
 
+def get_notification_service() -> NotificationService:
+    return _notification_service
+
+
 def get_community_insight_service() -> CommunityInsightService:
     return _community_insight_service
 
@@ -373,6 +1385,203 @@ def require_write_session_user(authorization: str | None) -> SessionUser:
     if user.role not in {UserRole.FAMILY, UserRole.COMMUNITY, UserRole.ADMIN}:
         raise ValueError("FORBIDDEN")
     return user
+
+
+def resolve_session_user_by_token(token: str | None) -> SessionUser | None:
+    if not token:
+        return None
+    normalized = token.strip()
+    if not normalized:
+        return None
+    return _care_service.resolve_session(normalized)
+
+
+def _demo_accessible_devices_for_alarm_scope(
+    elder_ids: set[str],
+    devices: list[DeviceRecord],
+) -> set[str]:
+    demo_directory = _care_service.get_demo_directory()
+    demo_elder_device_macs: set[str] = set()
+    for elder in demo_directory.elders:
+        if elder.id not in elder_ids:
+            continue
+        for mac in elder.device_macs or ([elder.device_mac] if elder.device_mac else []):
+            if mac:
+                demo_elder_device_macs.add(str(mac).strip().upper())
+
+    visible: set[str] = set()
+    for device in devices:
+        if device.mac_address.upper() in demo_elder_device_macs and device.ingest_mode == DeviceIngestMode.MOCK:
+            visible.add(device.mac_address.upper())
+    return visible
+
+
+def resolve_alarm_visible_device_macs(user: SessionUser) -> set[str] | None:
+    if user.role in {UserRole.COMMUNITY, UserRole.ADMIN}:
+        return None
+
+    devices = _device_service.list_devices()
+    visible_macs: set[str] = set()
+
+    if user.role == UserRole.ELDER:
+        elder_ids = {user.id}
+        for device in devices:
+            if device.user_id == user.id and device.bind_status == DeviceBindStatus.BOUND:
+                visible_macs.add(device.mac_address.upper())
+        visible_macs.update(_demo_accessible_devices_for_alarm_scope(elder_ids, devices))
+        return visible_macs
+
+    if user.role == UserRole.FAMILY:
+        elder_ids = set(_care_service.resolve_family_elder_ids(user.id))
+        for device in devices:
+            if device.user_id in elder_ids and device.bind_status == DeviceBindStatus.BOUND:
+                visible_macs.add(device.mac_address.upper())
+
+        if not elder_ids:
+            demo_family_id = user.family_id or user.id
+            demo_directory = _care_service.get_demo_directory()
+            demo_family = next((family for family in demo_directory.families if family.id == demo_family_id), None)
+            if demo_family is not None:
+                elder_ids = set(demo_family.elder_ids)
+
+        visible_macs.update(_demo_accessible_devices_for_alarm_scope(elder_ids, devices))
+        return visible_macs
+
+    return set()
+
+
+def _find_directory_elder_for_device(
+    directory,
+    normalized_mac: str,
+    device: DeviceRecord | None,
+):
+    if device and device.user_id:
+        elder = next((item for item in directory.elders if item.id == device.user_id), None)
+        if elder is not None:
+            return elder
+
+    return next(
+        (
+            item
+            for item in directory.elders
+            if normalized_mac == item.device_mac.upper()
+            or normalized_mac in {str(mac).strip().upper() for mac in item.device_macs}
+        ),
+        None,
+    )
+
+
+def _build_alarm_context_from_directory(
+    *,
+    device_mac: str,
+    device: DeviceRecord | None,
+    directory,
+) -> dict[str, object]:
+    normalized_mac = device_mac.strip().upper()
+    elder = _find_directory_elder_for_device(directory, normalized_mac, device)
+    family_name_by_id = {family.id: family.name for family in directory.families}
+    family_ids = list(getattr(elder, "family_ids", []) or []) if elder is not None else []
+    family_names = [family_name_by_id[family_id] for family_id in family_ids if family_id in family_name_by_id]
+
+    context: dict[str, object] = {}
+    if device is not None and device.device_name.strip():
+        context["device_name"] = device.device_name.strip()
+    if elder is not None:
+        context["elder_id"] = elder.id
+        context["elder_name"] = elder.name
+        context["apartment"] = elder.apartment
+        if family_ids:
+            context["family_ids"] = family_ids
+        if family_names:
+            context["family_names"] = family_names
+    return context
+
+
+def _build_configured_camera_alarm_context(normalized_mac: str, directory) -> dict[str, object]:
+    target_mac = _settings.fall_detection_target_device_mac.strip().upper()
+    if not target_mac or normalized_mac != target_mac:
+        return {}
+
+    context: dict[str, object] = {"device_name": "Home camera"}
+    family_name_by_id = {family.id: family.name for family in directory.families}
+
+    configured_elder_id = _settings.fall_detection_target_elder_id.strip()
+    elder = next((item for item in directory.elders if item.id == configured_elder_id), None) if configured_elder_id else None
+
+    configured_family_ids = [
+        item.strip()
+        for item in _settings.fall_detection_target_family_ids.split(",")
+        if item.strip()
+    ]
+
+    if elder is not None:
+        context["elder_id"] = elder.id
+        context["elder_name"] = elder.name
+        context["apartment"] = elder.apartment
+        family_ids = list(getattr(elder, "family_ids", []) or []) or configured_family_ids
+    else:
+        family_ids = configured_family_ids
+
+    if family_ids:
+        context["family_ids"] = family_ids
+        family_names = [family_name_by_id[family_id] for family_id in family_ids if family_id in family_name_by_id]
+        if family_names:
+            context["family_names"] = family_names
+
+    return context
+
+
+def build_alarm_context(device_mac: str) -> dict[str, object]:
+    normalized_mac = device_mac.strip().upper()
+    device = _device_service.get_device(normalized_mac)
+    directory = _care_service.get_directory()
+    context = _build_alarm_context_from_directory(
+        device_mac=normalized_mac,
+        device=device,
+        directory=directory,
+    )
+    if context:
+        return context
+    return _build_configured_camera_alarm_context(normalized_mac, directory)
+
+
+def enrich_alarm_context(alarm: AlarmRecord) -> AlarmRecord:
+    context = build_alarm_context(alarm.device_mac)
+    if not context:
+        return alarm
+    metadata = dict(alarm.metadata)
+    metadata.update(context)
+    return alarm.model_copy(update={"metadata": metadata})
+
+
+def enrich_alarm_records_context(alarms: list[AlarmRecord]) -> list[AlarmRecord]:
+    if not alarms:
+        return []
+    return [enrich_alarm_context(alarm) for alarm in alarms]
+
+
+def filter_alarm_records_for_user(
+    alarms: list[AlarmRecord],
+    user: SessionUser | None,
+) -> list[AlarmRecord]:
+    if user is None:
+        return alarms
+    visible_device_macs = resolve_alarm_visible_device_macs(user)
+    if visible_device_macs is None:
+        return alarms
+    return [alarm for alarm in alarms if alarm.device_mac.upper() in visible_device_macs]
+
+
+def filter_alarm_queue_items_for_user(
+    items: list,
+    user: SessionUser | None,
+) -> list:
+    if user is None:
+        return items
+    visible_device_macs = resolve_alarm_visible_device_macs(user)
+    if visible_device_macs is None:
+        return items
+    return [item for item in items if item.alarm.device_mac.upper() in visible_device_macs]
 
 
 def get_data_analysis_service() -> HealthDataAnalysisService:
@@ -958,35 +2167,181 @@ def _care_directory_lookup(device_mac: str) -> dict[str, object]:
     }
 
 
+def _is_response_packet(packet_type: str | None) -> bool:
+    return packet_type in {"response_a", "response_b", "response_ab", "legacy_response"}
+
+
+def _latest_preferred_response_sample(device_mac: str) -> HealthSample | None:
+    recent_samples = _stream_service.recent(device_mac, limit=30)
+    for candidate in reversed(recent_samples):
+        if _is_response_packet(candidate.packet_type):
+            return candidate
+    return None
+
+
 def _merge_with_latest(sample: HealthSample) -> HealthSample:
     latest = _stream_service.latest(sample.device_mac)
-    if latest is None:
+    latest_response = _latest_preferred_response_sample(sample.device_mac)
+    preferred = latest_response or latest
+    if preferred is None:
         return sample
 
     update: dict[str, object] = {}
 
-    # 收到什么就更新什么；没带到的字段沿用上一时刻值。
-    if sample.heart_rate <= 0 and latest.heart_rate > 0:
-        update["heart_rate"] = latest.heart_rate
-    if sample.blood_oxygen <= 0 and latest.blood_oxygen > 0:
-        update["blood_oxygen"] = latest.blood_oxygen
-    if sample.temperature <= 0 and latest.temperature > 0:
-        update["temperature"] = latest.temperature
+    # Prefer response packets for normal vitals.
+    # Broadcast is mainly for SOS and fallback when a response sample is not available yet.
+    if sample.heart_rate <= 0 and preferred.heart_rate > 0:
+        update["heart_rate"] = preferred.heart_rate
+    if sample.blood_oxygen <= 0 and preferred.blood_oxygen > 0:
+        update["blood_oxygen"] = preferred.blood_oxygen
+    if sample.temperature <= 0 and 35.0 <= preferred.temperature <= 45.0:
+        update["temperature"] = preferred.temperature
 
-    if (not sample.blood_pressure or sample.blood_pressure == "0/0") and latest.blood_pressure:
-        update["blood_pressure"] = latest.blood_pressure
-    if sample.battery <= 0 and latest.battery > 0:
-        update["battery"] = latest.battery
-    if (sample.steps is None or sample.steps <= 0) and (latest.steps is not None and latest.steps > 0):
-        update["steps"] = latest.steps
-    if sample.ambient_temperature is None and latest.ambient_temperature is not None:
-        update["ambient_temperature"] = latest.ambient_temperature
-    if sample.surface_temperature is None and latest.surface_temperature is not None:
-        update["surface_temperature"] = latest.surface_temperature
-    if not sample.device_uuid and latest.device_uuid:
-        update["device_uuid"] = latest.device_uuid
+    if (not sample.blood_pressure or sample.blood_pressure == "0/0") and preferred.blood_pressure:
+        update["blood_pressure"] = preferred.blood_pressure
+    if sample.battery <= 0 and preferred.battery > 0:
+        update["battery"] = preferred.battery
+    if (sample.steps is None or sample.steps <= 0) and (preferred.steps is not None and preferred.steps > 0):
+        update["steps"] = preferred.steps
+    if sample.ambient_temperature is None and preferred.ambient_temperature is not None:
+        update["ambient_temperature"] = preferred.ambient_temperature
+    if sample.surface_temperature is None and preferred.surface_temperature is not None:
+        update["surface_temperature"] = preferred.surface_temperature
+    if not sample.device_uuid and preferred.device_uuid:
+        update["device_uuid"] = preferred.device_uuid
+
+    # Keep SOS responsive: a broadcast-triggered SOS should not disappear immediately
+    # just because the next response packet does not carry SOS fields.
+    if not sample.sos_flag and latest and latest.sos_flag:
+        update["sos_flag"] = True
+        if sample.sos_value is None and latest.sos_value is not None:
+            update["sos_value"] = latest.sos_value
+        if sample.sos_trigger is None and latest.sos_trigger is not None:
+            update["sos_trigger"] = latest.sos_trigger
 
     return sample.model_copy(update=update) if update else sample
+
+
+def _persist_structured_health_score(sample: HealthSample, device: DeviceRecord) -> None:
+    """Persist ML/rule split scores so dashboard can render rule/model breakdown."""
+    if (
+        sample.heart_rate <= 0
+        or sample.blood_oxygen <= 0
+        or sample.temperature <= 0
+    ):
+        logger.info(
+            "Skipping structured score persistence for %s due to invalid vitals: hr=%s spo2=%s temp=%s packet_type=%s",
+            sample.device_mac,
+            sample.heart_rate,
+            sample.blood_oxygen,
+            sample.temperature,
+            sample.packet_type,
+        )
+        return
+
+    systolic, diastolic = sample.blood_pressure_pair
+    vitals = VitalSignsPayload(
+        heart_rate=float(sample.heart_rate),
+        spo2=float(sample.blood_oxygen),
+        sbp=float(systolic),
+        dbp=float(diastolic),
+        body_temp=float(sample.temperature),
+        fall_detection=False,
+        data_accuracy=100.0,
+    )
+    elderly_id = str(device.user_id or f"UNBOUND:{sample.device_mac}")
+    try:
+        _structured_health_score_service.evaluate_vitals(
+            vitals=vitals,
+            elderly_id=elderly_id,
+            device_id=sample.device_mac,
+            timestamp=sample.timestamp,
+            persist=True,
+            stateful_stability=True,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Structured score persistence failed for %s (%s): %s",
+            sample.device_mac,
+            type(exc).__name__,
+            exc,
+        )
+        fallback_score = float(sample.health_score or 0)
+        if fallback_score >= 85:
+            fallback_risk_level = "normal"
+        elif fallback_score >= 70:
+            fallback_risk_level = "attention"
+        elif fallback_score >= 55:
+            fallback_risk_level = "warning"
+        else:
+            fallback_risk_level = "critical"
+
+        fallback_tags: list[str] = []
+        fallback_reasons: list[str] = []
+        if sample.sos_flag:
+            fallback_tags.append("sos")
+            fallback_reasons.append("Detected SOS signal from device")
+        if sample.blood_oxygen < 93:
+            fallback_tags.append("spo2_low")
+            fallback_reasons.append(f"SpO2 is low ({sample.blood_oxygen}%)")
+        if sample.heart_rate > 120 or sample.heart_rate < 50:
+            fallback_tags.append("heart_rate_abnormal")
+            fallback_reasons.append(f"Heart rate out of preferred range ({sample.heart_rate} bpm)")
+        if sample.temperature >= 37.6:
+            fallback_tags.append("temperature_high")
+            fallback_reasons.append(f"Body temperature elevated ({sample.temperature:.1f} C)")
+
+        fallback_payload = {
+            "elderly_id": elderly_id,
+            "device_id": sample.device_mac,
+            "timestamp": sample.timestamp.isoformat(),
+            "health_score": round(fallback_score, 4),
+            "final_health_score": round(fallback_score, 4),
+            "rule_health_score": round(fallback_score, 4),
+            "model_health_score": round(fallback_score, 4),
+            "risk_level": fallback_risk_level,
+            "risk_score_raw": round(max(0.0, min(1.0, 1.0 - (fallback_score / 100.0))), 6),
+            "sub_scores": {
+                "rule_health_score": round(fallback_score, 4),
+                "model_health_score": round(fallback_score, 4),
+                "final_health_score": round(fallback_score, 4),
+            },
+            "alerts": {
+                "hr_alert": {"label": "High" if sample.heart_rate > 120 else ("Low" if sample.heart_rate < 50 else "Normal"), "probability": None},
+                "spo2_alert": {"label": "Low" if sample.blood_oxygen < 93 else "Normal", "probability": None},
+                "bp_alert": {"label": "Normal", "probability": None},
+                "temp_alert": {"label": "Abnormal" if sample.temperature >= 37.6 else "Normal", "probability": None},
+                "hard_threshold_level": fallback_risk_level if fallback_risk_level in {"warning", "critical"} else None,
+            },
+            "abnormal_tags": fallback_tags,
+            "trigger_reasons": fallback_reasons,
+            "recommendation_code": "EMERGENCY_CONTACT" if sample.sos_flag else "MONITOR",
+            "stability_mode": "rule_fallback",
+            "stabilized_vitals": {
+                "heart_rate": float(sample.heart_rate),
+                "spo2": float(sample.blood_oxygen),
+                "sbp": float(systolic),
+                "dbp": float(diastolic),
+                "body_temp": float(sample.temperature),
+                "fall_detection": False,
+                "data_accuracy": 100.0,
+            },
+            "active_events": [],
+            "score_adjustment_reason": "Structured model artifacts missing; fallback scores are used.",
+        }
+        try:
+            _score_repo.save_result(
+                elderly_id=elderly_id,
+                device_id=sample.device_mac,
+                timestamp=sample.timestamp,
+                result=fallback_payload,
+            )
+        except Exception as fallback_exc:
+            logger.warning(
+                "Structured fallback persistence failed for %s: %s",
+                sample.device_mac,
+                fallback_exc,
+            )
 
 
 async def ingest_sample(sample: HealthSample) -> IngestResponse:
@@ -1000,11 +2355,10 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
         raise RuntimeError("Device must be registered before ingest in formal mode")
 
     _device_service.update_status(sample.device_mac, DeviceStatus.ONLINE)
+    _alarm_service.observe_sample(sample)
 
-    # 【性能优化】第一时间评估并提取实时告警（包括SOS）。直接评估未 merged 的 sample_0。
-    realtime_alarms = _alarm_service.evaluate(sample)
-    
-    # 若有紧急告警，第一时间 WebSocket 广播，避免被后续同步数据库写操作阻塞而导致高延迟
+    realtime_alarm_candidates = enrich_alarm_records_context(_realtime_detector.evaluate(sample))
+    realtime_alarms = _alarm_service.evaluate_alarm_records(realtime_alarm_candidates)
     if realtime_alarms:
         _health_data_repository.persist_alerts(realtime_alarms)
         for alarm in realtime_alarms:
@@ -1017,7 +2371,6 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
             }
         )
 
-    # 之后合并历史以填补异常的0或缺失数据，保证展示与入库的质量
     sample = _merge_with_latest(sample)
 
     baseline = _baseline_tracker.observe(sample)
@@ -1028,8 +2381,9 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
         timestamp=sample.timestamp,
     )
     _stream_service.publish(sample)
+    _persist_structured_health_score(sample, device)
 
-    ml_alarms = []
+    ml_alarms: list[AlarmRecord] = []
     intelligent_result = _intelligent_scorer.infer_device(
         sample.device_mac,
         _stream_service.recent_in_window(sample.device_mac, minutes=60, limit=360),
@@ -1038,7 +2392,7 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
     if intelligent_result:
         intelligent_alarm = _intelligent_scorer.build_alarm(sample, intelligent_result)
         if intelligent_alarm:
-            ml_alarms.extend(_alarm_service.evaluate_alarm_records([intelligent_alarm]))
+            ml_alarms.extend(_alarm_service.evaluate_alarm_records([enrich_alarm_context(intelligent_alarm)]))
 
     now = sample.timestamp.astimezone(timezone.utc)
     if _last_community_alarm_at is None or now - _last_community_alarm_at >= timedelta(hours=1):
@@ -1048,7 +2402,7 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
         )
         community_alarm = _community_clusterer.build_alarm(community_summary)
         if community_alarm:
-            ml_alarms.extend(_alarm_service.evaluate_alarm_records([community_alarm]))
+            ml_alarms.extend(_alarm_service.evaluate_alarm_records([enrich_alarm_context(community_alarm)]))
             _last_community_alarm_at = now
 
     if ml_alarms:
@@ -1064,6 +2418,4 @@ async def ingest_sample(sample: HealthSample) -> IngestResponse:
         )
 
     await _websocket_manager.broadcast_health(sample.device_mac, sample.model_dump(mode="json"))
-
-    all_alarms = (realtime_alarms or []) + (ml_alarms or [])
     return IngestResponse(success=True, message="Sample ingested", device_mac=sample.device_mac)

@@ -54,6 +54,7 @@ class Settings(BaseSettings):
 
     qwen_api_base: str = ""
     qwen_api_key: str = ""
+    siliconflow_api_key: str = Field(default="", validation_alias="SILICONFLOW_API_KEY")
     dashscope_api_key_env: str = Field(default="", validation_alias="DASHSCOPE_API_KEY")
     qwen_model: str = ""
     qwen_embedding_model: str = ""
@@ -102,6 +103,9 @@ class Settings(BaseSettings):
     serial_enabled: bool = False
     serial_port: str = ""
     serial_baudrate: int = 115200
+    serial_dual_collector_enabled: bool = False
+    serial_broadcast_port: str = ""
+    serial_response_port: str = ""
     serial_collection_strategy: Literal["single_target", "static_filter"] = "single_target"
     serial_packet_type: int = 5
     serial_packet_merge_timeout_seconds: float = 5.0
@@ -117,6 +121,7 @@ class Settings(BaseSettings):
     serial_enable_broadcast_sos_overlay: bool = True
     serial_response_cycle_seconds: float = 0.4
     serial_broadcast_cycle_seconds: float = 0.1
+    serial_command_delay_seconds: float = 0.12
 
     mqtt_enabled: bool = False
     mqtt_broker_host: str = "localhost"
@@ -125,6 +130,72 @@ class Settings(BaseSettings):
     mqtt_username: str = ""
     mqtt_password: str = ""
     mqtt_keepalive_seconds: int = 60
+
+    camera_ip: str = ""
+    camera_user: str = "admin"
+    camera_password: str = ""
+    camera_source_mode: Literal["auto", "rtsp", "local"] = "auto"
+    camera_local_index: int = 0
+    camera_local_http_url: str = ""  # 独立摄像头服务URL，如 http://localhost:8001
+    camera_local_backend: Literal["auto", "dshow", "msmf", "any"] = "dshow"
+    camera_rtsp_path: str = "/tcp/av0_0"
+    camera_rtsp_port: int = 10554
+    camera_onvif_port: int = 10080
+    camera_stream_rtsp_path: str = "/tcp/av0_1"
+    camera_audio_rtsp_path: str = "/tcp/av0_1"
+    camera_audio_sample_rate: int = 16000
+    camera_audio_gateway_url: str = ""
+    camera_sdk_dll_dir: str = ""
+    camera_activex_clsid: str = ""
+    camera_probe_timeout_seconds: float = 3.0
+    camera_snapshot_timeout_seconds: float = 8.0
+    camera_stream_fps: float = 24.0
+    camera_stream_profile: Literal["smooth", "balanced", "quality"] = "balanced"
+    camera_stream_quality_path: str = "/tcp/av0_0"
+    camera_stream_smooth_path: str = "/tcp/av0_1"
+    camera_stream_jpeg_quality: int = 4
+    camera_stream_width: int = 0
+    camera_stream_send_timeout_seconds: float = 0.35
+    camera_stream_keep_warm: bool = True
+    camera_ptz_move_seconds: float = 0.35
+    camera_ptz_speed: float = 0.45
+    fall_detection_enabled: bool = False
+    fall_detection_model_root: str = r"D:\Program\model\fall_detection"
+    fall_detection_python: str = r"C:\Users\YANG\.conda\envs\AI\python.exe"
+    fall_detection_event_log: str = str(BASE_DIR / "data" / "fall_events" / "camera_events.jsonl")
+    fall_detection_snapshot_dir: str = str(BASE_DIR / "data" / "fall_events" / "snapshots")
+    fall_detection_profile: str = "private_scene_fusion_v2"
+    fall_detection_speed_profile: Literal["accuracy", "balanced", "fast"] = "accuracy"
+    fall_detection_threshold_override: float = 0.0
+    fall_detection_process_every_override: int = 0
+    fall_detection_alert_rules_path: str = ""
+    fall_detection_injury_rules_path: str = ""
+    fall_detection_target_device_mac: str = "CAMERA-192.168.8.254"
+    fall_detection_target_elder_id: str = ""
+    fall_detection_target_family_ids: str = ""
+    fall_detection_status_log_interval_seconds: float = 2.0
+    fall_detection_restart_delay_seconds: float = 5.0
+    fall_detection_roi_enabled: bool = False
+    fall_detection_roi_rect: str = ""
+    fall_detection_roi_min_overlap: float = 0.5
+    fall_detection_confirmed_roi_bypass_score: float = 0.6
+    fall_detection_frame_width: float = 2304.0
+    fall_detection_frame_height: float = 1296.0
+    fall_detection_min_alert_score: float = 0.0
+    fall_detection_confirmation_window_seconds: float = 8.0
+    fall_detection_min_confirmed_hits: int = 2
+    fall_detection_min_track_age_seconds: float = 0.8
+    fall_detection_high_confidence_score: float = 0.72
+    fall_detection_min_down_seconds: float = 1.2
+    fall_detection_min_bbox_area_ratio: float = 0.008
+    fall_detection_edge_margin_ratio: float = 0.015
+    fall_detection_edge_partial_min_height_ratio: float = 0.22
+    fall_detection_track_state_ttl_seconds: float = 120.0
+    fall_detection_incident_reopen_seconds: float = 20.0
+    fall_detection_multimodal_enabled: bool = True
+    fall_detection_multimodal_provider: Literal["auto", "qwen_omni", "siliconflow_script", "disabled"] = "auto"
+    fall_detection_multimodal_min_score: float = 0.45
+    fall_detection_multimodal_timeout_seconds: int = 45
 
     sos_broadcast_window_seconds: int = 15
     health_score_floor: int = 35
@@ -249,6 +320,8 @@ class Settings(BaseSettings):
 
         if bootstrap.port:
             self.serial_port = bootstrap.port
+        if not self.serial_response_port and bootstrap.port:
+            self.serial_response_port = bootstrap.port
         if bootstrap.baudrate:
             self.serial_baudrate = bootstrap.baudrate
         if bootstrap.mac_address:

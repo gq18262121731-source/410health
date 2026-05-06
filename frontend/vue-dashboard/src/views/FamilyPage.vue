@@ -11,6 +11,7 @@ import type {
 import { ApiError, api } from "../api/client";
 import AlarmEscalationPanel from "../components/AlarmEscalationPanel.vue";
 import AssistantPanel from "../components/AssistantPanel.vue";
+import CameraMonitorCard from "../components/CameraMonitorCard.vue";
 import HealthEvaluationPanel from "../components/HealthEvaluationPanel.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import { useCareDirectoryDashboard } from "../composables/useCareDirectoryDashboard";
@@ -467,6 +468,8 @@ function updateFamilyId(event: Event) {
               </p>
             </div>
           </section>
+
+          <CameraMonitorCard />
 
           <div class="family-health-grid family-health-grid--demo">
             <article
