@@ -59,7 +59,7 @@ def run_image(args: argparse.Namespace) -> int:
             x2 = min(frame.shape[1], x2)
             y2 = min(frame.shape[0], y2)
             crop = frame[y1:y2, x1:x2]
-            posture_label, posture_score = classify_posture(crop, posture_model)
+            posture_label, posture_score = classify_posture(crop, posture_model, imgsz=320, device=None, half=False)
             detector_score = 0.0
             detector_label = "none"
             for det_box, det_score, det_label in detector_boxes:
@@ -119,6 +119,12 @@ def run_stream(args: argparse.Namespace) -> int:
         cmd.extend(["--snapshot-dir", str(args.snapshot_dir)])
     if args.status_log_interval is not None:
         cmd.extend(["--status-log-interval", str(args.status_log_interval)])
+    cmd.extend(["--analysis-width", str(args.analysis_width)])
+    cmd.extend(["--process-every", str(args.process_every)])
+    cmd.extend(["--opencv-buffer-size", str(args.opencv_buffer_size)])
+    cmd.extend(["--device", str(args.device)])
+    if args.half:
+        cmd.append("--half")
     if args.no_display:
         cmd.append("--no-display")
     subprocess.run(cmd, check=True)
@@ -146,6 +152,11 @@ def main() -> int:
     parser.add_argument("--event-log", default=None)
     parser.add_argument("--snapshot-dir", default=None)
     parser.add_argument("--status-log-interval", type=float, default=1.0)
+    parser.add_argument("--analysis-width", type=int, default=0)
+    parser.add_argument("--process-every", type=int, default=1)
+    parser.add_argument("--opencv-buffer-size", type=int, default=1)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--half", action="store_true")
     parser.add_argument("--no-display", action="store_true")
     args = parser.parse_args()
 

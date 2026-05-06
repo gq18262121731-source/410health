@@ -43,7 +43,6 @@ models:
     fall_labels:
       - fall
       - fallen
-      - lying
 
 profiles:
   private_scene_fusion_v2:

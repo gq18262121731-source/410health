@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -141,7 +142,11 @@ class Track:
     injury_score: float = 0.0
     last_event_state: str = "normal"
     last_event_injury_level: str = "I0"
+    detector_only: bool = False
+    detector_hits: int = 0
+    last_detector_seen_s: float = -999.0
     last_status_log_time: float = -999.0
+    last_observations: dict = field(default_factory=dict)
 
 
 def iou_xyxy(a: np.ndarray, b: np.ndarray) -> float:
@@ -164,6 +169,49 @@ def center_distance_norm(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.linalg.norm(ac - bc) / max((ah + bh) * 0.5, 1.0))
 
 
+def expand_box(box: np.ndarray, frame_shape: tuple[int, int, int], scale_x: float, scale_y: float) -> np.ndarray:
+    height, width = frame_shape[:2]
+    x1, y1, x2, y2 = [float(v) for v in box]
+    cx = (x1 + x2) * 0.5
+    cy = (y1 + y2) * 0.5
+    bw = max(x2 - x1, 1.0) * scale_x
+    bh = max(y2 - y1, 1.0) * scale_y
+    return np.asarray(
+        [
+            max(0.0, cx - bw * 0.5),
+            max(0.0, cy - bh * 0.5),
+            min(float(width), cx + bw * 0.5),
+            min(float(height), cy + bh * 0.5),
+        ],
+        dtype=np.float32,
+    )
+
+
+def horizontal_overlap_ratio(a: np.ndarray, b: np.ndarray) -> float:
+    overlap = max(0.0, min(float(a[2]), float(b[2])) - max(float(a[0]), float(b[0])))
+    width = min(max(float(a[2] - a[0]), 1.0), max(float(b[2] - b[0]), 1.0))
+    return float(overlap / width)
+
+
+def detector_track_affinity(track_box: np.ndarray, det_box: np.ndarray, frame_shape: tuple[int, int, int]) -> float:
+    overlap = iou_xyxy(track_box, det_box)
+    expanded_overlap = iou_xyxy(expand_box(track_box, frame_shape, 2.2, 1.45), det_box)
+    dist = center_distance_norm(track_box, det_box)
+    horizontal_overlap = horizontal_overlap_ratio(track_box, det_box)
+
+    track_bottom = float(track_box[3])
+    det_center_y = float((det_box[1] + det_box[3]) * 0.5)
+    track_height = max(float(track_box[3] - track_box[1]), 1.0)
+    vertical_near_feet = abs(det_center_y - track_bottom) / track_height <= 0.45
+
+    score = max(overlap * 2.0, expanded_overlap * 1.35, max(0.0, 0.9 - dist))
+    if horizontal_overlap >= 0.25 and vertical_near_feet:
+        score = max(score, 0.62)
+    elif horizontal_overlap >= 0.45 and dist <= 1.25:
+        score = max(score, 0.50)
+    return float(max(0.0, min(1.0, score)))
+
+
 def extract_people(result) -> list[tuple[np.ndarray, np.ndarray]]:
     people = []
     if result.boxes is None or result.keypoints is None or len(result.boxes) == 0:
@@ -175,6 +223,23 @@ def extract_people(result) -> list[tuple[np.ndarray, np.ndarray]]:
         if score < 0.2:
             continue
         people.append((box.astype(np.float32), kp.astype(np.float32)))
+    return people
+
+
+def extract_tracked_people(result) -> list[tuple[int, np.ndarray, np.ndarray]]:
+    people = []
+    if result.boxes is None or result.keypoints is None or len(result.boxes) == 0:
+        return people
+    if result.boxes.id is None:
+        return people
+    ids = result.boxes.id.detach().cpu().numpy().astype(int)
+    boxes = result.boxes.xyxy.detach().cpu().numpy()
+    conf = result.boxes.conf.detach().cpu().numpy()
+    kps = result.keypoints.data.detach().cpu().numpy()
+    for track_id, box, score, kp in zip(ids, boxes, conf, kps):
+        if score < 0.2:
+            continue
+        people.append((int(track_id), box.astype(np.float32), kp.astype(np.float32)))
     return people
 
 
@@ -224,6 +289,31 @@ def update_tracks(tracks: dict[int, Track], detections: list[tuple[np.ndarray, n
     return next_id
 
 
+def update_tracks_from_tracker(tracks: dict[int, Track], detections: list[tuple[int, np.ndarray, np.ndarray]]) -> None:
+    seen: set[int] = set()
+    for track_id, box, kp in detections:
+        seen.add(track_id)
+        track = tracks.get(track_id)
+        if track is None:
+            track = Track(track_id=track_id)
+            track.posture_history.append(0.0)
+            track.score_history.append(0.0)
+            tracks[track_id] = track
+        track.detector_only = False
+        track.last_box = box
+        track.box_history.append(box)
+        track.kp_history.append(kp)
+        track.missed = 0
+
+    for track_id, track in list(tracks.items()):
+        if track.detector_only:
+            continue
+        if track_id not in seen:
+            track.missed += 1
+            if track.missed > 30:
+                tracks.pop(track_id, None)
+
+
 def score_fall_detector_for_tracks(
     frame: np.ndarray,
     tracks: dict[int, Track],
@@ -232,14 +322,18 @@ def score_fall_detector_for_tracks(
     imgsz: int,
     conf: float,
     iou: float,
-) -> None:
+    device: str | int | None,
+    half: bool,
+    next_id: int,
+    now_s: float,
+) -> int:
     for track in tracks.values():
         track.detector_score = 0.0
-    if detector_model is None or not tracks:
-        return
-    result = detector_model.predict(frame, verbose=False, imgsz=imgsz, conf=conf, iou=iou)[0]
+    if detector_model is None:
+        return next_id
+    result = detector_model.predict(frame, verbose=False, imgsz=imgsz, conf=conf, iou=iou, device=device, half=half)[0]
     if result.boxes is None or len(result.boxes) == 0:
-        return
+        return next_id
     boxes = result.boxes.xyxy.detach().cpu().numpy()
     scores = result.boxes.conf.detach().cpu().numpy()
     classes = result.boxes.cls.detach().cpu().numpy().astype(int)
@@ -249,12 +343,36 @@ def score_fall_detector_for_tracks(
         if label not in fall_labels:
             continue
         det_box = box.astype(np.float32)
+        best_track: Track | None = None
+        best_affinity = 0.0
         for track in tracks.values():
             if track.last_box is None:
                 continue
-            overlap = iou_xyxy(track.last_box, det_box)
-            if overlap >= 0.15:
-                track.detector_score = max(track.detector_score, float(score * min(1.0, overlap * 2.0)))
+            affinity = detector_track_affinity(track.last_box, det_box, frame.shape)
+            if affinity > best_affinity:
+                best_affinity = affinity
+                best_track = track
+        if best_track is not None and best_affinity >= 0.35:
+            best_track.detector_score = max(best_track.detector_score, float(score * best_affinity))
+            best_track.detector_hits += 1
+            best_track.last_detector_seen_s = now_s
+            best_track.detector_only = False
+        elif float(score) >= 0.25:
+            track = Track(track_id=next_id)
+            track.detector_only = True
+            track.detector_hits = 1
+            track.last_detector_seen_s = now_s
+            track.last_box = det_box
+            track.box_history.append(det_box)
+            track.posture_history.append(float(score))
+            track.score_history.append(0.0)
+            track.detector_score = float(score)
+            tracks[next_id] = track
+            next_id += 1
+    for track in tracks.values():
+        if track.detector_only and now_s - track.last_detector_seen_s > 1.2:
+            track.missed += 4
+    return next_id
 
 
 def build_model(weights_path: Path, device: torch.device) -> tuple[torch.nn.Module, dict]:
@@ -312,10 +430,10 @@ def score_track_semantic(track: Track, model: torch.nn.Module, device: torch.dev
     return float(prob)
 
 
-def classify_posture(crop: np.ndarray, posture_model: YOLO | None) -> tuple[str, float]:
+def classify_posture(crop: np.ndarray, posture_model: YOLO | None, *, imgsz: int, device: str | int | None, half: bool) -> tuple[str, float]:
     if posture_model is None or crop.size == 0:
         return "unknown", 0.0
-    result = posture_model.predict(crop, verbose=False, imgsz=320)[0]
+    result = posture_model.predict(crop, verbose=False, imgsz=imgsz, device=device, half=half)[0]
     probs = result.probs
     if probs is None:
         return "unknown", 0.0
@@ -369,6 +487,8 @@ def current_observations(track: Track) -> dict[str, float | bool]:
             "posture_delta": 0.0,
             "pose_angle_abs": 0.0,
             "movement": 0.0,
+            "aspect_delta": 0.0,
+            "center_drop": 0.0,
             "downed": False,
             "upright": False,
             "motion_low": False,
@@ -389,17 +509,24 @@ def current_observations(track: Track) -> dict[str, float | bool]:
     pose_angle_abs = float(abs(pose_feats[-1, 0])) if len(pose_feats) else 0.0
 
     movement = 0.0
+    aspect_delta = 0.0
+    center_drop = 0.0
     if len(track.box_history) >= 5:
         centers = []
         heights = []
+        aspects = []
         for box in list(track.box_history)[-5:]:
             bx1, by1, bx2, by2 = box
             centers.append(((bx1 + bx2) / 2.0, (by1 + by2) / 2.0))
             heights.append(max(by2 - by1, 1.0))
+            aspects.append(max(bx2 - bx1, 1.0) / max(by2 - by1, 1.0))
         centers = np.asarray(centers, dtype=np.float32)
         heights = np.asarray(heights, dtype=np.float32)
+        aspects = np.asarray(aspects, dtype=np.float32)
         deltas = np.diff(centers, axis=0)
         movement = float(np.linalg.norm(deltas, axis=1).mean() / max(heights.mean(), 1.0))
+        aspect_delta = float(aspects[-1] - aspects[0])
+        center_drop = float((centers[-1, 1] - centers[0, 1]) / max(heights.mean(), 1.0))
 
     recent_scores = list(track.score_history)[-4:] if len(track.score_history) >= 4 else list(track.score_history)
     score_range = float(max(recent_scores) - min(recent_scores)) if recent_scores else 0.0
@@ -424,6 +551,8 @@ def current_observations(track: Track) -> dict[str, float | bool]:
         "posture_delta": posture_delta,
         "pose_angle_abs": pose_angle_abs,
         "movement": movement,
+        "aspect_delta": aspect_delta,
+        "center_drop": center_drop,
         "downed": downed,
         "upright": upright,
         "motion_low": motion_low,
@@ -609,6 +738,7 @@ def update_severity(track: Track, now_s: float, obs: dict[str, float | bool]) ->
 
 def update_track_state(track: Track, now_s: float, confirm_threshold: float) -> bool:
     obs = current_observations(track)
+    track.last_observations = dict(obs)
     state_rules = ALERT_RULES["state_machine"]
     obs_rules = ALERT_RULES["observations"]
     current_score = track.score
@@ -619,6 +749,43 @@ def update_track_state(track: Track, now_s: float, confirm_threshold: float) -> 
         bool(obs["motion_low"])
         or float(obs["box_aspect"]) >= obs_rules["box_aspect_strong_downed"]
         or float(obs["recent_posture"]) >= obs_rules["posture_strong_downed"]
+    )
+    movement = float(obs["movement"])
+    center_drop = float(obs["center_drop"])
+    box_aspect = float(obs["box_aspect"])
+    pose_angle_abs = float(obs["pose_angle_abs"])
+    posture_delta = float(obs["posture_delta"])
+    downward_transition = center_drop >= 0.06 and (posture_delta >= 0.18 or float(obs["aspect_delta"]) >= 0.18)
+    collapse_transition = center_drop >= 0.08 and movement >= 0.035 and posture_delta >= 0.30
+    horizontal_impact = movement >= 0.055 and box_aspect >= 1.45 and pose_angle_abs >= 0.28
+    fall_motion_evidence = downward_transition or collapse_transition or horizontal_impact
+    high_confidence_temporal = max(track.gru_score, track.hybrid_score, track.semantic_score) >= 0.72
+    detector_supported = track.detector_score >= 0.45 or (track.detector_only and track.detector_hits >= 2)
+    support_surface_like = (
+        box_aspect >= 1.80
+        and movement < 0.055
+        and center_drop < 0.13
+        and pose_angle_abs < 0.55
+    )
+    detector_motion_evidence = detector_supported and (
+        center_drop >= 0.045 and (posture_delta >= 0.18 or float(obs["aspect_delta"]) >= 0.18)
+    )
+    temporal_motion_evidence = high_confidence_temporal and (
+        fall_motion_evidence or horizontal_impact
+    )
+    if support_surface_like:
+        detector_motion_evidence = False
+        temporal_motion_evidence = False
+        fall_motion_evidence = False
+    confirmation_evidence = fall_motion_evidence or detector_motion_evidence or temporal_motion_evidence
+    track.last_observations.update(
+        {
+            "fall_motion_evidence": fall_motion_evidence,
+            "detector_motion_evidence": detector_motion_evidence,
+            "temporal_motion_evidence": temporal_motion_evidence,
+            "support_surface_like": support_surface_like,
+            "confirmation_evidence": confirmation_evidence,
+        }
     )
 
     if current_score > track.last_peak_score:
@@ -644,15 +811,19 @@ def update_track_state(track: Track, now_s: float, confirm_threshold: float) -> 
         if current_score >= suspect_threshold or bool(obs["rapid_change"]):
             set_state(track, "suspected_fall", now_s)
     elif track.state == "suspected_fall":
-        confirm_by_score = current_score >= confirm_threshold
-        confirm_by_postfall = strong_downed and recent_peak >= max(
-            confirm_threshold * state_rules["postfall_confirm_ratio"],
-            state_rules["postfall_confirm_floor"],
+        confirm_by_score = current_score >= confirm_threshold and confirmation_evidence
+        confirm_by_postfall = (
+            strong_downed
+            and confirmation_evidence
+            and recent_peak >= max(
+                confirm_threshold * state_rules["postfall_confirm_ratio"],
+                state_rules["postfall_confirm_floor"],
+            )
         )
         confirm_by_persistence = (
             strong_downed
             and (now_s - track.state_since) >= state_rules["downed_persistence_seconds"]
-            and recent_peak >= min(suspect_threshold, state_rules["persistence_confirm_score_floor"])
+            and recent_peak >= state_rules["persistence_confirm_score_floor"]
         )
         if confirm_by_score or confirm_by_postfall:
             set_state(track, "confirmed_fall", now_s)
@@ -798,6 +969,7 @@ def track_event_record(track: Track, now_s: float, frame_idx: int, event_type: s
             "detector": float(track.detector_score),
         },
         "posture_label": track.posture_label,
+        "observations": track.last_observations,
         "injury": {
             "level": track.injury_level,
             "state": track.injury_state,
@@ -847,6 +1019,18 @@ def main() -> int:
     parser.add_argument("--fall-detector-imgsz", type=int, default=640)
     parser.add_argument("--fall-detector-conf", type=float, default=0.25)
     parser.add_argument("--fall-detector-iou", type=float, default=0.45)
+    parser.add_argument("--pose-imgsz", type=int, default=640)
+    parser.add_argument("--pose-conf", type=float, default=0.2)
+    parser.add_argument("--pose-max-det", type=int, default=8)
+    parser.add_argument("--posture-imgsz", type=int, default=320)
+    parser.add_argument("--analysis-width", type=int, default=0, help="Resize frames before inference; <=0 keeps source size.")
+    parser.add_argument("--process-every", type=int, default=1, help="Run inference every Nth frame for live streams.")
+    parser.add_argument("--start-seconds", type=float, default=0.0, help="Start processing at this timestamp for file sources.")
+    parser.add_argument("--end-seconds", type=float, default=0.0, help="Stop processing at this timestamp for file sources; <=0 means no limit.")
+    parser.add_argument("--opencv-buffer-size", type=int, default=1)
+    parser.add_argument("--pose-tracker", choices=["none", "botsort", "bytetrack"], default="none")
+    parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or CUDA index such as 0.")
+    parser.add_argument("--half", action="store_true", help="Use half precision for YOLO models when running on CUDA.")
     parser.add_argument("--window-size", type=int, default=24)
     parser.add_argument("--threshold", type=float, default=0.45)
     parser.add_argument("--alert-hold", type=int, default=3)
@@ -908,15 +1092,24 @@ def main() -> int:
     if args.detector_weight == 0.0 and "detector" in profile_weights:
         args.detector_weight = float(profile_weights["detector"])
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device == "auto":
+        torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        yolo_device: str | int | None = 0 if torch_device.type == "cuda" else "cpu"
+    elif args.device.isdigit():
+        torch_device = torch.device(f"cuda:{args.device}" if torch.cuda.is_available() else "cpu")
+        yolo_device = int(args.device) if torch_device.type == "cuda" else "cpu"
+    else:
+        torch_device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
+        yolo_device = args.device if torch_device.type == "cuda" else "cpu"
+    yolo_half = bool(args.half and torch_device.type == "cuda")
     pose_model = YOLO(args.pose_model)
-    gru_model, _ = build_model(Path(args.gru_weights), device)
+    gru_model, _ = build_model(Path(args.gru_weights), torch_device)
     hybrid_model = None
     if args.hybrid_weights and Path(args.hybrid_weights).exists():
-        hybrid_model, _ = build_model(Path(args.hybrid_weights), device)
+        hybrid_model, _ = build_model(Path(args.hybrid_weights), torch_device)
     semantic_model = None
     if args.semantic_weights and Path(args.semantic_weights).exists():
-        semantic_model, _ = build_model(Path(args.semantic_weights), device)
+        semantic_model, _ = build_model(Path(args.semantic_weights), torch_device)
     posture_model = YOLO(args.posture_model) if args.posture_model and Path(args.posture_model).exists() else None
     fall_detector_model = YOLO(args.fall_detector) if args.fall_detector and Path(args.fall_detector).exists() else None
     fall_labels = set(detector_entry.get("fall_labels", ["fall", "fallen", "lying"]))
@@ -925,18 +1118,22 @@ def main() -> int:
     detector_iou = float(detector_entry.get("iou", args.fall_detector_iou))
 
     source = int(args.source) if args.source.isdigit() else args.source
+    if isinstance(source, str) and source.lower().startswith("rtsp://"):
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|fflags;nobuffer|max_delay;0")
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open source: {args.source}")
-    is_live_source = isinstance(source, int)
+    if args.opencv_buffer_size >= 0:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, max(0, args.opencv_buffer_size))
+    is_live_source = isinstance(source, int) or (
+        isinstance(source, str) and source.lower().startswith(("rtsp://", "http://", "https://"))
+    )
+    if not is_live_source and args.start_seconds > 0:
+        cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, args.start_seconds) * 1000.0)
 
     writer = None
     fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
-    if args.save_path:
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        writer = cv2.VideoWriter(args.save_path, fourcc, fps, (width, height))
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v") if args.save_path else None
 
     event_file = None
     if args.event_log:
@@ -956,16 +1153,51 @@ def main() -> int:
         if not ok:
             break
         frame_idx += 1
+        if is_live_source and args.process_every > 1 and frame_idx % args.process_every != 0:
+            continue
+        if args.analysis_width > 0 and frame.shape[1] > args.analysis_width:
+            scale = args.analysis_width / float(frame.shape[1])
+            frame = cv2.resize(frame, (args.analysis_width, max(1, int(frame.shape[0] * scale))), interpolation=cv2.INTER_AREA)
         if is_live_source:
             now_s = time.monotonic() - start_monotonic
         else:
             pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
-            now_s = float(pos_msec / 1000.0) if pos_msec and pos_msec > 0 else float(frame_idx / max(fps, 1e-6))
+            now_s = (
+                float(pos_msec / 1000.0)
+                if pos_msec and pos_msec > 0
+                else max(0.0, args.start_seconds) + float(frame_idx / max(fps, 1e-6))
+            )
+            if args.end_seconds > 0 and now_s > args.end_seconds:
+                break
 
-        result = pose_model.predict(frame, verbose=False, imgsz=640, conf=0.2, max_det=8)[0]
-        detections = extract_people(result)
-        next_id = update_tracks(tracks, detections, next_id)
-        score_fall_detector_for_tracks(
+        if args.pose_tracker == "none":
+            result = pose_model.predict(
+                frame,
+                verbose=False,
+                imgsz=args.pose_imgsz,
+                conf=args.pose_conf,
+                max_det=args.pose_max_det,
+                device=yolo_device,
+                half=yolo_half,
+            )[0]
+            detections = extract_people(result)
+            next_id = update_tracks(tracks, detections, next_id)
+        else:
+            result = pose_model.track(
+                frame,
+                persist=True,
+                tracker=f"{args.pose_tracker}.yaml",
+                verbose=False,
+                imgsz=args.pose_imgsz,
+                conf=args.pose_conf,
+                max_det=args.pose_max_det,
+                device=yolo_device,
+                half=yolo_half,
+            )[0]
+            update_tracks_from_tracker(tracks, extract_tracked_people(result))
+            if tracks:
+                next_id = max(next_id, max(tracks.keys()) + 1)
+        next_id = score_fall_detector_for_tracks(
             frame,
             tracks,
             fall_detector_model,
@@ -973,6 +1205,10 @@ def main() -> int:
             detector_imgsz,
             detector_conf,
             detector_iou,
+            yolo_device,
+            yolo_half,
+            next_id,
+            now_s,
         )
 
         for track in tracks.values():
@@ -984,15 +1220,25 @@ def main() -> int:
             x2 = min(frame.shape[1], x2)
             y2 = min(frame.shape[0], y2)
             crop = frame[y1:y2, x1:x2]
-            posture_label, posture_score = classify_posture(crop, posture_model)
+            posture_label, posture_score = classify_posture(
+                crop,
+                posture_model,
+                imgsz=args.posture_imgsz,
+                device=yolo_device,
+                half=yolo_half,
+            )
             track.posture_label = posture_label
+            if track.detector_only:
+                posture_score = max(posture_score, track.detector_score)
+                track.posture_label = "detector_fallen"
             track.posture_score = posture_score
             track.posture_history.append(posture_score)
-            track.gru_score = score_track_gru(track, gru_model, device)
-            if hybrid_model is not None:
-                track.hybrid_score = score_track_hybrid(track, hybrid_model, device)
-            if semantic_model is not None:
-                track.semantic_score = score_track_semantic(track, semantic_model, device)
+            if not track.detector_only:
+                track.gru_score = score_track_gru(track, gru_model, torch_device)
+            if hybrid_model is not None and not track.detector_only:
+                track.hybrid_score = score_track_hybrid(track, hybrid_model, torch_device)
+            if semantic_model is not None and not track.detector_only:
+                track.semantic_score = score_track_semantic(track, semantic_model, torch_device)
             combined = (
                 track.gru_score * args.gru_weight
                 + track.hybrid_score * args.hybrid_weight
@@ -1000,6 +1246,9 @@ def main() -> int:
                 + posture_score * args.posture_weight
                 + track.detector_score * args.detector_weight
             )
+            if track.detector_only:
+                detector_confirm_floor = 0.36 if track.detector_hits >= 2 else 0.0
+                combined = max(combined, detector_confirm_floor, track.detector_score * 0.85)
             track.score = float(max(0.0, min(1.0, combined)))
             track.score_history.append(track.score)
             prev_state = track.state
@@ -1055,6 +1304,8 @@ def main() -> int:
                     2,
                 )
 
+        if args.save_path and writer is None:
+            writer = cv2.VideoWriter(args.save_path, fourcc, fps, (frame.shape[1], frame.shape[0]))
         if writer is not None:
             writer.write(frame)
 
