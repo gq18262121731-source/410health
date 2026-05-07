@@ -6,7 +6,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,7 @@ from backend.api.chat_api import router as chat_router
 from backend.api.device_api import router as device_router
 from backend.api.health_api import router as health_router
 from backend.api.relation_api import router as relation_router
+from backend.api.target_user_api import router as target_user_router
 from backend.api.user_api import router as user_router
 from backend.api.voice_api import router as voice_router
 from backend.api.omni_api import router as omni_router
@@ -28,7 +29,6 @@ from backend.models.device_model import DeviceIngestMode, DeviceStatus
 from backend.dependencies import (
     ensure_demo_overlay_history_window,
     get_alarm_service,
-    get_care_service,
     get_data_generator,
     get_demo_data_status,
     get_device_service,
@@ -38,7 +38,6 @@ from backend.dependencies import (
     ingest_sample,
     publish_next_demo_overlay_sample,
     refresh_demo_overlay_samples,
-    _serialize_alarm_queue_items,
 )
 from iot.mqtt_listener import MQTTGatewayListener
 from iot.serial_reader import SerialGatewayReader
@@ -65,57 +64,6 @@ async def _update_mock_watcher(device_mac: str, delta: int) -> None:
 async def _list_active_mock_macs() -> list[str]:
     async with _active_mock_lock:
         return [mac for mac, count in _active_mock_watchers.items() if count > 0]
-
-
-def _resolve_alarm_subscription_macs(token: str | None) -> set[str] | None:
-    normalized_token = str(token or "").strip()
-    if not normalized_token:
-        return None
-
-    user = get_care_service().resolve_session(normalized_token)
-    if user is None:
-        return set()
-
-    if user.role in {"community", "admin"}:
-        return None
-
-    if user.role == "family":
-        family_id = user.family_id or user.id
-        directory = get_care_service().get_family_directory(family_id)
-        return {
-            mac.upper()
-            for elder in directory.elders
-            for mac in (elder.device_macs or ([elder.device_mac] if elder.device_mac else []))
-            if mac
-        }
-
-    if user.role == "elder":
-        directory = get_care_service().get_directory()
-        elder = next((item for item in directory.elders if item.id == user.id), None)
-        return {
-            mac.upper()
-            for mac in ((elder.device_macs if elder else []) or ([elder.device_mac] if elder and elder.device_mac else []))
-            if mac
-        }
-
-    return None
-
-
-def _filter_alarm_queue_for_allowed_macs(
-    queue: list[dict[str, object]],
-    allowed_macs: set[str] | None,
-) -> list[dict[str, object]]:
-    if allowed_macs is None:
-        return queue
-    filtered: list[dict[str, object]] = []
-    for item in queue:
-        alarm = item.get("alarm", item)
-        if not isinstance(alarm, dict):
-            continue
-        device_mac = str(alarm.get("device_mac", "")).strip().upper()
-        if device_mac and device_mac in allowed_macs:
-            filtered.append(item)
-    return filtered
 
 
 @asynccontextmanager
@@ -161,6 +109,7 @@ app.add_middleware(
 app.include_router(device_router, prefix=settings.api_v1_prefix)
 app.include_router(user_router, prefix=settings.api_v1_prefix)
 app.include_router(relation_router, prefix=settings.api_v1_prefix)
+app.include_router(target_user_router, prefix=settings.api_v1_prefix)
 app.include_router(health_router, prefix=settings.api_v1_prefix)
 app.include_router(alarm_router, prefix=settings.api_v1_prefix)
 app.include_router(agent_router, prefix=settings.api_v1_prefix)
@@ -224,7 +173,6 @@ async def system_info() -> dict[str, object]:
             "broadcast_sos_overlay": cfg.serial_enable_broadcast_sos_overlay,
             "response_cycle_seconds": cfg.serial_response_cycle_seconds,
             "broadcast_cycle_seconds": cfg.serial_broadcast_cycle_seconds,
-            "command_delay_seconds": cfg.serial_command_delay_seconds,
             "active_target_mac": active_target_mac,
             "active_target_device_name": active_target_name,
             "target_locked": active_target_mac is not None,
@@ -274,26 +222,15 @@ async def health_stream(device_mac: str, websocket: WebSocket) -> None:
 
 
 @app.websocket("/ws/alarms")
-async def alarm_stream(websocket: WebSocket, token: str | None = Query(default=None)) -> None:
+async def alarm_stream(websocket: WebSocket) -> None:
     manager = get_websocket_manager()
-    allowed_macs = _resolve_alarm_subscription_macs(token)
-    await manager.connect_alarm(websocket, allowed_macs=allowed_macs)
+    await manager.connect_alarm(websocket)
     try:
-        queue = _serialize_alarm_queue_items(active_only=True)
-        filtered_queue = _filter_alarm_queue_for_allowed_macs(queue, allowed_macs)
         await websocket.send_json(
             {
                 "type": "alarm_queue",
-                "queue": filtered_queue,
-                "snapshot": {
-                    **get_alarm_service().queue_snapshot(),
-                    "length": len(filtered_queue),
-                    "head": [
-                        str(item.get("alarm", item).get("id", "")).strip()
-                        for item in filtered_queue[:5]
-                        if isinstance(item.get("alarm", item), dict)
-                    ],
-                },
+                "queue": [item.model_dump(mode="json") for item in get_alarm_service().queue_items(active_only=True)],
+                "snapshot": get_alarm_service().queue_snapshot(),
             }
         )
         while True:
@@ -390,7 +327,6 @@ async def _serial_stream_loop() -> None:
         enable_broadcast_sos_overlay=settings.serial_enable_broadcast_sos_overlay,
         response_cycle_seconds=settings.serial_response_cycle_seconds,
         broadcast_cycle_seconds=settings.serial_broadcast_cycle_seconds,
-        command_delay_seconds=settings.serial_command_delay_seconds,
         target_mac_provider=lambda: get_device_service().get_active_serial_target_mac(),
         on_sample=publish_from_thread,
     )

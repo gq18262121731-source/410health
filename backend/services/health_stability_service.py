@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Callable, Mapping
 
@@ -202,12 +202,12 @@ class HealthStabilityService:
         elif isinstance(value, str) and value.strip():
             timestamp = datetime.fromisoformat(value)
         else:
-            base = datetime.now(UTC)
+            base = datetime.now(timezone.utc)
             offset = fallback_index or 0
             timestamp = base + timedelta(seconds=offset * self.default_sample_interval_seconds)
         if timestamp.tzinfo is None:
-            return timestamp.replace(tzinfo=UTC)
-        return timestamp.astimezone(UTC)
+            return timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.astimezone(timezone.utc)
 
     def _trim_history(self, history: deque[BufferedPoint], now: datetime) -> None:
         window_start = now - timedelta(seconds=max(self.window_seconds, self.settings.stability_warning_aggregation_seconds))
