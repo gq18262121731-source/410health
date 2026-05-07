@@ -21,6 +21,7 @@ from backend.api.chat_api import router as chat_router
 from backend.api.device_api import router as device_router
 from backend.api.health_api import router as health_router
 from backend.api.relation_api import router as relation_router
+from backend.api.target_user_api import router as target_user_router
 from backend.api.user_api import router as user_router
 from backend.api.voice_api import router as voice_router
 from backend.api.omni_api import router as omni_router
@@ -131,6 +132,7 @@ app.add_middleware(
 app.include_router(device_router, prefix=settings.api_v1_prefix)
 app.include_router(user_router, prefix=settings.api_v1_prefix)
 app.include_router(relation_router, prefix=settings.api_v1_prefix)
+app.include_router(target_user_router, prefix=settings.api_v1_prefix)
 app.include_router(health_router, prefix=settings.api_v1_prefix)
 app.include_router(alarm_router, prefix=settings.api_v1_prefix)
 app.include_router(agent_router, prefix=settings.api_v1_prefix)

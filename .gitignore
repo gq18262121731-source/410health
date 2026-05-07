@@ -30,3 +30,35 @@ direct_test_snapshot.jpg
 # 备份文件
 *.zip
 *.bak
+
+# 运行与调试产物
+runtime_logs/
+tmp_camera_bench2/
+tmp_camera_debug/
+tmp_camera_probe/
+tmp_video_probe/
+.vscode/
+.idea/
+backend-start.err.log
+backend-start.out.log
+1.png
+3.png
+4.png
+5.jpg
+sos.png
+tmp_detect_frame.jpg
+tmp_normal_frame.jpg
+
+# 摄像头运行时本地输出
+camera_runtime_external/runtime_logs/
+camera_runtime_external/tools/*.msi
+camera_runtime_external/tools/*.exe
+camera_runtime_external/设备搜索助手v3.0/*.exe
+camera_runtime_external/设备搜索助手v3.0/*.url
+camera_runtime_external/设备搜索助手v3.0/*.log
+camera_runtime_external/tools/python_libs/**/__pycache__/
+camera_runtime_external/tools/python_libs/**/*.pyc
+
+# 页面本地日志
+tools/fall-camera-lite/*.log
+tools/target-user-console/*.log

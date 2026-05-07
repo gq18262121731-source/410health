@@ -53,6 +53,9 @@ from backend.services.health_stability_service import HealthStabilityService
 from backend.services.notification_service import NotificationService
 from backend.services.relation_service import RelationService
 from backend.services.stream_service import StreamService
+from backend.services.external_camera_bridge_service import ExternalCameraBridgeService
+from backend.services.target_user_service import TargetUserService
+from backend.services.target_user_fall_service import TargetUserFallService
 from backend.services.user_service import UserService
 from backend.services.voice_service import VoiceService
 from backend.services.warning_service import WarningService
@@ -106,6 +109,19 @@ _alarm_priority_queue = AlarmPriorityQueue(redis_url=_settings.redis_url)
 _mobile_push_device_repo = MobilePushDeviceRepository(_settings.database_url)
 _notification_service = NotificationService(_mobile_push_device_repo)
 _health_data_repository = HealthDataRepository(database_url=_settings.database_url)
+_target_user_service = TargetUserService(
+    data_root=_settings.data_dir,
+    model_root=Path(r"D:\Program\model\fall_detection"),
+)
+_target_user_fall_service = TargetUserFallService(
+    data_root=_settings.data_dir,
+    model_root=Path(r"D:\Program\model\fall_detection"),
+    target_user_service=_target_user_service,
+)
+_external_camera_bridge_service = ExternalCameraBridgeService(
+    data_root=_settings.data_dir,
+    target_user_fall_service=_target_user_fall_service,
+)
 _realtime_detector = RealtimeAnomalyDetector(
     window_size=_settings.realtime_window_size,
     zscore_threshold=_settings.zscore_threshold,
@@ -1206,6 +1222,18 @@ def get_fall_multimodal_review_status() -> dict[str, object]:
 
 def get_health_data_repository() -> HealthDataRepository:
     return _health_data_repository
+
+
+def get_target_user_service() -> TargetUserService:
+    return _target_user_service
+
+
+def get_target_user_fall_service() -> TargetUserFallService:
+    return _target_user_fall_service
+
+
+def get_external_camera_bridge_service() -> ExternalCameraBridgeService:
+    return _external_camera_bridge_service
 
 
 def get_data_generator() -> SyntheticHealthDataGenerator:
