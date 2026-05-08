@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import {
   Activity,
+  BrainCircuit,
   Cpu,
   LogOut,
   Network,
@@ -67,6 +68,12 @@ const pageMetaMap: Record<string, HeaderPageMeta> = {
     description: "问答、分析与工具",
     eyebrow: "社区智能体",
     icon: SquareTerminal,
+  },
+  finetune: {
+    label: "模型微调中心",
+    description: "面向健康监测、告警解释与智能问答场景的领域模型训练工作台",
+    eyebrow: "模型训练工作台",
+    icon: BrainCircuit,
   },
   family: {
     label: "家属视图",

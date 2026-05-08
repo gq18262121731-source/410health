@@ -62,3 +62,30 @@ camera_runtime_external/tools/python_libs/**/*.pyc
 # 页面本地日志
 tools/fall-camera-lite/*.log
 tools/target-user-console/*.log
+
+# Model tuning subsystem source and datasets are published with the main system.
+!model_tuning/
+!model_tuning/**
+
+# Model tuning subsystem runtime outputs and large model artifacts
+model_tuning/models/
+model_tuning/saves/
+model_tuning/llamaboard_cache/
+model_tuning/offload/
+model_tuning/hf_cache/
+model_tuning/ms_cache/
+model_tuning/om_cache/
+model_tuning/wandb/
+model_tuning/swanlog/
+model_tuning/output/
+model_tuning/outputs/
+model_tuning/**/*.log
+model_tuning/**/*.err.log
+model_tuning/**/*.out.log
+model_tuning/**/*.safetensors
+model_tuning/**/*.pt
+model_tuning/**/*.pth
+model_tuning/**/*.bin
+model_tuning/**/*.ckpt
+model_tuning/**/*.onnx
+model_tuning/**/*.gguf

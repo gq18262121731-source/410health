@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import {
   Activity,
+  BrainCircuit,
   Cpu,
   Network,
   SquareTerminal,
@@ -51,6 +52,12 @@ const navItems = computed<NavItem[]>(() =>
       label: "智能体工作台",
       description: "问答、分析与工具",
       icon: SquareTerminal,
+    },
+    {
+      page: "finetune" as PageKey,
+      label: "模型微调",
+      description: "训练、评估与导出领域模型",
+      icon: BrainCircuit,
     },
     {
       page: "family" as PageKey,

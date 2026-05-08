@@ -11,6 +11,7 @@ import DebugPage from "./views/DebugPage.vue";
 import FamilyPage from "./views/FamilyPage.vue";
 import LoginPage from "./views/LoginPage.vue";
 import MemberDevicePage from "./views/MemberDevicePage.vue";
+import ModelFinetunePage from "./views/ModelFinetunePage.vue";
 
 const {
   authError,
@@ -127,6 +128,11 @@ onUnmounted(() => {
     <CommunityAgentPage
       v-else-if="activePage === 'agent'"
       :session-user="sessionUser"
+      :refresh-key="routeToNonce"
+    />
+
+    <ModelFinetunePage
+      v-else-if="activePage === 'finetune'"
       :refresh-key="routeToNonce"
     />
 

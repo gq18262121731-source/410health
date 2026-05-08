@@ -37,7 +37,7 @@ const isCommunityWorkspace = computed(
 const canShowFallOverlay = computed(
   () => props.sessionUser.role === "community" || props.sessionUser.role === "admin" || props.sessionUser.role === "family",
 );
-const mergedHeaderPages = new Set<PageKey>(["overview", "topology", "members", "agent"]);
+const mergedHeaderPages = new Set<PageKey>(["overview", "topology", "members", "agent", "finetune"]);
 const showGlobalHeader = computed(
   () => !isCommunityWorkspace.value || !mergedHeaderPages.has(props.activePage),
 );

@@ -1,0 +1,251 @@
+{
+    "health_monitoring_single":  {
+                                     "file_name":  "single_turn_monitoring_focus_zh_medical.jsonl",
+                                     "formatting":  "sharegpt",
+                                     "columns":  {
+                                                     "messages":  "messages"
+                                                 },
+                                     "tags":  {
+                                                  "role_tag":  "role",
+                                                  "content_tag":  "content",
+                                                  "user_tag":  "user",
+                                                  "assistant_tag":  "assistant"
+                                              }
+                                 },
+    "health_monitoring_multi":  {
+                                    "file_name":  "multi_turn_monitoring_focus_zh_medical.jsonl",
+                                    "formatting":  "sharegpt",
+                                    "columns":  {
+                                                    "messages":  "messages"
+                                                },
+                                    "tags":  {
+                                                 "role_tag":  "role",
+                                                 "content_tag":  "content",
+                                                 "user_tag":  "user",
+                                                 "assistant_tag":  "assistant"
+                                             }
+                                },
+    "health_public_single":  {
+                                 "file_name":  "single_turn_public_zh_medical.jsonl",
+                                 "formatting":  "sharegpt",
+                                 "columns":  {
+                                                 "messages":  "messages"
+                                             },
+                                 "tags":  {
+                                              "role_tag":  "role",
+                                              "content_tag":  "content",
+                                              "user_tag":  "user",
+                                              "assistant_tag":  "assistant"
+                                          }
+                             },
+    "health_public_multi":  {
+                                "file_name":  "multi_turn_public_zh_medical.jsonl",
+                                "formatting":  "sharegpt",
+                                "columns":  {
+                                                "messages":  "messages"
+                                            },
+                                "tags":  {
+                                             "role_tag":  "role",
+                                             "content_tag":  "content",
+                                             "user_tag":  "user",
+                                             "assistant_tag":  "assistant"
+                                         }
+                            },
+    "identity":  {
+                     "file_name":  "identity.json"
+                 },
+    "alpaca_zh_demo":  {
+                           "file_name":  "alpaca_zh_demo.json"
+                       },
+    "alpaca_en_demo":  {
+                           "file_name":  "alpaca_en_demo.json"
+                       },
+    "c4_demo":  {
+                    "file_name":  "c4_demo.jsonl",
+                    "columns":  {
+                                    "prompt":  "text"
+                                }
+                },
+    "dpo_zh_demo":  {
+                        "file_name":  "dpo_zh_demo.json",
+                        "formatting":  "sharegpt",
+                        "ranking":  true,
+                        "columns":  {
+                                        "messages":  "conversations",
+                                        "chosen":  "chosen",
+                                        "rejected":  "rejected"
+                                    },
+                        "tags":  {
+                                     "role_tag":  "from",
+                                     "content_tag":  "value",
+                                     "user_tag":  "human",
+                                     "assistant_tag":  "gpt",
+                                     "observation_tag":  "observation",
+                                     "function_tag":  "function_call"
+                                 }
+                    },
+    "dpo_en_demo":  {
+                        "file_name":  "dpo_en_demo.json",
+                        "formatting":  "sharegpt",
+                        "ranking":  true,
+                        "columns":  {
+                                        "messages":  "conversations",
+                                        "chosen":  "chosen",
+                                        "rejected":  "rejected"
+                                    },
+                        "tags":  {
+                                     "role_tag":  "from",
+                                     "content_tag":  "value",
+                                     "user_tag":  "human",
+                                     "assistant_tag":  "gpt",
+                                     "observation_tag":  "observation",
+                                     "function_tag":  "function_call"
+                                 }
+                    },
+    "glaive_toolcall_zh_demo":  {
+                                    "file_name":  "glaive_toolcall_zh_demo.json",
+                                    "formatting":  "sharegpt",
+                                    "columns":  {
+                                                    "messages":  "conversations",
+                                                    "tools":  "tools"
+                                                },
+                                    "tags":  {
+                                                 "role_tag":  "from",
+                                                 "content_tag":  "value",
+                                                 "user_tag":  "human",
+                                                 "assistant_tag":  "gpt",
+                                                 "observation_tag":  "observation",
+                                                 "function_tag":  "function_call"
+                                             }
+                                },
+    "glaive_toolcall_en_demo":  {
+                                    "file_name":  "glaive_toolcall_en_demo.json",
+                                    "formatting":  "sharegpt",
+                                    "columns":  {
+                                                    "messages":  "conversations",
+                                                    "tools":  "tools"
+                                                },
+                                    "tags":  {
+                                                 "role_tag":  "from",
+                                                 "content_tag":  "value",
+                                                 "user_tag":  "human",
+                                                 "assistant_tag":  "gpt",
+                                                 "observation_tag":  "observation",
+                                                 "function_tag":  "function_call"
+                                             }
+                                },
+    "mllm_demo":  {
+                      "file_name":  "mllm_demo.json",
+                      "formatting":  "sharegpt",
+                      "columns":  {
+                                      "messages":  "messages",
+                                      "images":  "images"
+                                  },
+                      "tags":  {
+                                   "role_tag":  "role",
+                                   "content_tag":  "content",
+                                   "user_tag":  "user",
+                                   "assistant_tag":  "assistant"
+                               }
+                  },
+    "mllm_audio_demo":  {
+                            "file_name":  "mllm_audio_demo.json",
+                            "formatting":  "sharegpt",
+                            "columns":  {
+                                            "messages":  "messages",
+                                            "audios":  "audios"
+                                        },
+                            "tags":  {
+                                         "role_tag":  "role",
+                                         "content_tag":  "content",
+                                         "user_tag":  "user",
+                                         "assistant_tag":  "assistant"
+                                     }
+                        },
+    "mllm_video_demo":  {
+                            "file_name":  "mllm_video_demo.json",
+                            "formatting":  "sharegpt",
+                            "columns":  {
+                                            "messages":  "messages",
+                                            "videos":  "videos"
+                                        },
+                            "tags":  {
+                                         "role_tag":  "role",
+                                         "content_tag":  "content",
+                                         "user_tag":  "user",
+                                         "assistant_tag":  "assistant"
+                                     }
+                        },
+    "mllm_video_audio_demo":  {
+                                  "file_name":  "mllm_video_audio_demo.json",
+                                  "formatting":  "sharegpt",
+                                  "columns":  {
+                                                  "messages":  "messages",
+                                                  "videos":  "videos",
+                                                  "audios":  "audios"
+                                              },
+                                  "tags":  {
+                                               "role_tag":  "role",
+                                               "content_tag":  "content",
+                                               "user_tag":  "user",
+                                               "assistant_tag":  "assistant"
+                                           }
+                              },
+    "kto_en_demo":  {
+                        "file_name":  "kto_en_demo.json",
+                        "formatting":  "sharegpt",
+                        "columns":  {
+                                        "messages":  "messages",
+                                        "kto_tag":  "label"
+                                    }
+                    },
+    "v1_sft_demo":  {
+                        "file_name":  "v1_sft_demo.jsonl",
+                        "formatting":  "sharegpt",
+                        "columns":  {
+                                        "messages":  "messages"
+                                    },
+                        "tags":  {
+                                     "role_tag":  "role",
+                                     "content_tag":  "content",
+                                     "user_tag":  "user",
+                                     "assistant_tag":  "assistant"
+                                 }
+                    },
+    "v1_dpo_demo":  {
+                        "file_name":  "v1_dpo_demo.jsonl",
+                        "formatting":  "sharegpt",
+                        "ranking":  true,
+                        "columns":  {
+                                        "messages":  "messages",
+                                        "chosen":  "chosen",
+                                        "rejected":  "rejected"
+                                    },
+                        "tags":  {
+                                     "role_tag":  "role",
+                                     "content_tag":  "content",
+                                     "user_tag":  "user",
+                                     "assistant_tag":  "assistant"
+                                 }
+                    },
+    "wiki_demo":  {
+                      "file_name":  "wiki_demo.txt",
+                      "columns":  {
+                                      "prompt":  "text"
+                                  }
+                  },
+    "reason_tool_use_demo_50":  {
+                                    "file_name":  "reason_tool_use_demo_50.jsonl",
+                                    "formatting":  "sharegpt",
+                                    "columns":  {
+                                                    "messages":  "messages",
+                                                    "tools":  "tools"
+                                                },
+                                    "tags":  {
+                                                 "role_tag":  "role",
+                                                 "content_tag":  "content",
+                                                 "user_tag":  "user",
+                                                 "assistant_tag":  "assistant"
+                                             }
+                                }
+}

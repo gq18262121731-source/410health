@@ -33,6 +33,41 @@ conda run -n helth pytest ...
 - `scripts/train_static_model.py`: 静态模型训练脚本
 - `scripts/run_server.py`: Python 启动入口
 - `tests/`: 规则、推理、API 基础测试
+- `model_tuning/`: 模型微调子系统，包含微调核心代码、示例配置和随仓库上传的数据集
+
+## 模型微调子系统
+
+主系统已接入独立的模型微调页面，前端入口为“模型微调”。微调子系统位于：
+
+```text
+model_tuning/
+```
+
+仓库中包含微调核心代码和 `model_tuning/data/` 数据集，但不包含本地大模型权重、训练 checkpoint 和缓存目录。下载项目后，请自行准备基础模型，并放到：
+
+```text
+model_tuning/models/
+```
+
+启动微调服务：
+
+```powershell
+conda create -n llamafactory python=3.11 -y
+conda activate llamafactory
+cd model_tuning
+python -m pip install -e .
+$env:GRADIO_SERVER_NAME="127.0.0.1"
+$env:GRADIO_SERVER_PORT="7860"
+python -m llamafactory.cli webui
+```
+
+默认访问地址：
+
+```text
+http://127.0.0.1:7860
+```
+
+主系统前端默认通过 `VITE_MODEL_TUNING_URL=http://127.0.0.1:7860` 嵌入该页面。更详细的微调说明见 `model_tuning/README.md`。
 
 ## 环境安装
 
