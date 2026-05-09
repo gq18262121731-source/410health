@@ -10,6 +10,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .service import CameraRuntime
 
 
+FRESH_FRAME_SECONDS = 2.0
+STALE_FRAME_SECONDS = 5.0
+
+
 def build_handler(runtime: CameraRuntime):
     class Handler(BaseHTTPRequestHandler):
         server_version = "CameraRuntime/2.1"
@@ -171,6 +175,10 @@ def build_handler(runtime: CameraRuntime):
 
         def _send_health(self) -> None:
             state = runtime.frame_store.snapshot()
+            now = time.time()
+            frame_age_seconds = None
+            if state.latest_frame_at is not None:
+                frame_age_seconds = max(0.0, now - state.latest_frame_at)
             payload = {
                 "running": state.running,
                 "source": runtime.camera_config.masked_rtsp_url,
@@ -179,12 +187,18 @@ def build_handler(runtime: CameraRuntime):
                 "rtsp_port": runtime.camera_config.rtsp_port,
                 "has_frame": state.latest_jpeg is not None,
                 "latest_frame_at": state.latest_frame_at,
+                "frame_age_seconds": frame_age_seconds,
+                "fresh_frame": frame_age_seconds is not None and frame_age_seconds <= FRESH_FRAME_SECONDS,
+                "stale_frame": frame_age_seconds is None or frame_age_seconds > STALE_FRAME_SECONDS,
                 "frame_count": state.frame_count,
                 "last_error": state.last_error,
+                "last_error_at": state.last_error_at,
                 "last_opened_at": state.last_opened_at,
                 "reconnect_count": state.reconnect_count,
                 "consecutive_failures": state.consecutive_failures,
                 "current_stream": state.current_stream,
+                "stream_guard": runtime.stream_guard_status(),
+                "now": now,
             }
             body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(HTTPStatus.OK)
@@ -195,6 +209,10 @@ def build_handler(runtime: CameraRuntime):
 
         def _send_snapshot(self) -> None:
             state = runtime.frame_store.snapshot()
+            now = time.time()
+            frame_age_seconds = None
+            if state.latest_frame_at is not None:
+                frame_age_seconds = max(0.0, now - state.latest_frame_at)
             if state.latest_jpeg is None:
                 body = json.dumps({"error": state.last_error or "No frame yet"}, ensure_ascii=False).encode("utf-8")
                 self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
@@ -207,6 +225,10 @@ def build_handler(runtime: CameraRuntime):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Type", "image/jpeg")
             self.send_header("Content-Length", str(len(state.latest_jpeg)))
+            self.send_header("X-Camera-Frame-Count", str(state.frame_count))
+            if frame_age_seconds is not None:
+                self.send_header("X-Camera-Frame-Age-Ms", str(int(frame_age_seconds * 1000)))
+                self.send_header("X-Camera-Frame-Stale", "1" if frame_age_seconds > STALE_FRAME_SECONDS else "0")
             self.end_headers()
             self.wfile.write(state.latest_jpeg)
 

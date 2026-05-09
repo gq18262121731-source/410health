@@ -38,6 +38,7 @@ from backend.dependencies import (
     get_demo_data_status,
     get_device_service,
     get_fall_detection_service,
+    get_target_user_fall_service,
     get_parser,
     get_settings_dependency,
     get_websocket_manager,
@@ -80,6 +81,15 @@ async def _start_fall_detection_after_startup() -> None:
     await get_fall_detection_service().start()
 
 
+async def _warmup_target_user_vision_after_startup() -> None:
+    await asyncio.sleep(2.0)
+    try:
+        result = await asyncio.to_thread(get_target_user_fall_service().warmup, speed_mode="low_latency")
+        logger.info("Target-user realtime vision warmup finished: %s", result)
+    except Exception:
+        logger.exception("Target-user realtime vision warmup failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -97,6 +107,7 @@ async def lifespan(app: FastAPI):
     if settings.camera_stream_keep_warm:
         await get_camera_frame_hub().start_keep_warm()
     tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
+    tasks.append(asyncio.create_task(_warmup_target_user_vision_after_startup()))
     app.state.background_tasks = tasks
     try:
         yield

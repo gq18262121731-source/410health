@@ -447,6 +447,10 @@
       <div class="actions">
         <button id="startCameraBtn" class="btn btn-primary" type="button">启动实时检测</button>
         <button id="stopCameraBtn" class="btn btn-secondary" type="button">停止实时检测</button>
+        <label class="badge" for="lowLatencyToggle" style="gap:8px;">
+          <input id="lowLatencyToggle" type="checkbox" checked>
+          低延迟推理
+        </label>
         <label class="badge" for="targetOnlyToggle" style="gap:8px;">
           <input id="targetOnlyToggle" type="checkbox" checked>
           只检测目标用户
@@ -491,6 +495,11 @@
           <strong>尚未启动实时检测</strong>
           <small>启动后会从外部摄像头运行时拉取画面，并显示当前人物是否为目标用户、是否被 gate 放行，以及最终跌倒检测状态。</small>
         </div>
+
+        <div id="knowledgeCard" class="match-card unknown">
+          <strong>尚无姿态告警建议</strong>
+          <small>当目标人物出现异常姿态时，这里会显示异常等级、可能诱因与现场处理建议。</small>
+        </div>
       </div>
     </section>
 
@@ -505,16 +514,26 @@
     const TARGET_USERS_FALL_URL = API_BASE + "/target-users/fall-detect?mode=metadata&target_only=true";
     const EXTERNAL_CAMERA_HEALTH_URL = API_BASE + "/target-users/external-camera/health";
     const EXTERNAL_CAMERA_FALL_URL = API_BASE + "/target-users/external-camera/fall-detect?mode=metadata";
+    const EXTERNAL_CAMERA_REFRESH_URL = API_BASE + "/target-users/external-camera/refresh";
     const LIVE_SESSION_ID = "target-user-console-" + Math.random().toString(36).slice(2, 10);
     let liveBusy = false;
     let liveRunning = false;
     let liveRenderHandle = null;
     let liveDetectHandle = null;
+    let liveStreamRefreshHandle = null;
+    let liveSnapshotPullHandle = null;
     let lastLiveOverlay = null;
     let lastLiveFrameSize = { width: 0, height: 0 };
     let liveDetectIntervalMs = 220;
     let liveViewerBaseUrl = "http://127.0.0.1:8090";
     let liveMjpegUrl = "http://127.0.0.1:8090/api/v1/camera/stream.mjpg";
+    let liveSnapshotUrl = "http://127.0.0.1:8090/api/v1/camera/snapshot";
+    let liveStreamRefreshCount = 0;
+    let liveRuntimeRefreshBusy = false;
+    let lastRuntimeRefreshAt = 0;
+    let lastLiveDrawAt = 0;
+    const LIVE_STREAM_REFRESH_MS = 5000;
+    const LIVE_SNAPSHOT_PULL_MS = 220;
 
     const ui = {
       apiChip: document.getElementById("apiChip"),
@@ -542,6 +561,7 @@
       startCameraBtn: document.getElementById("startCameraBtn"),
       stopCameraBtn: document.getElementById("stopCameraBtn"),
       targetOnlyToggle: document.getElementById("targetOnlyToggle"),
+      lowLatencyToggle: document.getElementById("lowLatencyToggle"),
       cameraVideo: document.getElementById("cameraVideo"),
       cameraPlaceholder: document.getElementById("cameraPlaceholder"),
       resultCanvas: document.getElementById("resultCanvas"),
@@ -550,6 +570,7 @@
       liveBodyScoreText: document.getElementById("liveBodyScoreText"),
       liveFusedScoreText: document.getElementById("liveFusedScoreText"),
       liveStatusCard: document.getElementById("liveStatusCard"),
+      knowledgeCard: document.getElementById("knowledgeCard"),
       externalCameraChip: document.getElementById("externalCameraChip"),
       trackModeChip: document.getElementById("trackModeChip"),
       roiModeChip: document.getElementById("roiModeChip"),
@@ -567,6 +588,36 @@
 
     function formatScore(value) {
       return (Number(value) || 0).toFixed(2);
+    }
+
+    const postureReasonLabels = {
+      FAST_TORSO_DROP: "躯干快速倒向水平",
+      SLUMPED_POSTURE: "出现塌陷或瘫坐姿态",
+      TORSO_LEAN: "躯干持续异常倾斜",
+      HAND_NEAR_CHEST_OR_ABDOMEN: "手部长时间靠近胸腹部",
+      SUSTAINED_TORSO_ANGLE: "躯干角度持续偏大",
+      LONG_STATIC_POSTURE: "目标位置长时间几乎不动",
+    };
+
+    const diagnosticReasonLabels = {
+      CAMERA_UNAVAILABLE: "外部摄像头不可用",
+      CAMERA_FRAME_STALE: "外部摄像头画面过期",
+      CAMERA_SNAPSHOT_FAILED: "快照获取失败",
+      FACE_NOT_FOUND: "未检测到可用人脸",
+      BODY_NOT_FOUND: "未检测到可用人体",
+      NO_TRACK_CANDIDATE: "未形成稳定目标轨迹",
+      LOW_MATCH_CONFIDENCE: "目标匹配置信度偏低",
+      FILTERED_NON_TARGET: "非目标用户已过滤",
+    };
+
+    function formatPostureReasons(reasons) {
+      if (!Array.isArray(reasons) || !reasons.length) return "无明显异常触发原因";
+      return reasons.map((item) => postureReasonLabels[item] || item).join(" / ");
+    }
+
+    function formatDiagnosticReasons(reasons) {
+      if (!Array.isArray(reasons) || !reasons.length) return "--";
+      return reasons.map((item) => diagnosticReasonLabels[item] || item).join(" / ");
     }
 
     function clamp(value, min, max) {
@@ -805,23 +856,30 @@
       stopLiveCamera();
       try {
         const health = await requestJson(EXTERNAL_CAMERA_HEALTH_URL);
+        if (health && (health.bridge_status === "camera_unavailable" || !health.has_frame)) {
+          throw new Error(health.last_error || "外部摄像头暂时没有可用画面");
+        }
         liveViewerBaseUrl = String((health && health.viewer_url) || "http://127.0.0.1:8090/viewer").replace(/\/viewer$/, "");
         liveMjpegUrl = String((health && health.mjpeg_url) || (liveViewerBaseUrl + "/api/v1/camera/stream.mjpg"));
+        liveSnapshotUrl = String((health && health.snapshot_url) || (liveViewerBaseUrl + "/api/v1/camera/snapshot"));
         liveBusy = false;
         liveRunning = true;
         liveDetectIntervalMs = 220;
         lastLiveOverlay = null;
         lastLiveFrameSize = { width: 1280, height: 720 };
-        ui.cameraVideo.src = liveMjpegUrl + (liveMjpegUrl.includes("?") ? "&" : "?") + "ts=" + Date.now();
+        refreshLiveCameraStream("启动");
         ui.cameraPlaceholder.style.display = "none";
         ui.resultPlaceholder.style.display = "none";
-        ui.externalCameraChip.textContent = "外部摄像头: 已连接";
+        const ageText = Number(health.frame_age_seconds) >= 0 ? (" · 帧龄 " + Number(health.frame_age_seconds).toFixed(1) + "s") : "";
+        ui.externalCameraChip.textContent = "外部摄像头: 已连接" + ageText;
         ui.trackModeChip.textContent = "Track: 已启动";
         ui.roiModeChip.textContent = "ROI: 已启动";
         ui.failureChip.textContent = "失败原因: --";
         ui.liveStatusCard.className = "match-card warn";
-        ui.liveStatusCard.innerHTML = '<strong>外部摄像头实时检测已启动</strong><small>当前使用 8090 摄像头运行时作为视频源，并持续执行 target-only 跌倒检测。</small>';
+        ui.liveStatusCard.innerHTML = '<strong>外部摄像头实时检测已启动</strong><small>当前使用快照轮询显示画面，避免 MJPEG 长连接卡死；后台持续执行 target-only 跌倒检测。</small>';
         renderLiveResultFrame();
+        scheduleLiveSnapshotPull(0);
+        scheduleLiveStreamRefresh();
         scheduleLiveDetect();
       } catch (error) {
         ui.externalCameraChip.textContent = "外部摄像头: 不可达";
@@ -843,8 +901,20 @@
         cancelAnimationFrame(liveRenderHandle);
         liveRenderHandle = null;
       }
+      if (liveStreamRefreshHandle) {
+        window.clearTimeout(liveStreamRefreshHandle);
+        liveStreamRefreshHandle = null;
+      }
+      if (liveSnapshotPullHandle) {
+        window.clearTimeout(liveSnapshotPullHandle);
+        liveSnapshotPullHandle = null;
+      }
       lastLiveOverlay = null;
       lastLiveFrameSize = { width: 0, height: 0 };
+      liveStreamRefreshCount = 0;
+      liveRuntimeRefreshBusy = false;
+      lastRuntimeRefreshAt = 0;
+      lastLiveDrawAt = 0;
       if (ui.cameraVideo) {
         ui.cameraVideo.removeAttribute("src");
       }
@@ -858,6 +928,8 @@
       ui.resultCanvas.height = 0;
       ui.liveStatusCard.className = "match-card unknown";
       ui.liveStatusCard.innerHTML = '<strong>尚未启动实时检测</strong><small>启动后会从外部摄像头运行时拉取画面，并显示当前人物是否为目标用户、是否被 gate 放行，以及最终跌倒检测状态。</small>';
+      ui.knowledgeCard.className = "match-card unknown";
+      ui.knowledgeCard.innerHTML = '<strong>尚无姿态告警建议</strong><small>当目标人物出现异常姿态时，这里会显示异常等级、可能诱因与现场处理建议。</small>';
       ui.liveFaceScoreText.textContent = "0.00";
       ui.liveBodyScoreText.textContent = "0.00";
       ui.liveFusedScoreText.textContent = "0.00";
@@ -865,6 +937,74 @@
       ui.trackModeChip.textContent = "Track: 未启动";
       ui.roiModeChip.textContent = "ROI: 未启动";
       ui.failureChip.textContent = "失败原因: --";
+    }
+
+    function refreshLiveCameraStream(reason = "定时刷新") {
+      if (!liveRunning || !ui.cameraVideo || !liveMjpegUrl) {
+        return;
+      }
+      liveStreamRefreshCount += 1;
+      const base = liveSnapshotUrl || (liveViewerBaseUrl + "/api/v1/camera/snapshot");
+      const separator = base.includes("?") ? "&" : "?";
+      ui.cameraVideo.src = base + separator + "ts=" + Date.now() + "&refresh=" + liveStreamRefreshCount;
+      const suffix = reason ? " · " + reason : "";
+      ui.externalCameraChip.textContent = "外部摄像头: 正在重连画面" + suffix + " · #" + liveStreamRefreshCount;
+    }
+
+    function scheduleLiveSnapshotPull(delayMs = LIVE_SNAPSHOT_PULL_MS) {
+      if (!liveRunning) {
+        return;
+      }
+      if (liveSnapshotPullHandle) {
+        window.clearTimeout(liveSnapshotPullHandle);
+      }
+      liveSnapshotPullHandle = window.setTimeout(() => {
+        liveSnapshotPullHandle = null;
+        refreshLiveCameraStream("快照刷新");
+        scheduleLiveSnapshotPull();
+      }, Math.max(80, delayMs));
+    }
+
+    function scheduleLiveStreamRefresh(delayMs = LIVE_STREAM_REFRESH_MS) {
+      if (!liveRunning) {
+        return;
+      }
+      if (liveStreamRefreshHandle) {
+        window.clearTimeout(liveStreamRefreshHandle);
+      }
+      liveStreamRefreshHandle = window.setTimeout(() => {
+        liveStreamRefreshHandle = null;
+        refreshLiveCameraStream("5秒自动刷新");
+        scheduleLiveStreamRefresh();
+      }, Math.max(1000, delayMs));
+    }
+
+    async function refreshLiveCameraRuntime(reason = "画面卡顿恢复") {
+      if (!liveRunning || liveRuntimeRefreshBusy) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastRuntimeRefreshAt < 8000) {
+        refreshLiveCameraStream(reason);
+        return;
+      }
+      liveRuntimeRefreshBusy = true;
+      lastRuntimeRefreshAt = now;
+      ui.externalCameraChip.textContent = "外部摄像头: 正在刷新运行时 · " + reason;
+      try {
+        const payload = await requestJson(EXTERNAL_CAMERA_REFRESH_URL, { method: "POST" });
+        const after = payload.after || {};
+        liveViewerBaseUrl = String((payload.viewer_url || after.viewer_url || liveViewerBaseUrl + "/viewer")).replace(/\/viewer$/, "");
+        liveMjpegUrl = String((payload.mjpeg_url || after.mjpeg_url || (liveViewerBaseUrl + "/api/v1/camera/stream.mjpg")));
+        liveSnapshotUrl = String((payload.snapshot_url || after.snapshot_url || (liveViewerBaseUrl + "/api/v1/camera/snapshot")));
+        refreshLiveCameraStream("运行时已刷新");
+      } catch (error) {
+        refreshLiveCameraStream("运行时刷新失败后重连");
+      } finally {
+        liveRuntimeRefreshBusy = false;
+        scheduleLiveSnapshotPull();
+        scheduleLiveStreamRefresh();
+      }
     }
 
     function scheduleLiveDetect(delayMs = 0) {
@@ -894,10 +1034,21 @@
           canvas.width = sourceWidth;
           canvas.height = sourceHeight;
         }
-        resultContext.clearRect(0, 0, canvas.width, canvas.height);
-        try {
-          resultContext.drawImage(video, 0, 0, canvas.width, canvas.height);
-        } catch {}
+        const imageReady = video.complete && video.naturalWidth > 0 && video.naturalHeight > 0;
+        if (!imageReady && lastLiveDrawAt > 0) {
+          liveRenderHandle = window.requestAnimationFrame(renderLiveResultFrame);
+          return;
+        }
+        if (imageReady) {
+          resultContext.clearRect(0, 0, canvas.width, canvas.height);
+          try {
+            resultContext.drawImage(video, 0, 0, canvas.width, canvas.height);
+            lastLiveDrawAt = performance.now();
+          } catch {
+            liveRenderHandle = window.requestAnimationFrame(renderLiveResultFrame);
+            return;
+          }
+        }
 
         if (lastLiveOverlay && Array.isArray(lastLiveOverlay.detections)) {
           const scaleX = canvas.width / sourceWidth;
@@ -925,6 +1076,42 @@
             resultContext.fillText(text, x1 + 8, textY + 4);
           });
         }
+
+        const pose = lastLiveOverlay && lastLiveOverlay.pose && lastLiveOverlay.pose.pose;
+        if (pose && Array.isArray(pose.connections) && Array.isArray(pose.points)) {
+          const scaleX = canvas.width / sourceWidth;
+          const scaleY = canvas.height / sourceHeight;
+          const points = pose.points;
+          resultContext.lineWidth = 4;
+          pose.connections.forEach((item) => {
+            const from = points[item.from];
+            const to = points[item.to];
+            if (!from || !to) return;
+            if ((Number(from.score) || 0) < 0.2 || (Number(to.score) || 0) < 0.2) return;
+            resultContext.strokeStyle = "#ffd166";
+            resultContext.beginPath();
+            resultContext.moveTo((Number(from.x) || 0) * scaleX, (Number(from.y) || 0) * scaleY);
+            resultContext.lineTo((Number(to.x) || 0) * scaleX, (Number(to.y) || 0) * scaleY);
+            resultContext.stroke();
+          });
+          points.forEach((p) => {
+            if ((Number(p.score) || 0) < 0.2) return;
+            resultContext.fillStyle = "#ef476f";
+            resultContext.beginPath();
+            resultContext.arc((Number(p.x) || 0) * scaleX, (Number(p.y) || 0) * scaleY, 4.5, 0, Math.PI * 2);
+            resultContext.fill();
+          });
+          const posture = pose.posture || {};
+          if (posture.label) {
+            const poseText = `pose ${posture.label} ${(Number(posture.confidence) || 0).toFixed(2)}`;
+            resultContext.font = "700 18px Microsoft YaHei";
+            const textWidth = resultContext.measureText(poseText).width;
+            resultContext.fillStyle = "rgba(16,24,40,0.84)";
+            resultContext.fillRect(18, 18, textWidth + 18, 30);
+            resultContext.fillStyle = "#ffd166";
+            resultContext.fillText(poseText, 27, 22);
+          }
+        }
       }
       liveRenderHandle = window.requestAnimationFrame(renderLiveResultFrame);
     }
@@ -935,23 +1122,36 @@
       }
       liveBusy = true;
       const detectStartedAt = performance.now();
+      let detectFailed = false;
       try {
         const targetOnly = ui.targetOnlyToggle.checked ? "true" : "false";
-        const payload = await requestJson(EXTERNAL_CAMERA_FALL_URL + "&target_only=" + targetOnly + "&session_id=" + encodeURIComponent(LIVE_SESSION_ID), {
+        const speedMode = ui.lowLatencyToggle && ui.lowLatencyToggle.checked ? "low_latency" : "balanced";
+        const payload = await requestJson(EXTERNAL_CAMERA_FALL_URL + "&target_only=" + targetOnly + "&speed_mode=" + encodeURIComponent(speedMode) + "&session_id=" + encodeURIComponent(LIVE_SESSION_ID), {
           method: "POST",
         });
 
         const match = payload.target_match || {};
         const fall = payload.fall_result || {};
+        const poseResult = payload.pose_result || {};
+        const postureEvent = payload.posture_event || null;
+        const postureGuidance = payload.posture_guidance || null;
         const frameInfo = (fall && fall.frame) || {};
         const tracking = payload.tracking || {};
         const diagnostics = payload.diagnostics || {};
+        const speed = payload.speed || {};
+        const cameraFrame = payload.camera_frame || diagnostics.camera_frame || {};
+        const cameraHealth = payload.camera_health || diagnostics.camera_health || {};
         ui.liveFaceScoreText.textContent = formatScore(match.face_score);
         ui.liveBodyScoreText.textContent = formatScore(match.body_score);
         ui.liveFusedScoreText.textContent = formatScore(match.fused_score);
-        lastLiveOverlay = {
-          detections: (fall && fall.detections) || [],
-        };
+        const status = payload.status || "unknown";
+        const cameraProblem = ["camera_unavailable", "camera_frame_stale", "camera_snapshot_failed"].includes(status);
+        lastLiveOverlay = cameraProblem
+          ? { detections: [], pose: null }
+          : {
+              detections: (fall && fall.detections) || [],
+              pose: poseResult,
+            };
         lastLiveFrameSize = {
           width: Number(frameInfo.width) || 1280,
           height: Number(frameInfo.height) || 720,
@@ -961,19 +1161,32 @@
         ui.trackModeChip.textContent = "Track: " + (tracking.used_track ? ("ID " + (tracking.track_id ?? "--") + " · 候选 " + candidateCount) : ("未锁定 · 候选 " + candidateCount));
         ui.roiModeChip.textContent = "ROI: " + (tracking.roi && tracking.roi.used_roi ? "已启用" : "未启用");
         const reasons = Array.isArray(diagnostics.reasons) ? diagnostics.reasons : [];
-        ui.failureChip.textContent = "失败原因: " + (reasons.length ? reasons.join(" / ") : "--");
+        ui.failureChip.textContent = "失败原因: " + formatDiagnosticReasons(reasons);
+        const frameAge = Number(cameraFrame.frame_age_seconds ?? cameraHealth.frame_age_seconds);
+        if (Number.isFinite(frameAge)) {
+          ui.externalCameraChip.textContent = "外部摄像头: " + (cameraProblem ? "异常" : "已连接") + " · 帧龄 " + frameAge.toFixed(1) + "s";
+        }
+        if (cameraProblem || (Number.isFinite(frameAge) && frameAge > 2.5)) {
+          void refreshLiveCameraRuntime(cameraProblem ? "异常恢复" : "帧龄偏高");
+        }
 
-        const status = payload.status || "unknown";
         const decision = match.decision || "unknown";
-        const title = match.matched
-          ? ("命中目标用户：" + escapeHtml(match.display_name || match.user_id || ""))
-          : (status === "filtered_non_target" ? "非目标用户，已过滤" : "未命中目标用户");
+        const title = cameraProblem
+          ? (status === "camera_frame_stale" ? "外部摄像头画面过期，已暂停本帧检测" : "外部摄像头暂不可用")
+          : (match.matched
+              ? ("命中目标用户：" + escapeHtml(match.display_name || match.user_id || ""))
+              : (status === "filtered_non_target" ? "非目标用户，已过滤" : "未命中目标用户"));
         const latencyText = Number(payload.latency_ms) > 0 ? (" · 延迟约 " + Math.round(Number(payload.latency_ms)) + " ms") : "";
-        const summary = status === "filtered_non_target"
-          ? "target-only gate 已拦截，未继续执行跌倒检测。"
-          : ("跌倒检测状态：" + escapeHtml((fall && fall.status) || status) + latencyText);
+        const summary = cameraProblem
+          ? "本帧不会进入目标匹配和跌倒检测，等待摄像头恢复新鲜画面。"
+          : (status === "filtered_non_target"
+              ? "target-only gate 已拦截，未继续执行跌倒检测。"
+              : ("跌倒检测状态：" + escapeHtml((fall && fall.status) || status) + latencyText));
+        const posePosture = ((poseResult.pose || {}).posture || {}).label || "";
         const css =
-          status === "filtered_non_target"
+          cameraProblem
+            ? "unknown"
+            : status === "filtered_non_target"
             ? "non-target"
             : (fall && (fall.status === "fall" || fall.status === "suspected")) ? "target"
             : "warn";
@@ -981,17 +1194,50 @@
         ui.liveStatusCard.className = "match-card " + css;
         ui.liveStatusCard.innerHTML = [
           '<strong>' + title + '</strong>',
-          '<small>匹配决策: ' + escapeHtml(decision) + ' · Gate结果: ' + escapeHtml(status) + ' · 检测节奏约 ' + Math.round(liveDetectIntervalMs) + ' ms</small>',
-          '<small>' + summary + '</small>',
+          '<small>匹配决策: ' + escapeHtml(decision) + ' · Gate结果: ' + escapeHtml(status) + ' · 推理: ' + escapeHtml(speed.mode || speedMode) + ' · 检测节奏约 ' + Math.round(liveDetectIntervalMs) + ' ms</small>',
+          '<small>' + summary + (posePosture ? (' · 姿态: ' + escapeHtml(posePosture)) : '') + '</small>',
         ].join("");
+
+        if (postureEvent && postureGuidance) {
+          const level = String(postureEvent.level || 'normal');
+          const cardCss = ['critical', 'danger'].includes(level)
+            ? 'unknown'
+            : ['warning', 'attention'].includes(level)
+              ? 'warn'
+              : 'target';
+          const actions = Array.isArray(postureGuidance.immediate_actions) ? postureGuidance.immediate_actions.slice(0, 3) : [];
+          const causes = Array.isArray(postureGuidance.possible_causes) ? postureGuidance.possible_causes.slice(0, 2) : [];
+          const contraindications = Array.isArray(postureGuidance.contraindications) ? postureGuidance.contraindications.slice(0, 2) : [];
+          const reasonText = formatPostureReasons(postureEvent.reasons);
+          const emergencyText = postureGuidance.call_emergency ? '建议立即联系急救或医护人员' : '建议人工复核并持续观察';
+          ui.knowledgeCard.className = "match-card " + cardCss;
+          ui.knowledgeCard.innerHTML = [
+            '<strong>' + escapeHtml(postureGuidance.title || '姿态提示') + ' · ' + escapeHtml(level) + '</strong>',
+            '<small>异常类型: ' + escapeHtml(postureEvent.type || 'normal') + ' · 置信度: ' + formatScore(postureEvent.confidence) + '</small>',
+            '<small>触发原因: ' + escapeHtml(reasonText) + '</small>',
+            causes.length ? ('<small>可能诱因: ' + escapeHtml(causes.join(' / ')) + '</small>') : '<small>可能诱因: 暂无</small>',
+            actions.length ? ('<small>处理建议: ' + escapeHtml(actions.join('；')) + '</small>') : '<small>处理建议: 继续观察。</small>',
+            contraindications.length ? ('<small>禁忌事项: ' + escapeHtml(contraindications.join('；')) + '</small>') : '',
+            '<small>处置级别: ' + escapeHtml(emergencyText) + '</small>',
+          ].join('');
+        } else {
+          ui.knowledgeCard.className = "match-card unknown";
+          ui.knowledgeCard.innerHTML = '<strong>尚无姿态告警建议</strong><small>当目标人物出现异常姿态时，这里会显示异常等级、可能诱因与现场处理建议。</small>';
+        }
         setGlobalError("");
       } catch (error) {
+        detectFailed = true;
+        lastLiveOverlay = null;
+        ui.externalCameraChip.textContent = "外部摄像头: 异常";
+        ui.failureChip.textContent = "失败原因: " + (error instanceof Error ? error.message : "实时检测失败");
+        void refreshLiveCameraRuntime("检测异常恢复");
         setGlobalError(error instanceof Error ? error.message : "实时检测失败");
+        liveDetectIntervalMs = 1500;
       } finally {
         liveBusy = false;
         const elapsed = performance.now() - detectStartedAt;
         liveLastDetectAt = performance.now();
-        liveDetectIntervalMs = clamp(elapsed < 240 ? 120 : elapsed * 0.55, 120, 260);
+        liveDetectIntervalMs = detectFailed ? 1500 : clamp(elapsed < 240 ? 120 : elapsed * 0.55, 120, 260);
         if (liveRunning) {
           scheduleLiveDetect(liveDetectIntervalMs);
         }

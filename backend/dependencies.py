@@ -54,6 +54,9 @@ from backend.services.notification_service import NotificationService
 from backend.services.relation_service import RelationService
 from backend.services.stream_service import StreamService
 from backend.services.external_camera_bridge_service import ExternalCameraBridgeService
+from backend.services.posture_event_service import PostureEventService
+from backend.services.posture_knowledge_service import PostureKnowledgeService
+from backend.services.target_pose_service import TargetPoseService
 from backend.services.target_user_service import TargetUserService
 from backend.services.target_user_fall_service import TargetUserFallService
 from backend.services.user_service import UserService
@@ -113,10 +116,20 @@ _target_user_service = TargetUserService(
     data_root=_settings.data_dir,
     model_root=Path(r"D:\Program\model\fall_detection"),
 )
+_target_pose_service = TargetPoseService(
+    model_root=Path(r"D:\Program\model\fall_detection"),
+)
+_posture_event_service = PostureEventService()
+_posture_knowledge_service = PostureKnowledgeService(
+    resources_root=Path(__file__).resolve().parent / "resources",
+)
 _target_user_fall_service = TargetUserFallService(
     data_root=_settings.data_dir,
     model_root=Path(r"D:\Program\model\fall_detection"),
     target_user_service=_target_user_service,
+    target_pose_service=_target_pose_service,
+    posture_event_service=_posture_event_service,
+    posture_knowledge_service=_posture_knowledge_service,
 )
 _external_camera_bridge_service = ExternalCameraBridgeService(
     data_root=_settings.data_dir,
@@ -1226,6 +1239,18 @@ def get_health_data_repository() -> HealthDataRepository:
 
 def get_target_user_service() -> TargetUserService:
     return _target_user_service
+
+
+def get_target_pose_service() -> TargetPoseService:
+    return _target_pose_service
+
+
+def get_posture_event_service() -> PostureEventService:
+    return _posture_event_service
+
+
+def get_posture_knowledge_service() -> PostureKnowledgeService:
+    return _posture_knowledge_service
 
 
 def get_target_user_fall_service() -> TargetUserFallService:

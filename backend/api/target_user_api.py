@@ -84,6 +84,7 @@ async def target_user_fall_detect(
     mode: str = "metadata",
     target_only: bool = True,
     session_id: str = "default",
+    speed_mode: str = "balanced",
 ) -> dict:
     content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
     if content_type and content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp", "application/octet-stream"}:
@@ -97,6 +98,7 @@ async def target_user_fall_detect(
         include_annotated_image=include_annotated_image,
         target_only=target_only,
         session_id=session_id,
+        speed_mode=speed_mode,
     )
 
 
@@ -105,15 +107,22 @@ async def external_camera_health() -> dict:
     return get_external_camera_bridge_service().health()
 
 
+@router.post("/external-camera/refresh")
+async def external_camera_refresh(prefer_stream: str | None = None) -> dict:
+    return get_external_camera_bridge_service().refresh_stream(prefer_stream=prefer_stream)
+
+
 @router.post("/external-camera/fall-detect")
 async def external_camera_fall_detect(
     target_only: bool = True,
     session_id: str = "default",
     mode: str = "metadata",
+    speed_mode: str = "balanced",
 ) -> dict:
     include_annotated_image = mode.strip().lower() != "metadata"
     return get_external_camera_bridge_service().detect_latest(
         session_id=session_id,
         target_only=target_only,
         include_annotated_image=include_annotated_image,
+        speed_mode=speed_mode,
     )

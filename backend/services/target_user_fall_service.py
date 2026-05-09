@@ -10,6 +10,9 @@ import numpy as np
 from ultralytics.trackers.byte_tracker import BYTETracker
 from ultralytics.utils import IterableSimpleNamespace
 
+from backend.services.posture_event_service import PostureEventService
+from backend.services.posture_knowledge_service import PostureKnowledgeService
+from backend.services.target_pose_service import TargetPoseService
 from backend.services.target_user_service import TargetUserService
 
 
@@ -21,8 +24,20 @@ class TargetUserFallService:
     of the system can evolve toward the final multi-person target-only flow.
     """
 
-    def __init__(self, *, data_root: Path, model_root: Path, target_user_service: TargetUserService) -> None:
+    def __init__(
+        self,
+        *,
+        data_root: Path,
+        model_root: Path,
+        target_user_service: TargetUserService,
+        target_pose_service: TargetPoseService,
+        posture_event_service: PostureEventService,
+        posture_knowledge_service: PostureKnowledgeService,
+    ) -> None:
         self._target_user_service = target_user_service
+        self._target_pose_service = target_pose_service
+        self._posture_event_service = posture_event_service
+        self._posture_knowledge_service = posture_knowledge_service
         self._model_root = model_root
         self._data_root = data_root
         self._fall_frame_service = None
@@ -52,6 +67,36 @@ class TargetUserFallService:
         except Exception:
             self._fall_frame_service = None
 
+    def warmup(self, *, speed_mode: str = "low_latency") -> dict[str, Any]:
+        """Load and warm the heavy realtime vision models before the first UI request."""
+        started = time.perf_counter()
+        speed = self._speed_profile(speed_mode)
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        result: dict[str, Any] = {
+            "ok": True,
+            "speed": speed,
+            "person": None,
+            "fall": None,
+            "pose": None,
+            "latency_ms": 0,
+        }
+        try:
+            result["person"] = self._target_user_service.warmup_person_detector(imgsz=speed["person_imgsz"])
+            if self._fall_frame_service is not None:
+                result["fall"] = self._fall_frame_service.warmup(
+                    imgsz=speed["fall_imgsz"],
+                    posture_imgsz=speed["posture_imgsz"],
+                )
+            result["pose"] = self._target_pose_service.warmup(
+                imgsz=speed["pose_imgsz"],
+                conf=speed["pose_conf"],
+            )
+        except Exception as exc:
+            result["ok"] = False
+            result["error"] = f"{exc.__class__.__name__}: {exc}"
+        result["latency_ms"] = int((time.perf_counter() - started) * 1000)
+        return result
+
     def detect(
         self,
         image_bytes: bytes,
@@ -59,8 +104,10 @@ class TargetUserFallService:
         include_annotated_image: bool = True,
         target_only: bool = True,
         session_id: str = "default",
+        speed_mode: str = "balanced",
     ) -> dict[str, Any]:
         started = time.perf_counter()
+        speed = self._speed_profile(speed_mode)
         np_buffer = np.frombuffer(image_bytes, dtype=np.uint8)
         frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
         if frame is None:
@@ -78,10 +125,10 @@ class TargetUserFallService:
         force_full_match = True
         if cache_entry is not None and "last_full_match_ms" not in cache_entry:
             cache_entry["last_full_match_ms"] = int(cache_entry.get("ts_ms", now_ms))
-        if cache_entry and (now_ms - int(cache_entry["last_full_match_ms"])) <= self._full_refresh_interval_ms:
+        if cache_entry and (now_ms - int(cache_entry["last_full_match_ms"])) <= speed["full_refresh_interval_ms"]:
             force_full_match = False
 
-        tracked_persons = self._resolve_tracked_persons(frame=frame, session_id=session_id)
+        tracked_persons = self._resolve_tracked_persons(frame=frame, session_id=session_id, speed=speed)
         tracked_person = None
         target_features = None
         target_match = None
@@ -99,16 +146,19 @@ class TargetUserFallService:
                 session_id=session_id,
                 now_ms=now_ms,
                 force_full_match=force_full_match,
+                speed=speed,
             )
             if tracked_person is not None:
                 tracking_payload["track_id"] = tracked_person["track_id"]
                 tracking_payload["used_track"] = True
+                tracking_payload["reused_locked_match"] = bool(target_features and target_features.get("reused_locked_match"))
 
         if target_match is None or target_features is None:
             target_features = self._target_user_service.extract_features_from_frame(
                 frame,
                 include_face=force_full_match,
                 include_body=True,
+                body_imgsz=speed["body_imgsz"],
             )
             target_match = self._resolve_target_match(
                 face_embedding=target_features["face_embedding"],
@@ -116,6 +166,7 @@ class TargetUserFallService:
                 session_id=session_id,
                 now_ms=now_ms,
                 track_id=tracked_person["track_id"] if tracked_person is not None else None,
+                match_cache_ttl_ms=speed["match_cache_ttl_ms"],
             )
 
         assert target_match is not None
@@ -128,6 +179,7 @@ class TargetUserFallService:
                 "target_match": target_match.model_dump(mode="json"),
                 "fall_result": None,
                 "warnings": target_features["warnings"],
+                "speed": speed,
                 "tracking": tracking_payload,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
             }
@@ -139,24 +191,67 @@ class TargetUserFallService:
                 "error": "FALL_MODEL_UNAVAILABLE",
                 "target_match": target_match.model_dump(mode="json"),
                 "fall_result": None,
+                "speed": speed,
                 "tracking": tracking_payload,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
             }
 
         roi_info = None
+        pose_result = None
+        posture_event = None
+        posture_guidance = None
         if tracked_person is not None and target_match.matched:
             roi_frame, roi_bbox = self._crop_target_roi(frame, tracked_person["bbox"])
             if roi_frame is not None:
-                fall_result = self._fall_frame_service.detect_frame(roi_frame, include_annotated_image=include_annotated_image)
+                fall_result = self._fall_frame_service.detect_frame(
+                    roi_frame,
+                    include_annotated_image=include_annotated_image,
+                    imgsz=speed["fall_imgsz"],
+                    posture_imgsz=speed["posture_imgsz"],
+                )
                 self._offset_detections(fall_result, roi_bbox)
+                pose_result = self._target_pose_service.estimate_pose(
+                    frame,
+                    bbox=roi_bbox,
+                    imgsz=speed["pose_imgsz"],
+                    conf=speed["pose_conf"],
+                )
+                posture_event = self._posture_event_service.analyze(
+                    session_id=session_id,
+                    pose_result=pose_result,
+                    target_matched=True,
+                )
+                posture_guidance = self._posture_knowledge_service.get((posture_event or {}).get("type", "normal"))
                 roi_info = {
                     "bbox": roi_bbox,
                     "used_roi": True,
                 }
             else:
-                fall_result = self._fall_frame_service.detect_frame(frame, include_annotated_image=include_annotated_image)
+                fall_result = self._fall_frame_service.detect_frame(
+                    frame,
+                    include_annotated_image=include_annotated_image,
+                    imgsz=speed["fall_imgsz"],
+                    posture_imgsz=speed["posture_imgsz"],
+                )
+                pose_result = self._target_pose_service.estimate_pose(
+                    frame,
+                    bbox=tracked_person["bbox"],
+                    imgsz=speed["pose_imgsz"],
+                    conf=speed["pose_conf"],
+                )
+                posture_event = self._posture_event_service.analyze(
+                    session_id=session_id,
+                    pose_result=pose_result,
+                    target_matched=True,
+                )
+                posture_guidance = self._posture_knowledge_service.get((posture_event or {}).get("type", "normal"))
         else:
-            fall_result = self._fall_frame_service.detect_frame(frame, include_annotated_image=include_annotated_image)
+            fall_result = self._fall_frame_service.detect_frame(
+                frame,
+                include_annotated_image=include_annotated_image,
+                imgsz=speed["fall_imgsz"],
+                posture_imgsz=speed["posture_imgsz"],
+            )
 
         if fall_result.get("frame"):
             fall_result["frame"] = {"width": frame.shape[1], "height": frame.shape[0]}
@@ -165,7 +260,11 @@ class TargetUserFallService:
             "status": fall_result.get("status"),
             "target_match": target_match.model_dump(mode="json"),
             "fall_result": fall_result,
+            "pose_result": pose_result,
+            "posture_event": posture_event,
+            "posture_guidance": posture_guidance,
             "warnings": target_features["warnings"],
+            "speed": speed,
             "tracking": {
                 **tracking_payload,
                 "roi": roi_info,
@@ -181,12 +280,18 @@ class TargetUserFallService:
         session_id: str,
         now_ms: int,
         track_id: int | None,
+        match_cache_ttl_ms: int | None = None,
     ):
         cached = self._get_cache_entry(session_id)
+        cache_ttl_ms = match_cache_ttl_ms or self._match_cache_ttl_ms
 
-        if cached and (now_ms - int(cached["ts_ms"])) <= self._match_cache_ttl_ms:
+        if cached and (now_ms - int(cached["ts_ms"])) <= cache_ttl_ms:
             if track_id is not None and cached.get("track_id") is not None and int(cached["track_id"]) != int(track_id):
                 cached = None
+        else:
+            cached = None
+
+        if cached:
             if face_embedding is None and body_profile is not None and cached.get("body_profile") is not None:
                 body_score = self._target_user_service._best_body_similarity(  # type: ignore[attr-defined]
                     body_profile,
@@ -197,6 +302,15 @@ class TargetUserFallService:
                         "body_score": round(body_score, 4),
                         "fused_score": round(max(float(cached["match"].fused_score), body_score), 4),
                     })
+                    updated = {
+                        **cached,
+                        "ts_ms": now_ms,
+                        "last_feature_match_ms": now_ms,
+                        "match": match,
+                        "body_profile": body_profile,
+                        "track_id": track_id if track_id is not None else cached.get("track_id"),
+                    }
+                    self._set_cache_entry(session_id, updated)
                     return match
 
         target_match = self._target_user_service.match_target(
@@ -212,23 +326,25 @@ class TargetUserFallService:
                 {
                     "ts_ms": now_ms,
                     "last_full_match_ms": last_full_match_ms,
+                    "last_feature_match_ms": now_ms,
                     "match": target_match,
                     "body_profile": body_profile,
                     "track_id": track_id,
                 },
             )
         else:
-            if cached and (now_ms - int(cached["ts_ms"])) > self._match_cache_ttl_ms:
+            if cached and (now_ms - int(cached["ts_ms"])) > cache_ttl_ms:
                 self._clear_cache_entry(session_id)
         return target_match
 
-    def _resolve_tracked_persons(self, *, frame: np.ndarray, session_id: str) -> list[dict[str, Any]]:
+    def _resolve_tracked_persons(self, *, frame: np.ndarray, session_id: str, speed: dict[str, Any]) -> list[dict[str, Any]]:
         tracker = self._get_or_create_tracker(session_id)
         person_boxes = self._target_user_service._collect_person_boxes(  # type: ignore[attr-defined]
             frame,
             self._target_user_service._person_model,  # type: ignore[attr-defined]
             allowed_labels={"person"},
             conf=0.2,
+            imgsz=speed["person_imgsz"],
         )
         if not person_boxes:
             person_boxes = self._target_user_service._collect_person_boxes(  # type: ignore[attr-defined]
@@ -236,9 +352,11 @@ class TargetUserFallService:
                 self._target_user_service._fallback_person_model,  # type: ignore[attr-defined]
                 allowed_labels={"person", "fall", "fallen", "sitting", "lying", "bending"},
                 conf=0.2,
+                imgsz=speed["person_imgsz"],
             )
         if not person_boxes:
-            return []
+            face_candidate = self._build_face_first_candidate(frame)
+            return [face_candidate] if face_candidate is not None else []
 
         class _TrackResults:
             def __init__(self, boxes):
@@ -286,6 +404,33 @@ class TargetUserFallService:
             )
         return people
 
+    def _build_face_first_candidate(self, frame: np.ndarray) -> dict[str, Any] | None:
+        face_bbox = self._target_user_service.detect_face_bbox(frame)
+        if face_bbox is None:
+            return None
+        x1, y1, x2, y2 = face_bbox
+        h, w = frame.shape[:2]
+        face_w = max(1, x2 - x1)
+        face_h = max(1, y2 - y1)
+        body_w = int(round(face_w * 3.4))
+        body_h = int(round(face_h * 6.2))
+        cx = int(round((x1 + x2) * 0.5))
+        top = max(0, y1 - int(round(face_h * 0.6)))
+        rx1 = max(0, cx - body_w // 2)
+        rx2 = min(w, cx + body_w // 2)
+        ry1 = top
+        ry2 = min(h, ry1 + body_h)
+        if rx2 <= rx1 or ry2 <= ry1:
+            return None
+        crop = frame[ry1:ry2, rx1:rx2]
+        if crop.size == 0:
+            return None
+        return {
+            "track_id": -1,
+            "bbox": [rx1, ry1, rx2, ry2],
+            "crop": crop,
+        }
+
     def _pick_target_candidate(
         self,
         *,
@@ -293,15 +438,36 @@ class TargetUserFallService:
         session_id: str,
         now_ms: int,
         force_full_match: bool,
+        speed: dict[str, Any],
     ) -> tuple[dict[str, Any] | None, Any | None, dict[str, Any] | None]:
         cached = self._get_cache_entry(session_id)
         if cached and cached.get("track_id") is not None:
             preferred = next((item for item in tracked_persons if int(item["track_id"]) == int(cached["track_id"])), None)
             if preferred is not None:
+                reuse_ms = int(speed.get("track_lock_reuse_ms") or 0)
+                revalidate_ms = int(speed.get("track_lock_revalidate_ms") or 0)
+                last_seen_ms = int(cached.get("ts_ms", 0))
+                last_feature_match_ms = int(cached.get("last_feature_match_ms", last_seen_ms))
+                can_reuse_track_lock = (
+                    cached.get("match") is not None
+                    and reuse_ms > 0
+                    and revalidate_ms > 0
+                    and (now_ms - last_seen_ms) <= reuse_ms
+                    and (now_ms - last_feature_match_ms) <= revalidate_ms
+                )
+                if can_reuse_track_lock:
+                    self._set_cache_entry(session_id, {**cached, "ts_ms": now_ms})
+                    return preferred, cached["match"], {
+                        "warnings": [],
+                        "face_embedding": None,
+                        "body_profile": cached.get("body_profile"),
+                        "reused_locked_match": True,
+                    }
                 preferred_features = self._target_user_service.extract_features_from_frame(
                     preferred["crop"],
                     include_face=force_full_match,
                     include_body=True,
+                    body_imgsz=speed["body_imgsz"],
                 )
                 preferred_match = self._resolve_target_match(
                     face_embedding=preferred_features["face_embedding"],
@@ -309,6 +475,7 @@ class TargetUserFallService:
                     session_id=session_id,
                     now_ms=now_ms,
                     track_id=preferred["track_id"],
+                    match_cache_ttl_ms=speed["match_cache_ttl_ms"],
                 )
                 if preferred_match.matched:
                     return preferred, preferred_match, preferred_features
@@ -322,6 +489,7 @@ class TargetUserFallService:
                 person["crop"],
                 include_face=force_full_match,
                 include_body=True,
+                body_imgsz=speed["body_imgsz"],
             )
             candidate = self._target_user_service.match_target(
                 face_embedding=features["face_embedding"],
@@ -343,8 +511,40 @@ class TargetUserFallService:
             session_id=session_id,
             now_ms=now_ms,
             track_id=best_person["track_id"],
+            match_cache_ttl_ms=speed["match_cache_ttl_ms"],
         )
         return best_person, final_match, best_features
+
+    @staticmethod
+    def _speed_profile(speed_mode: str) -> dict[str, Any]:
+        normalized = str(speed_mode or "balanced").strip().lower().replace("-", "_")
+        if normalized in {"low_latency", "fast", "turbo"}:
+            return {
+                "mode": "low_latency",
+                "person_imgsz": 416,
+                "fall_imgsz": 416,
+            "posture_imgsz": 256,
+            "pose_imgsz": 384,
+            "pose_conf": 0.25,
+            "body_imgsz": 416,
+                "match_cache_ttl_ms": 3200,
+                "full_refresh_interval_ms": 1800,
+                "track_lock_reuse_ms": 650,
+                "track_lock_revalidate_ms": 1500,
+            }
+        return {
+            "mode": "balanced",
+            "person_imgsz": 640,
+            "fall_imgsz": 640,
+            "posture_imgsz": 384,
+            "pose_imgsz": 640,
+            "pose_conf": 0.2,
+            "body_imgsz": 640,
+            "match_cache_ttl_ms": 1800,
+            "full_refresh_interval_ms": 900,
+            "track_lock_reuse_ms": 0,
+            "track_lock_revalidate_ms": 0,
+        }
 
     def _get_or_create_tracker(self, session_id: str) -> BYTETracker:
         with self._lock:

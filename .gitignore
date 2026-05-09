@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 .playwright-cli/
 output/
+artifacts/
 .pytest_cache/
 pytest-cache-files-*
 data/

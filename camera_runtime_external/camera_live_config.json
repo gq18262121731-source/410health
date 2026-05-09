@@ -5,7 +5,7 @@
                    "password":  "admin",
                    "rtsp_port":  554,
                    "transport":  "tcp",
-                   "stream":  "av0_1"
+                   "stream":  "av0_0"
                },
     "viewer":  {
                    "listen_host":  "127.0.0.1",

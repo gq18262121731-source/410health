@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import cv2
 import numpy as np
+import torch
 from pydantic import ValidationError
 from ultralytics import YOLO
 
@@ -40,6 +41,9 @@ class TargetUserService:
         self._face_detector_yn = None
         self._face_recognizer_sf = None
         self._init_face_models()
+        use_cuda = torch.cuda.is_available()
+        self._device: str | int = 0 if use_cuda else "cpu"
+        self._half = use_cuda
         self._person_model = YOLO(str(model_root / "yolo11n.pt"))
         self._fallback_person_model = YOLO(str(model_root / "weights" / "yolo_fall_detector_v1.pt"))
         self._load_records()
@@ -143,7 +147,37 @@ class TargetUserService:
             "yunet_available": self._face_detector_yn is not None,
             "sface_available": self._face_recognizer_sf is not None,
             "fallback_haar_available": not self._haar_face_detector.empty(),
+            "person_detector_device": self._device,
+            "person_detector_half": self._half,
         }
+
+    def warmup_person_detector(self, *, imgsz: int = 416) -> dict[str, Any]:
+        started = time.perf_counter()
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        try:
+            self._collect_person_boxes(dummy, self._person_model, allowed_labels={"person"}, conf=0.2, imgsz=imgsz)
+            self._collect_person_boxes(
+                dummy,
+                self._fallback_person_model,
+                allowed_labels={"person", "fall", "fallen", "sitting", "lying", "bending"},
+                conf=0.2,
+                imgsz=imgsz,
+            )
+            return {
+                "ok": True,
+                "imgsz": imgsz,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "device": self._device,
+                "half": self._half,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": f"{exc.__class__.__name__}: {exc}",
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "device": self._device,
+                "half": self._half,
+            }
 
     def debug_extract_features(self, image_bytes: bytes) -> dict[str, Any]:
         np_buffer = np.frombuffer(image_bytes, dtype=np.uint8)
@@ -230,6 +264,7 @@ class TargetUserService:
         *,
         include_face: bool = True,
         include_body: bool = True,
+        body_imgsz: int = 640,
     ) -> dict[str, Any]:
         if frame is None or frame.size == 0:
             return {"warnings": ["INVALID_IMAGE"], "face_embedding": None, "body_profile": None}
@@ -239,7 +274,7 @@ class TargetUserService:
         if include_face and face_embedding is None:
             warnings.append("FACE_NOT_FOUND")
 
-        body_profile = self._extract_body_profile(frame) if include_body else None
+        body_profile = self._extract_body_profile(frame, imgsz=body_imgsz) if include_body else None
         if include_body and body_profile is None:
             warnings.append("BODY_NOT_FOUND")
 
@@ -255,10 +290,16 @@ class TargetUserService:
         *,
         include_face: bool = True,
         include_body: bool = True,
+        body_imgsz: int = 640,
     ) -> dict[str, Any]:
         np_buffer = np.frombuffer(image_bytes, dtype=np.uint8)
         frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
-        return self.extract_features_from_frame(frame, include_face=include_face, include_body=include_body)
+        return self.extract_features_from_frame(
+            frame,
+            include_face=include_face,
+            include_body=include_body,
+            body_imgsz=body_imgsz,
+        )
 
     def _extract_face_embedding(self, frame: np.ndarray) -> list[float] | None:
         if self._face_detector_yn is not None and self._face_recognizer_sf is not None:
@@ -311,6 +352,22 @@ class TargetUserService:
         faces = np.asarray(faces, dtype=np.float32)
         return max(faces, key=lambda item: float(item[2] * item[3]))
 
+    def detect_face_bbox(self, frame: np.ndarray) -> list[int] | None:
+        if frame is None or frame.size == 0:
+            return None
+        if self._face_detector_yn is not None:
+            face = self._detect_with_yunet(frame)
+            if face is not None:
+                x, y, w, h = [float(v) for v in face[:4]]
+                return [int(round(x)), int(round(y)), int(round(x + w)), int(round(y + h))]
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self._haar_face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+        if len(faces) == 0:
+            return None
+        x, y, w, h = max(faces, key=lambda item: item[2] * item[3])
+        return [int(x), int(y), int(x + w), int(y + h)]
+
     def _embed_with_sface(self, frame: np.ndarray, face: np.ndarray) -> list[float] | None:
         if self._face_recognizer_sf is None:
             return None
@@ -327,14 +384,15 @@ class TargetUserService:
             return None
         return (vector / norm).tolist()
 
-    def _extract_body_profile(self, frame: np.ndarray) -> dict[str, float] | None:
-        person_boxes = self._collect_person_boxes(frame, self._person_model, allowed_labels={"person"}, conf=0.2)
+    def _extract_body_profile(self, frame: np.ndarray, *, imgsz: int = 640) -> dict[str, float] | None:
+        person_boxes = self._collect_person_boxes(frame, self._person_model, allowed_labels={"person"}, conf=0.2, imgsz=imgsz)
         if not person_boxes:
             person_boxes = self._collect_person_boxes(
                 frame,
                 self._fallback_person_model,
                 allowed_labels={"person", "fall", "fallen", "sitting", "lying", "bending"},
                 conf=0.2,
+                imgsz=imgsz,
             )
         if not person_boxes:
             return None
@@ -375,15 +433,25 @@ class TargetUserService:
         if path.exists():
             path.rmdir()
 
-    @staticmethod
     def _collect_person_boxes(
+        self,
         frame: np.ndarray,
         model: YOLO,
         *,
         allowed_labels: set[str],
         conf: float,
+        imgsz: int = 640,
     ) -> list[tuple[np.ndarray, float, str]]:
-        result = model.predict(frame, verbose=False, imgsz=640, conf=conf, iou=0.45)[0]
+        with torch.inference_mode():
+            result = model.predict(
+                frame,
+                verbose=False,
+                imgsz=imgsz,
+                conf=conf,
+                iou=0.45,
+                device=self._device,
+                half=self._half,
+            )[0]
         if result.boxes is None or len(result.boxes) == 0:
             return []
         names = result.names if hasattr(result, "names") else model.names
@@ -417,12 +485,12 @@ class TargetUserService:
         if body_profile is None or not gallery:
             return 0.0
         best = 0.0
-        keys = ("aspect", "area_ratio", "center_x", "center_y", "label_code")
         for item in gallery:
-            diffs = []
-            for key in keys:
-                diffs.append(abs(float(body_profile.get(key, 0.0)) - float(item.get(key, 0.0))))
-            avg_diff = sum(diffs) / len(diffs)
+            aspect_diff = abs(float(body_profile.get("aspect", 0.0)) - float(item.get("aspect", 0.0)))
+            area_diff = abs(float(body_profile.get("area_ratio", 0.0)) - float(item.get("area_ratio", 0.0)))
+            label_diff = abs(float(body_profile.get("label_code", 0.0)) - float(item.get("label_code", 0.0)))
+            # Position on screen is not treated as identity because external camera scenes can vary a lot.
+            avg_diff = (aspect_diff * 0.55) + (area_diff * 0.30) + (min(label_diff, 1.0) * 0.15)
             score = max(0.0, 1.0 - avg_diff)
             best = max(best, score)
         return best
