@@ -608,3 +608,127 @@ class CameraDetectionFrameHub(CameraFrameHub):
             return max(0.0, float(value))
         except (TypeError, ValueError):
             return 0.0
+
+
+class CameraPoseFrameHub(CameraFrameHub):
+    """Camera hub that paints the latest pose tracks onto frames."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        payload_provider: Callable[[], dict[str, Any] | None],
+        max_payload_age_seconds: float = 5.0,
+    ) -> None:
+        super().__init__(settings)
+        self._payload_provider = payload_provider
+        self._max_payload_age_seconds = max_payload_age_seconds
+
+    def _decorate_frame(self, frame: bytes) -> bytes:
+        payload = self._payload_provider()
+        if not isinstance(payload, dict):
+            return frame
+
+        tracks = payload.get("tracks")
+        if not isinstance(tracks, list) or not tracks:
+            return frame
+
+        frame_width = self._coerce_positive(payload.get("frame_width"))
+        frame_height = self._coerce_positive(payload.get("frame_height"))
+        if frame_width <= 0 or frame_height <= 0:
+            return frame
+
+        observed_at = self._coerce_positive(payload.get("_observed_at"))
+        if observed_at > 0 and time.time() - observed_at > self._max_payload_age_seconds:
+            return frame
+
+        try:
+            import cv2
+            import numpy as np
+        except Exception:
+            return frame
+
+        image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            return frame
+
+        height, width = image.shape[:2]
+        for item in tracks:
+            if not isinstance(item, dict):
+                continue
+            bbox = item.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            try:
+                x1, y1, x2, y2 = [float(value) for value in bbox]
+            except (TypeError, ValueError):
+                continue
+            x1 = max(0, min(width - 1, int(round((x1 / frame_width) * width))))
+            x2 = max(0, min(width - 1, int(round((x2 / frame_width) * width))))
+            y1 = max(0, min(height - 1, int(round((y1 / frame_height) * height))))
+            y2 = max(0, min(height - 1, int(round((y2 / frame_height) * height))))
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            label = str(item.get("posture_label") or "unknown").strip() or "unknown"
+            score = self._coerce_positive(item.get("posture_score"))
+            track_id = str(item.get("track_id") or "?")
+            if label == "lying_floor":
+                color = (0, 80, 255)
+            elif label == "bending":
+                color = (0, 190, 255)
+            elif label == "sitting":
+                color = (255, 170, 0)
+            else:
+                color = (70, 220, 70)
+
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+            text = f"id={track_id} {label} {score:.2f}"
+            text_size, baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
+            text_w, text_h = text_size
+            text_x = x1
+            text_y = max(text_h + 10, y1 - 8)
+            cv2.rectangle(
+                image,
+                (text_x - 4, text_y - text_h - 8),
+                (text_x + text_w + 6, text_y + baseline + 4),
+                color,
+                -1,
+            )
+            cv2.putText(
+                image,
+                text,
+                (text_x, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+            keypoints = item.get("keypoints")
+            if isinstance(keypoints, list):
+                for point in keypoints:
+                    if not isinstance(point, (list, tuple)) or len(point) < 2:
+                        continue
+                    try:
+                        px = float(point[0])
+                        py = float(point[1])
+                        pconf = float(point[2]) if len(point) >= 3 else 1.0
+                    except (TypeError, ValueError):
+                        continue
+                    if pconf < 0.15:
+                        continue
+                    tx = max(0, min(width - 1, int(round((px / frame_width) * width))))
+                    ty = max(0, min(height - 1, int(round((py / frame_height) * height))))
+                    cv2.circle(image, (tx, ty), 2, color, -1)
+
+        ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        return encoded.tobytes() if ok else frame
+
+    @staticmethod
+    def _coerce_positive(value: object) -> float:
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return 0.0

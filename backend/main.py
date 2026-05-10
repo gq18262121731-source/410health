@@ -16,6 +16,7 @@ from backend.api.alarm_api import router as alarm_router
 from backend.api.agent_api import router as agent_router
 from backend.api.auth_api import router as auth_router
 from backend.api.camera_api import router as camera_router
+from backend.api.camera_source_api import router as camera_source_router
 from backend.api.care_api import router as care_router
 from backend.api.chat_api import router as chat_router
 from backend.api.device_api import router as device_router
@@ -32,12 +33,17 @@ from backend.dependencies import (
     get_alarm_service,
     get_camera_audio_hub,
     get_camera_detection_frame_hub,
+    get_camera_pose_frame_hub,
+    get_camera_source_audio_hub,
+    get_camera_source_frame_hub,
+    get_camera_source_registry,
     get_care_service,
     get_camera_frame_hub,
     get_data_generator,
     get_demo_data_status,
     get_device_service,
     get_fall_detection_service,
+    get_pose_detection_service,
     get_parser,
     get_settings_dependency,
     get_websocket_manager,
@@ -46,6 +52,7 @@ from backend.dependencies import (
     refresh_demo_overlay_samples,
     resolve_alarm_visible_device_macs,
     resolve_session_user_by_token,
+    shutdown_camera_source_hubs,
 )
 from iot.mqtt_listener import MQTTGatewayListener
 from iot.serial_reader import SerialGatewayReader
@@ -80,6 +87,11 @@ async def _start_fall_detection_after_startup() -> None:
     await get_fall_detection_service().start()
 
 
+async def _start_pose_detection_after_startup() -> None:
+    await asyncio.sleep(1.0)
+    await get_pose_detection_service().start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -97,15 +109,19 @@ async def lifespan(app: FastAPI):
     if settings.camera_stream_keep_warm:
         await get_camera_frame_hub().start_keep_warm()
     tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
+    tasks.append(asyncio.create_task(_start_pose_detection_after_startup()))
     app.state.background_tasks = tasks
     try:
         yield
     finally:
         await get_fall_detection_service().stop()
+        await get_pose_detection_service().stop()
         await get_camera_audio_hub().shutdown()
+        await shutdown_camera_source_hubs()
         if settings.camera_stream_keep_warm:
             await get_camera_frame_hub().stop_keep_warm()
         await get_camera_detection_frame_hub().stop_keep_warm()
+        await get_camera_pose_frame_hub().stop_keep_warm()
         for task in tasks:
             task.cancel()
             with suppress(asyncio.CancelledError):
@@ -142,6 +158,7 @@ app.include_router(voice_router, prefix=settings.api_v1_prefix)
 app.include_router(omni_router, prefix=settings.api_v1_prefix)
 app.include_router(auth_router, prefix=settings.api_v1_prefix)
 app.include_router(camera_router, prefix=settings.api_v1_prefix)
+app.include_router(camera_source_router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/healthz")
@@ -294,7 +311,7 @@ async def alarm_stream(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/camera")
 async def camera_frame_stream(websocket: WebSocket) -> None:
-    hub = get_camera_frame_hub()
+    hub = get_camera_source_frame_hub("active")
     await hub.connect(websocket)
     try:
         while True:
@@ -307,7 +324,7 @@ async def camera_frame_stream(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/camera/audio/listen")
 async def camera_audio_stream(websocket: WebSocket) -> None:
-    hub = get_camera_audio_hub()
+    hub = get_camera_source_audio_hub("active")
     await hub.connect(websocket)
     try:
         while True:
@@ -316,6 +333,50 @@ async def camera_audio_stream(websocket: WebSocket) -> None:
         await hub.disconnect(websocket)
     finally:
         await hub.disconnect(websocket)
+
+
+@app.websocket("/ws/camera-sources/{camera_id}")
+async def camera_source_frame_stream(camera_id: str, websocket: WebSocket) -> None:
+    try:
+        hub = get_camera_source_frame_hub(camera_id)
+    except KeyError:
+        await websocket.close(code=4404, reason="camera_source_not_found")
+        return
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
+
+
+@app.websocket("/ws/camera-sources/active")
+async def active_camera_source_frame_stream(websocket: WebSocket) -> None:
+    active = get_camera_source_registry().active_source()
+    await camera_source_frame_stream(active.camera_id, websocket)
+
+
+@app.websocket("/ws/camera-sources/{camera_id}/audio/listen")
+async def camera_source_audio_stream(camera_id: str, websocket: WebSocket) -> None:
+    try:
+        hub = get_camera_source_audio_hub(camera_id)
+    except KeyError:
+        await websocket.close(code=4404, reason="camera_source_not_found")
+        return
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+
+
+@app.websocket("/ws/camera-sources/active/audio/listen")
+async def active_camera_source_audio_stream(websocket: WebSocket) -> None:
+    active = get_camera_source_registry().active_source()
+    await camera_source_audio_stream(active.camera_id, websocket)
 
 
 async def _mock_stream_loop() -> None:

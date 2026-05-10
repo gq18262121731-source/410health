@@ -2,10 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   Camera,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  ChevronDown,
   Move,
   Pause,
   Play,
@@ -13,17 +13,20 @@ import {
   ShieldCheck,
   Volume2,
   VolumeX,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-vue-next";
 import {
   api,
   type CameraAudioStatusResponse,
   type CameraAudioStreamStatusResponse,
   type CameraFallDetectionStatusResponse,
+  type CameraPoseDetectionConfigResponse,
+  type CameraPoseDetectionStatusResponse,
   type CameraPtzDirection,
   type CameraStatusResponse,
   type CameraStreamStatusResponse,
+  type ExternalCameraFallDetectResponse,
+  type ExternalCameraHealthResponse,
+  type TargetUserRecord,
 } from "../api/client";
 import { PcmAudioPlayer, type PcmAudioPlayerState } from "../utils/pcmAudioPlayer";
 
@@ -32,6 +35,8 @@ const streamStatus = ref<CameraStreamStatusResponse | null>(null);
 const audioStatus = ref<CameraAudioStatusResponse | null>(null);
 const audioStreamStatus = ref<CameraAudioStreamStatusResponse | null>(null);
 const fallStatus = ref<CameraFallDetectionStatusResponse | null>(null);
+const poseStatus = ref<CameraPoseDetectionStatusResponse | null>(null);
+const poseConfig = ref<CameraPoseDetectionConfigResponse | null>(null);
 const frameCanvas = ref<HTMLCanvasElement | null>(null);
 const hasFrame = ref(false);
 const loadingStatus = ref(false);
@@ -49,6 +54,12 @@ const audioDesired = ref(false);
 const audioLevel = ref(0);
 const audioQueuedMs = ref(0);
 const audioDroppedBacklog = ref(0);
+const targetUsers = ref<TargetUserRecord[]>([]);
+const externalCameraHealth = ref<ExternalCameraHealthResponse | null>(null);
+const externalCameraResult = ref<ExternalCameraFallDetectResponse | null>(null);
+const externalCameraBusy = ref(false);
+const poseBusy = ref(false);
+const lastStatusErrorAt = ref(0);
 let statusTimer: number | undefined;
 let streamStatusTimer: number | undefined;
 let frameSocket: WebSocket | undefined;
@@ -70,9 +81,9 @@ const primaryStreamTransport =
   (import.meta.env.VITE_CAMERA_PRIMARY_TRANSPORT === "websocket" ? "websocket" : "mjpeg") as "websocket" | "mjpeg";
 
 const statusLabel = computed(() => {
-  if (!status.value?.configured) return "Not configured";
-  if (status.value.online) return "Online";
-  return "Offline";
+  if (!status.value?.configured) return "未配置";
+  if (status.value.online) return "在线";
+  return "离线";
 });
 
 const statusTone = computed(() => {
@@ -82,19 +93,19 @@ const statusTone = computed(() => {
 
 const endpointLabel = computed(() => {
   if (status.value?.source === "local") {
-    return status.value.detail || "Local camera";
+    return status.value.detail || "本地摄像头";
   }
-  if (!status.value?.ip) return "Waiting for backend config";
+  if (!status.value?.ip) return "等待后端配置";
   return `${status.value.ip}:${status.value.port}${status.value.path}`;
 });
 
 const fallDetectionLabel = computed(() => {
-  if (!fallStatus.value?.enabled) return "Fall detection disabled";
+  if (!fallStatus.value?.enabled) return "跌倒检测未启用";
   if (fallStatus.value.process_running) {
-    return fallStatus.value.accuracy_preserving ? "Fall detection live / accuracy" : "Fall detection live";
+    return fallStatus.value.accuracy_preserving ? "跌倒检测运行中 / 精度优先" : "跌倒检测运行中";
   }
-  if (fallStatus.value.running) return "Fall detection starting";
-  return "Fall detection offline";
+  if (fallStatus.value.running) return "跌倒检测启动中";
+  return "跌倒检测离线";
 });
 
 const fallDetectionTone = computed(() => {
@@ -103,16 +114,34 @@ const fallDetectionTone = computed(() => {
   return "offline";
 });
 
+const poseDetectionLabel = computed(() => {
+  if (!poseConfig.value?.enabled) return "姿态检测未开启";
+  if (poseStatus.value?.process_running) return "姿态检测运行中";
+  if (poseStatus.value?.running) return "姿态检测启动中";
+  return "姿态检测未就绪";
+});
+
+const poseDetectionTone = computed(() => {
+  if (!poseConfig.value?.enabled) return "neutral";
+  if (poseStatus.value?.process_running) return "online";
+  return "offline";
+});
+
+const poseActionLabel = computed(() => {
+  if (poseBusy.value) return poseConfig.value?.enabled ? "关闭中..." : "开启中...";
+  return poseConfig.value?.enabled ? "关闭姿态检测" : "开启姿态检测";
+});
+
 const audioListenSupported = computed(() => audioStatus.value?.listen_supported === true);
 
 const audioCapabilityLabel = computed(() => {
-  if (!audioStatus.value?.configured) return "Audio not configured";
+  if (!audioStatus.value?.configured) return "音频未配置";
   if (audioListenSupported.value) {
     const codec = audioStatus.value.audio_codec || "PCM";
     const sampleRate = audioStatus.value.sample_rate ?? audioStreamStatus.value?.sample_rate ?? 0;
     return `${codec} / ${sampleRate || 0}Hz`;
   }
-  return audioStatus.value?.error || "Listen unavailable";
+  return audioStatus.value?.error || "当前不支持收听";
 });
 
 const audioCapabilityTone = computed(() => {
@@ -121,14 +150,9 @@ const audioCapabilityTone = computed(() => {
 });
 
 const audioActionLabel = computed(() => {
-  if (audioConnecting.value) return "Connecting audio";
-  if (audioListening.value) return `Stop listen (${audioLevel.value.toFixed(0)}%)`;
-  return "Listen live audio";
-});
-
-const audioBrowserSupported = computed(() => {
-  if (typeof window === "undefined") return false;
-  return typeof window.AudioContext !== "undefined";
+  if (audioConnecting.value) return "音频连接中";
+  if (audioListening.value) return `停止收听（${audioLevel.value.toFixed(0)}%）`;
+  return "收听实时音频";
 });
 
 const relayFpsLabel = computed(() => {
@@ -139,20 +163,49 @@ const relayFpsLabel = computed(() => {
   return relayFps > 0 ? relayFps.toFixed(1) : clientFps.value.toFixed(1);
 });
 
-const transportLabel = computed(() => {
-  if (mjpegFallback.value) {
-    return primaryStreamTransport === "mjpeg" ? "MJPEG relay" : "MJPEG fallback";
-  }
-  return "WebSocket fallback";
+const externalTargetSummary = computed(() => {
+  if (!targetUsers.value.length) return "暂无目标用户";
+  const names = targetUsers.value.slice(0, 2).map((item) => item.display_name).join(" / ");
+  const extra = targetUsers.value.length > 2 ? ` +${targetUsers.value.length - 2}` : "";
+  return `${targetUsers.value.length} 个目标用户：${names}${extra}`;
 });
+
+const externalHealthLabel = computed(() => {
+  if (!externalCameraHealth.value) return "外部运行时未接通";
+  if (externalCameraHealth.value.running && externalCameraHealth.value.has_frame) return "外部运行时在线";
+  if (externalCameraHealth.value.running) return "外部运行时已启动";
+  return "外部运行时离线";
+});
+
+function emitDiagnosticsLog(reason: string) {
+  if (typeof console === "undefined") return;
+  console.info("[CameraMonitorCard]", {
+    reason,
+    cameraStatus: status.value,
+    streamStatus: streamStatus.value,
+    audioStatus: audioStatus.value,
+    audioStreamStatus: audioStreamStatus.value,
+    fallStatus: fallStatus.value,
+    externalCameraHealth: externalCameraHealth.value,
+    externalCameraResult: externalCameraResult.value,
+  });
+}
+
+function clearStaleCameraError() {
+  if (!errorMessage.value) return;
+  const now = Date.now();
+  if (lastStatusErrorAt.value <= 0 || now - lastStatusErrorAt.value > 6000) {
+    errorMessage.value = "";
+  }
+}
 
 function formatCameraError(rawMessage: string) {
   if (!rawMessage) return "";
   if (rawMessage.includes("TimeoutExpired") || rawMessage.includes("timed out after")) {
-    return "RTSP relay timed out while probing the configured camera stream. The backend will keep retrying the camera.";
+    return "RTSP 中继在探测摄像头流时超时，后端会继续重试。";
   }
   if (rawMessage.includes("NETWORK_UNAVAILABLE")) {
-    return "Unable to reach the backend camera service right now.";
+    return "当前无法连接到后端摄像头服务。";
   }
   return rawMessage.replace(/rtsp:\/\/[^@\s]+@/gi, "rtsp://***@");
 }
@@ -160,14 +213,18 @@ function formatCameraError(rawMessage: string) {
 async function refreshStatus() {
   loadingStatus.value = true;
   try {
-    status.value = await api.getCameraStatus();
+    status.value = await api.getActiveCameraStatus();
     if (!status.value.online && status.value.error) {
       errorMessage.value = formatCameraError(status.value.error);
+      lastStatusErrorAt.value = Date.now();
     } else if (status.value.online) {
       errorMessage.value = "";
+      lastStatusErrorAt.value = 0;
     }
+    emitDiagnosticsLog("refreshStatus");
   } catch (error) {
-    errorMessage.value = formatCameraError(error instanceof Error ? error.message : "Failed to load camera status");
+    errorMessage.value = formatCameraError(error instanceof Error ? error.message : "摄像头状态加载失败");
+    lastStatusErrorAt.value = Date.now();
   } finally {
     loadingStatus.value = false;
   }
@@ -175,25 +232,25 @@ async function refreshStatus() {
 
 async function refreshStreamStatus() {
   try {
-    streamStatus.value = await api.getCameraStreamStatus();
+    streamStatus.value = await api.getActiveCameraStreamStatus();
   } catch {
-    // Diagnostic only.
+    // diagnostics only
   }
 }
 
 async function refreshAudioStatus() {
   try {
-    audioStatus.value = await api.getCameraAudioStatus();
+    audioStatus.value = await api.getActiveCameraAudioStatus();
   } catch {
-    // Diagnostic only.
+    // diagnostics only
   }
 }
 
 async function refreshAudioStreamStatus() {
   try {
-    audioStreamStatus.value = await api.getCameraAudioStreamStatus();
+    audioStreamStatus.value = await api.getActiveCameraAudioStreamStatus();
   } catch {
-    // Diagnostic only.
+    // diagnostics only
   }
 }
 
@@ -201,7 +258,75 @@ async function refreshFallDetectionStatus() {
   try {
     fallStatus.value = await api.getCameraFallDetectionStatus();
   } catch {
-    // Diagnostic only.
+    // diagnostics only
+  }
+}
+
+async function refreshPoseStatus() {
+  try {
+    poseStatus.value = await api.getCameraPoseDetectionStatus();
+  } catch {
+    // diagnostics only
+  }
+}
+
+async function refreshPoseConfig() {
+  try {
+    poseConfig.value = await api.getCameraPoseDetectionConfig();
+  } catch {
+    // diagnostics only
+  }
+}
+
+async function refreshTargetUsers() {
+  try {
+    targetUsers.value = await api.listTargetUsers();
+  } catch {
+    targetUsers.value = [];
+  }
+}
+
+async function refreshExternalCameraHealth() {
+  try {
+    externalCameraHealth.value = await api.getExternalCameraHealth();
+    emitDiagnosticsLog("refreshExternalCameraHealth");
+  } catch {
+    externalCameraHealth.value = null;
+  }
+}
+
+async function runExternalCameraCheck() {
+  externalCameraBusy.value = true;
+  try {
+    externalCameraResult.value = await api.runExternalCameraFallDetect({
+      target_only: true,
+      session_id: "camera-monitor-card",
+      mode: "metadata",
+    });
+    await refreshExternalCameraHealth();
+    emitDiagnosticsLog("runExternalCameraCheck");
+  } finally {
+    externalCameraBusy.value = false;
+  }
+}
+
+async function togglePoseDetection() {
+  poseBusy.value = true;
+  try {
+    const nextEnabled = !(poseConfig.value?.enabled === true);
+    const result = await api.updateCameraPoseDetectionConfig({
+      pose_detection_enabled: nextEnabled,
+    });
+    poseConfig.value = result.config;
+    await refreshPoseStatus();
+    await refreshStatus();
+    await refreshStreamStatus();
+    emitDiagnosticsLog("togglePoseDetection");
+  } catch (error) {
+    errorMessage.value = formatCameraError(error instanceof Error ? error.message : "姿态检测切换失败");
+    lastStatusErrorAt.value = Date.now();
+  } finally {
+    poseBusy.value = false;
   }
 }
 
@@ -234,7 +359,7 @@ function toggleFrameRefresh() {
 
 async function toggleAudioListen() {
   if (audioListening.value || audioConnecting.value) {
-    await stopAudioListen({ reason: "Audio listen stopped." });
+    await stopAudioListen({ reason: "已停止收听实时音频。" });
     return;
   }
   await startAudioListen();
@@ -243,16 +368,13 @@ async function toggleAudioListen() {
 async function startAudioListen() {
   audioDesired.value = true;
   audioConnecting.value = true;
-  audioNotice.value = "Connecting to the camera audio relay...";
+  audioNotice.value = "正在连接摄像头音频中继...";
 
   try {
     await refreshAudioStatus();
     await refreshAudioStreamStatus();
     if (!audioListenSupported.value) {
-      throw new Error(audioStatus.value?.error || "This camera is not exposing a listenable audio track.");
-    }
-    if (!audioBrowserSupported.value) {
-      throw new Error("This browser cannot play the live PCM stream.");
+      throw new Error(audioStatus.value?.error || "当前摄像头没有可收听的音频轨道。");
     }
 
     const player = ensureAudioPlayer();
@@ -262,7 +384,7 @@ async function startAudioListen() {
     audioDesired.value = false;
     audioConnecting.value = false;
     audioListening.value = false;
-    audioNotice.value = error instanceof Error ? error.message : "Failed to start live audio.";
+    audioNotice.value = error instanceof Error ? error.message : "实时音频启动失败。";
   }
 }
 
@@ -290,7 +412,7 @@ async function stopAudioListen(options?: { reason?: string; keepDesired?: boolea
 function connectAudioSocket() {
   if (audioSocket?.readyState === WebSocket.OPEN || audioSocket?.readyState === WebSocket.CONNECTING) return;
 
-  const socket = api.cameraAudioSocket();
+  const socket = api.activeCameraAudioSocket();
   audioSocket = socket;
   socket.binaryType = "arraybuffer";
   socket.onopen = () => {
@@ -298,7 +420,7 @@ function connectAudioSocket() {
     audioListening.value = true;
     const codec = audioStatus.value?.audio_codec || "PCM";
     const rate = audioStatus.value?.sample_rate ?? audioStreamStatus.value?.sample_rate ?? 8000;
-    audioNotice.value = `Listening live audio via ${codec} / ${rate}Hz relay.`;
+    audioNotice.value = `已连接实时音频：${codec} / ${rate}Hz`;
   };
   socket.onmessage = async (event) => {
     try {
@@ -308,12 +430,12 @@ function connectAudioSocket() {
         ensureAudioPlayer().pushChunk(await event.data.arrayBuffer());
       }
     } catch (error) {
-      audioNotice.value = error instanceof Error ? error.message : "Audio playback failed.";
+      audioNotice.value = error instanceof Error ? error.message : "音频播放失败。";
       await stopAudioListen({ reason: audioNotice.value });
     }
   };
   socket.onerror = () => {
-    audioNotice.value = "Audio relay connection failed.";
+    audioNotice.value = "音频中继连接失败。";
   };
   socket.onclose = () => {
     audioSocket = undefined;
@@ -329,7 +451,8 @@ function connectAudioSocket() {
 }
 
 function handleFrameError() {
-  errorMessage.value = "Realtime camera stream is temporarily unavailable.";
+  errorMessage.value = "实时摄像头画面暂时不可用。";
+  lastStatusErrorAt.value = Date.now();
 }
 
 async function setFrame(frame: Blob) {
@@ -402,10 +525,10 @@ function startCameraSocket() {
     if (streamState.value === "connecting") {
       streamState.value = "offline";
       startMjpegFallback();
-      errorMessage.value = "Connected to backend, but no video frame has arrived yet.";
+      errorMessage.value = "已经连到后端，但暂时还没有收到视频帧。";
     }
   }, 5000);
-  const socket = api.cameraFrameSocket();
+  const socket = api.activeCameraFrameSocket();
   frameSocket = socket;
   socket.binaryType = "blob";
   socket.onmessage = (event) => {
@@ -416,7 +539,7 @@ function startCameraSocket() {
   socket.onerror = () => {
     streamState.value = "offline";
     startMjpegFallback({ asFallback: true });
-    errorMessage.value = "Backend camera relay is temporarily unavailable.";
+    errorMessage.value = "后端摄像头中继暂时不可用。";
   };
   socket.onclose = () => {
     const wasIntentional = intentionalFrameSocketClose === socket;
@@ -443,8 +566,7 @@ function startPrimaryVideoTransport() {
 }
 
 function buildMjpegStreamUrl() {
-  const useDetectionStream = fallStatus.value?.enabled === true;
-  const baseUrl = useDetectionStream ? api.getCameraDetectionStreamUrl() : api.getCameraStreamUrl();
+  const baseUrl = api.getActiveCameraStreamUrl();
   return `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}_ts=${Date.now()}`;
 }
 
@@ -456,7 +578,8 @@ function startMjpegFallback(options?: { asFallback?: boolean }) {
   mjpegStreamSrc.value = buildMjpegStreamUrl();
   mjpegFallback.value = true;
   if (options?.asFallback) {
-    errorMessage.value = "WebSocket relay fell behind. Switched to MJPEG relay for smoother playback.";
+    errorMessage.value = "WebSocket 中继跟不上，已切换到 MJPEG 画面。";
+    lastStatusErrorAt.value = Date.now();
   }
 }
 
@@ -468,7 +591,8 @@ function handleMjpegLoaded() {
 
 function handleMjpegError() {
   streamState.value = "offline";
-  errorMessage.value = "MJPEG relay is temporarily unavailable. Trying WebSocket fallback...";
+  errorMessage.value = "MJPEG 中继暂时不可用，正在尝试 WebSocket 回退...";
+  lastStatusErrorAt.value = Date.now();
   mjpegFallback.value = false;
   mjpegStreamSrc.value = "";
   startCameraSocket();
@@ -548,9 +672,9 @@ async function startPtz(direction: CameraPtzDirection) {
   }
 
   try {
-    await api.moveCamera(direction, "continuous");
+    await api.moveActiveCamera(direction, "continuous");
   } catch (error) {
-    errorMessage.value = formatCameraError(error instanceof Error ? error.message : "PTZ control failed");
+    errorMessage.value = formatCameraError(error instanceof Error ? error.message : "云台控制失败");
     activePtz.value = null;
   }
 }
@@ -563,9 +687,9 @@ async function stopPtz() {
   }, 120);
 
   try {
-    await api.moveCamera("stop", "continuous");
+    await api.moveActiveCamera("stop", "continuous");
   } catch (error) {
-    errorMessage.value = formatCameraError(error instanceof Error ? error.message : "PTZ stop failed");
+    errorMessage.value = formatCameraError(error instanceof Error ? error.message : "云台停止失败");
   } finally {
     activePtz.value = null;
   }
@@ -577,12 +701,20 @@ onMounted(() => {
   void refreshAudioStatus();
   void refreshAudioStreamStatus();
   void refreshFallDetectionStatus();
+  void refreshPoseStatus();
+  void refreshPoseConfig();
+  void refreshTargetUsers();
+  void refreshExternalCameraHealth();
+  window.setInterval(clearStaleCameraError, 3000);
   statusTimer = window.setInterval(refreshStatus, 8000);
   streamStatusTimer = window.setInterval(() => {
     void refreshStreamStatus();
     void refreshAudioStatus();
     void refreshAudioStreamStatus();
     void refreshFallDetectionStatus();
+    void refreshPoseStatus();
+    void refreshPoseConfig();
+    void refreshExternalCameraHealth();
   }, 3000);
   document.addEventListener("visibilitychange", handleVisibilityChange);
 });
@@ -605,9 +737,9 @@ onBeforeUnmount(() => {
   <article class="camera-monitor-card">
     <div class="camera-monitor-card__header">
       <div>
-        <p class="section-eyebrow">Live Camera</p>
-        <h3>Home camera monitor</h3>
-        <p>The browser connects to the backend camera relay instead of opening multiple direct RTSP sessions.</p>
+        <p class="section-eyebrow">家庭摄像头</p>
+        <h3>居家摄像头监护</h3>
+        <p>浏览器通过后端摄像头中继查看画面，不再直接开启多路 RTSP 连接。</p>
       </div>
       <span class="camera-monitor-card__status" :class="`is-${statusTone}`">
         <ShieldCheck :size="15" />
@@ -620,13 +752,13 @@ onBeforeUnmount(() => {
         v-show="hasFrame && !mjpegFallback"
         ref="frameCanvas"
         class="camera-monitor-card__canvas"
-        aria-label="home camera realtime video"
+        aria-label="家庭摄像头实时画面"
       />
       <img
         v-if="mjpegFallback && mjpegStreamSrc"
         class="camera-monitor-card__canvas"
         :src="mjpegStreamSrc"
-        alt="home camera realtime video"
+        alt="家庭摄像头实时画面"
         decoding="async"
         fetchpriority="high"
         @load="handleMjpegLoaded"
@@ -634,74 +766,64 @@ onBeforeUnmount(() => {
       />
       <div v-if="!hasFrame" class="camera-monitor-card__empty">
         <Camera :size="32" />
-        <span>Video paused</span>
+        <span>视频已暂停</span>
       </div>
       <div class="camera-monitor-card__live-mark">
         <span />
         {{
           streamState === "live"
-            ? `${mjpegFallback ? "Relay" : "Client"} ${relayFpsLabel}fps`
+            ? `${mjpegFallback ? "中继" : "客户端"} ${relayFpsLabel}fps`
             : streamState === "paused"
-              ? "Paused"
+              ? "已暂停"
               : streamState === "offline"
-                ? "Offline"
-                : "Connecting"
+                ? "离线"
+                : "连接中"
         }}
       </div>
       <div v-if="audioListening || audioConnecting" class="camera-monitor-card__audio-mark">
         <Volume2 :size="15" />
-        <span>{{ audioConnecting ? "Connecting audio" : `Live audio ${audioLevel.toFixed(0)}%` }}</span>
+        <span>{{ audioConnecting ? "音频连接中" : `实时音量 ${audioLevel.toFixed(0)}%` }}</span>
       </div>
     </div>
 
     <div class="camera-control-dock">
       <div>
-        <p class="section-eyebrow">PTZ</p>
-        <h4>Remote control</h4>
+        <p class="section-eyebrow">云台控制</p>
+        <h4>远程控制</h4>
       </div>
 
-      <div class="camera-joystick" aria-label="camera joystick">
-        <button type="button" class="camera-joystick__zone is-up" aria-label="move up" v-bind="bindPtz('up')">
+      <div class="camera-joystick" aria-label="摄像头方向控制">
+        <button type="button" class="camera-joystick__zone is-up" aria-label="向上" v-bind="bindPtz('up')">
           <ChevronUp :size="28" />
         </button>
-        <button type="button" class="camera-joystick__zone is-left" aria-label="move left" v-bind="bindPtz('left')">
+        <button type="button" class="camera-joystick__zone is-left" aria-label="向左" v-bind="bindPtz('left')">
           <ChevronLeft :size="28" />
         </button>
-        <button type="button" class="camera-joystick__center" aria-label="stop move" @click="stopPtz">
+        <button type="button" class="camera-joystick__center" aria-label="停止" @click="stopPtz">
           <Move :size="23" />
         </button>
-        <button type="button" class="camera-joystick__zone is-right" aria-label="move right" v-bind="bindPtz('right')">
+        <button type="button" class="camera-joystick__zone is-right" aria-label="向右" v-bind="bindPtz('right')">
           <ChevronRight :size="28" />
         </button>
-        <button type="button" class="camera-joystick__zone is-down" aria-label="move down" v-bind="bindPtz('down')">
+        <button type="button" class="camera-joystick__zone is-down" aria-label="向下" v-bind="bindPtz('down')">
           <ChevronDown :size="28" />
-        </button>
-      </div>
-
-      <div class="camera-monitor-card__zoom">
-        <button type="button" :class="{ 'is-active': activePtz === 'zoom_out' }" v-bind="bindPtz('zoom_out')">
-          <ZoomOut :size="16" />
-          Zoom out
-        </button>
-        <button type="button" :class="{ 'is-active': activePtz === 'zoom_in' }" v-bind="bindPtz('zoom_in')">
-          <ZoomIn :size="16" />
-          Zoom in
         </button>
       </div>
     </div>
 
     <div class="camera-monitor-card__meta">
       <span>{{ endpointLabel }}</span>
-      <span v-if="status?.source === 'local'">Source local camera</span>
-      <span v-if="status?.latency_ms !== null && status?.latency_ms !== undefined">Latency {{ status.latency_ms }}ms</span>
-      <span v-else>Local RTSP</span>
-      <span v-if="streamStatus">Target {{ (streamStatus.target_fps ?? 0).toFixed(1) }}fps</span>
-      <span v-if="streamStatus">Source {{ (streamStatus.source_fps ?? streamStatus.measured_fps ?? 0).toFixed(1) }}fps</span>
+      <span v-if="status?.source === 'local'">来源：本地摄像头</span>
+      <span v-if="status?.latency_ms !== null && status?.latency_ms !== undefined">延迟 {{ status.latency_ms }}ms</span>
+      <span v-else>来源：本地 RTSP</span>
+      <span v-if="streamStatus">目标 {{ (streamStatus.target_fps ?? 0).toFixed(1) }}fps</span>
+      <span v-if="streamStatus">源流 {{ (streamStatus.source_fps ?? streamStatus.measured_fps ?? 0).toFixed(1) }}fps</span>
       <span v-if="streamStatus">JPEG q{{ streamStatus.jpeg_quality ?? 4 }}</span>
       <span :class="`camera-monitor-card__fall is-${audioCapabilityTone}`">{{ audioCapabilityLabel }}</span>
-      <span class="camera-monitor-card__fall" :class="`is-${fallDetectionTone}`">
-        {{ fallDetectionLabel }}
-      </span>
+      <span class="camera-monitor-card__fall" :class="`is-${fallDetectionTone}`">{{ fallDetectionLabel }}</span>
+      <span class="camera-monitor-card__fall" :class="`is-${poseDetectionTone}`">{{ poseDetectionLabel }}</span>
+      <span class="camera-monitor-card__fall">{{ externalHealthLabel }}</span>
+      <span class="camera-monitor-card__fall">{{ externalTargetSummary }}</span>
     </div>
 
     <p v-if="errorMessage" class="camera-monitor-card__error">{{ errorMessage }}</p>
@@ -711,7 +833,7 @@ onBeforeUnmount(() => {
       <button type="button" class="camera-action camera-action--primary" @click="toggleFrameRefresh">
         <Pause v-if="autoRefresh" :size="16" />
         <Play v-else :size="16" />
-        {{ autoRefresh ? "Pause video" : "Resume video" }}
+        {{ autoRefresh ? "暂停视频" : "恢复视频" }}
       </button>
       <button
         type="button"
@@ -733,109 +855,31 @@ onBeforeUnmount(() => {
           refreshAudioStatus();
           refreshAudioStreamStatus();
           refreshFallDetectionStatus();
+          refreshTargetUsers();
+          refreshExternalCameraHealth();
         "
       >
         <RefreshCw :size="16" />
-        Refresh status
+        刷新状态
       </button>
-    </div>
-
-    <div class="camera-diagnostics-grid">
-      <section class="camera-diagnostic-panel">
-        <header>
-          <p class="section-eyebrow">Video Relay</p>
-          <h4>Frame transport</h4>
-        </header>
-        <dl>
-          <div>
-            <dt>Relay clients</dt>
-            <dd>{{ streamStatus?.clients ?? 0 }}</dd>
-          </div>
-          <div>
-            <dt>Transport</dt>
-            <dd>{{ transportLabel }}</dd>
-          </div>
-          <div>
-            <dt>Measured fps</dt>
-            <dd>{{ relayFpsLabel }}</dd>
-          </div>
-          <div>
-            <dt>Active URL</dt>
-            <dd>{{ streamStatus?.active_url || "Waiting for stream" }}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="camera-diagnostic-panel">
-        <header>
-          <p class="section-eyebrow">Audio Relay</p>
-          <h4>Listen diagnostics</h4>
-        </header>
-        <dl>
-          <div>
-            <dt>Browser playback</dt>
-            <dd>{{ audioBrowserSupported ? "Supported" : "Unsupported" }}</dd>
-          </div>
-          <div>
-            <dt>Relay state</dt>
-            <dd>{{ audioStreamStatus?.running ? "Running" : audioListening ? "Opening" : "Idle" }}</dd>
-          </div>
-          <div>
-            <dt>Queue</dt>
-            <dd>{{ audioQueuedMs.toFixed(0) }} ms</dd>
-          </div>
-          <div>
-            <dt>Level</dt>
-            <dd class="camera-diagnostic-panel__level">
-              <span class="camera-diagnostic-panel__bar">
-                <span :style="{ width: `${Math.max(4, Math.min(audioLevel, 100))}%` }" />
-              </span>
-              {{ audioLevel.toFixed(0) }}%
-            </dd>
-          </div>
-          <div>
-            <dt>Source format</dt>
-            <dd>{{ audioStatus?.audio_codec || "Unknown" }} / {{ audioStatus?.sample_rate ?? audioStreamStatus?.sample_rate ?? 0 }}Hz</dd>
-          </div>
-          <div>
-            <dt>Buffered drops</dt>
-            <dd>{{ audioDroppedBacklog }}</dd>
-          </div>
-          <div>
-            <dt>Relay throughput</dt>
-            <dd>{{ (audioStreamStatus?.kbps ?? 0).toFixed(1) }} kbps</dd>
-          </div>
-          <div>
-            <dt>Listen clients</dt>
-            <dd>{{ audioStreamStatus?.clients ?? 0 }}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="camera-diagnostic-panel">
-        <header>
-          <p class="section-eyebrow">Detection</p>
-          <h4>Risk pipeline</h4>
-        </header>
-        <dl>
-          <div>
-            <dt>Process</dt>
-            <dd>{{ fallStatus?.process_running ? "Running" : "Stopped" }}</dd>
-          </div>
-          <div>
-            <dt>Mode</dt>
-            <dd>{{ fallStatus?.speed_profile || "n/a" }}</dd>
-          </div>
-          <div>
-            <dt>ROI</dt>
-            <dd>{{ fallStatus?.roi?.enabled ? `On (${fallStatus.roi.rect || "configured"})` : "Off" }}</dd>
-          </div>
-          <div>
-            <dt>Last event</dt>
-            <dd>{{ fallStatus?.last_event_at ? new Date(fallStatus.last_event_at * 1000).toLocaleString("zh-CN", { hour12: false }) : "No event yet" }}</dd>
-          </div>
-        </dl>
-      </section>
+      <button
+        type="button"
+        class="camera-action"
+        :disabled="poseBusy"
+        @click="togglePoseDetection"
+      >
+        <ShieldCheck :size="16" />
+        {{ poseActionLabel }}
+      </button>
+      <button
+        type="button"
+        class="camera-action"
+        :disabled="externalCameraBusy"
+        @click="runExternalCameraCheck"
+      >
+        <ShieldCheck :size="16" />
+        {{ externalCameraBusy ? "筛选中..." : "执行目标用户筛选" }}
+      </button>
     </div>
   </article>
 </template>
@@ -847,12 +891,12 @@ onBeforeUnmount(() => {
   gap: 14px;
   padding: 18px;
   overflow: hidden;
-  border: 1px solid rgba(13, 148, 136, 0.18);
+  border: 1px solid rgba(37, 99, 235, 0.14);
   border-radius: 24px;
   background:
-    radial-gradient(circle at 12% 0%, rgba(45, 212, 191, 0.2), transparent 28%),
-    linear-gradient(145deg, rgba(240, 253, 250, 0.96), rgba(255, 255, 255, 0.98) 46%, rgba(239, 246, 255, 0.92));
-  box-shadow: 0 16px 44px rgba(15, 118, 110, 0.12);
+    radial-gradient(circle at 12% 0%, rgba(59, 130, 246, 0.1), transparent 28%),
+    linear-gradient(145deg, rgba(248, 251, 255, 0.96), rgba(255, 255, 255, 0.98) 46%, rgba(239, 246, 255, 0.92));
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.08);
 }
 
 .camera-monitor-card__header {
@@ -878,9 +922,7 @@ onBeforeUnmount(() => {
 
 .camera-monitor-card__status,
 .camera-monitor-card__meta span,
-.camera-action,
-.camera-monitor-card__live-mark,
-.camera-monitor-card__zoom button {
+.camera-action {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -911,13 +953,14 @@ onBeforeUnmount(() => {
 
 .camera-monitor-card__viewport {
   position: relative;
-  min-height: clamp(240px, 32vw, 430px);
+  aspect-ratio: 16 / 9;
+  min-height: clamp(260px, 32vw, 460px);
   overflow: hidden;
   border-radius: 19px;
   background:
-    linear-gradient(135deg, rgba(15, 23, 42, 0.78), rgba(15, 118, 110, 0.54)),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.06) 0 1px, transparent 1px 18px);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2), 0 20px 36px rgba(15, 23, 42, 0.12);
+    linear-gradient(135deg, rgba(15, 23, 42, 0.82), rgba(30, 64, 175, 0.48)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.05) 0 1px, transparent 1px 18px);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15), 0 16px 28px rgba(15, 23, 42, 0.1);
 }
 
 .camera-monitor-card__viewport img,
@@ -926,16 +969,13 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   min-height: inherit;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center;
 }
 
 .camera-monitor-card__canvas {
   position: absolute;
   inset: 0;
-}
-
-.camera-monitor-card__viewport.has-frame .camera-monitor-card__empty {
-  display: none;
 }
 
 .camera-monitor-card__empty {
@@ -945,7 +985,7 @@ onBeforeUnmount(() => {
   place-items: center;
   align-content: center;
   gap: 10px;
-  color: rgba(255, 255, 255, 0.88);
+  color: rgba(255, 255, 255, 0.9);
   font-weight: 700;
 }
 
@@ -955,8 +995,8 @@ onBeforeUnmount(() => {
   top: 14px;
   border-radius: 999px;
   padding: 7px 11px;
-  background: rgba(15, 23, 42, 0.62);
-  color: #ecfeff;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1e3a8a;
   font-size: 0.78rem;
   font-weight: 800;
   backdrop-filter: blur(12px);
@@ -967,7 +1007,7 @@ onBeforeUnmount(() => {
   height: 8px;
   border-radius: 999px;
   background: #22c55e;
-  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.18);
+  box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.16);
 }
 
 .camera-monitor-card__audio-mark {
@@ -979,8 +1019,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   border-radius: 999px;
   padding: 7px 11px;
-  background: rgba(15, 23, 42, 0.62);
-  color: #ecfeff;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1e3a8a;
   font-size: 0.78rem;
   font-weight: 800;
   backdrop-filter: blur(12px);
@@ -988,13 +1028,13 @@ onBeforeUnmount(() => {
 
 .camera-control-dock {
   display: grid;
-  grid-template-columns: minmax(120px, 0.34fr) auto minmax(180px, 0.42fr);
+  grid-template-columns: minmax(120px, 0.34fr) auto;
   gap: 14px;
   align-items: center;
-  border: 1px solid rgba(13, 148, 136, 0.14);
+  border: 1px solid rgba(37, 99, 235, 0.12);
   border-radius: 20px;
   padding: 13px 14px;
-  background: rgba(255, 255, 255, 0.68);
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .camera-control-dock h4 {
@@ -1010,11 +1050,11 @@ onBeforeUnmount(() => {
   touch-action: none;
   user-select: none;
   background:
-    radial-gradient(circle at center, rgba(255, 255, 255, 0.9) 0 21%, transparent 22%),
-    radial-gradient(circle at center, rgba(15, 118, 110, 0.14) 0 41%, rgba(15, 23, 42, 0.16) 42% 100%);
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.92) 0 21%, transparent 22%),
+    radial-gradient(circle at center, rgba(37, 99, 235, 0.1) 0 41%, rgba(15, 23, 42, 0.1) 42% 100%);
   box-shadow:
-    inset 0 0 0 1px rgba(13, 148, 136, 0.12),
-    0 18px 34px rgba(15, 118, 110, 0.12);
+    inset 0 0 0 1px rgba(37, 99, 235, 0.1),
+    0 12px 24px rgba(37, 99, 235, 0.08);
 }
 
 .camera-joystick__zone,
@@ -1024,12 +1064,11 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border: 0;
-  color: rgba(15, 118, 110, 0.72);
+  color: rgba(37, 99, 235, 0.78);
   cursor: pointer;
   touch-action: none;
   user-select: none;
   transition: transform var(--trans-base), color var(--trans-base), background var(--trans-base);
-  will-change: transform;
 }
 
 .camera-joystick__zone {
@@ -1042,8 +1081,8 @@ onBeforeUnmount(() => {
 .camera-joystick__zone:hover:not(:disabled),
 .camera-joystick__zone.is-active,
 .camera-joystick__zone:active {
-  color: #0f766e;
-  background: rgba(255, 255, 255, 0.7);
+  color: #1d4ed8;
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .camera-joystick__zone.is-up {
@@ -1073,32 +1112,9 @@ onBeforeUnmount(() => {
   aspect-ratio: 1;
   border-radius: 999px;
   transform: translate(-50%, -50%);
-  background: rgba(255, 255, 255, 0.96);
-  color: rgba(15, 118, 110, 0.7);
-  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.14);
-}
-
-.camera-monitor-card__zoom {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-}
-
-.camera-monitor-card__zoom button {
-  min-height: 44px;
-  border: 1px solid rgba(13, 148, 136, 0.17);
-  border-radius: 15px;
-  background: rgba(255, 255, 255, 0.86);
-  color: #0f766e;
-  cursor: pointer;
-  justify-content: center;
-  font-weight: 800;
-}
-
-.camera-monitor-card__zoom button.is-active,
-.camera-monitor-card__zoom button:active {
-  background: #ecfeff;
-  box-shadow: 0 12px 24px rgba(15, 118, 110, 0.16);
+  background: rgba(255, 255, 255, 0.98);
+  color: rgba(37, 99, 235, 0.8);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.08);
 }
 
 .camera-monitor-card__meta {
@@ -1110,8 +1126,18 @@ onBeforeUnmount(() => {
 .camera-monitor-card__meta span {
   border-radius: 999px;
   padding: 6px 11px;
-  border: 1px solid rgba(13, 148, 136, 0.14);
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--text-sub);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.camera-monitor-card__fall {
+  border-radius: 999px;
+  padding: 6px 11px;
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  background: rgba(255, 255, 255, 0.86);
   color: var(--text-sub);
   font-size: 0.8rem;
   font-weight: 600;
@@ -1127,10 +1153,6 @@ onBeforeUnmount(() => {
   border-color: rgba(239, 68, 68, 0.18);
   background: rgba(239, 68, 68, 0.1);
   color: #dc2626;
-}
-
-.camera-monitor-card__fall.is-neutral {
-  color: var(--text-sub);
 }
 
 .camera-monitor-card__error {
@@ -1154,10 +1176,10 @@ onBeforeUnmount(() => {
 }
 
 .camera-action {
-  border: 1px solid rgba(13, 148, 136, 0.18);
+  border: 1px solid rgba(37, 99, 235, 0.16);
   border-radius: 999px;
   padding: 9px 13px;
-  background: rgba(255, 255, 255, 0.76);
+  background: rgba(255, 255, 255, 0.86);
   color: var(--text-main);
   cursor: pointer;
   font-size: 0.84rem;
@@ -1166,84 +1188,13 @@ onBeforeUnmount(() => {
 
 .camera-action--primary {
   border-color: transparent;
-  background: #0f766e;
+  background: #2563eb;
   color: #ffffff;
 }
 
 .camera-action:disabled {
   cursor: not-allowed;
   opacity: 0.62;
-}
-
-.camera-diagnostics-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.camera-diagnostic-panel {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid rgba(13, 148, 136, 0.12);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.78);
-}
-
-.camera-diagnostic-panel h4 {
-  margin: 2px 0 0;
-  font-size: 0.98rem;
-}
-
-.camera-diagnostic-panel dl {
-  display: grid;
-  gap: 10px;
-  margin: 0;
-}
-
-.camera-diagnostic-panel dl > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.camera-diagnostic-panel dt {
-  color: var(--text-sub);
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.camera-diagnostic-panel dd {
-  margin: 0;
-  min-width: 0;
-  color: var(--text-main);
-  font-size: 0.82rem;
-  font-weight: 700;
-  text-align: right;
-  overflow-wrap: anywhere;
-}
-
-.camera-diagnostic-panel__level {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.camera-diagnostic-panel__bar {
-  position: relative;
-  width: 88px;
-  height: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
-}
-
-.camera-diagnostic-panel__bar > span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #22c55e, #0ea5e9);
 }
 
 @media (max-width: 900px) {
@@ -1254,10 +1205,6 @@ onBeforeUnmount(() => {
   .camera-joystick {
     justify-self: center;
     width: clamp(156px, 44vw, 210px);
-  }
-
-  .camera-diagnostics-grid {
-    grid-template-columns: 1fr;
   }
 }
 

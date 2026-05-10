@@ -100,6 +100,7 @@ class CameraAudioHub:
                 if not self._clients:
                     return
 
+            transport = "udp" if "/udp/" in url.lower() else "tcp"
             cmd = [
                 ffmpeg,
                 "-nostdin",
@@ -107,7 +108,7 @@ class CameraAudioHub:
                 "-loglevel",
                 "error",
                 "-rtsp_transport",
-                "tcp",
+                transport,
                 "-timeout",
                 str(int(self._settings.camera_snapshot_timeout_seconds * 1_000_000)),
                 "-probesize",

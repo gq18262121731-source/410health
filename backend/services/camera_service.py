@@ -167,8 +167,8 @@ class CameraService:
             preferred_paths = [configured_path, smooth_path, quality_path]
 
         candidates = [(path, self._settings.camera_rtsp_port) for path in preferred_paths] + [
-            ("/udp/av0_1", 10554),
             ("/udp/av0_0", 10554),
+            ("/udp/av0_1", 10554),
             ("/tcp/av0_1", 10554),
             ("/tcp/av0_0", 10554),
         ]
@@ -508,13 +508,14 @@ class CameraService:
 
         ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
         for url in self.fallback_rtsp_urls:
+            transport = self._rtsp_transport_for_url(url)
             cmd = [
                 ffmpeg,
                 "-hide_banner",
                 "-loglevel",
                 "error",
                 "-rtsp_transport",
-                "tcp",
+                transport,
                 "-timeout",
                 str(int(self._settings.camera_snapshot_timeout_seconds * 1_000_000)),
                 "-i",
@@ -552,8 +553,11 @@ class CameraService:
         frame = None
         previous_options = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
         # 优化3: OpenCV优化配置 - 减少延迟，提高响应速度
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|max_delay;0|fflags;nobuffer|flags;low_delay"
         for url in self.fallback_rtsp_urls:
+            transport = self._rtsp_transport_for_url(url)
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                f"rtsp_transport;{transport}|stimeout;5000000|max_delay;0|fflags;nobuffer|flags;low_delay"
+            )
             cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
             # 优化: 设置缓冲区大小为1，减少延迟
             with suppress(Exception):
@@ -600,12 +604,13 @@ class CameraService:
         urls = [audio_url]
         urls.extend(url for url in self.stream_rtsp_urls[:2] if url not in urls)
         for url in urls:
+            transport = self._rtsp_transport_for_url(url)
             cmd = [
                 ffmpeg,
                 "-nostdin",
                 "-hide_banner",
                 "-rtsp_transport",
-                "tcp",
+                transport,
                 "-timeout",
                 str(int(timeout_seconds * 1_000_000)),
                 "-probesize",
@@ -926,3 +931,7 @@ class CameraService:
         if not normalized.startswith("/"):
             normalized = f"/{normalized}"
         return normalized
+
+    @staticmethod
+    def _rtsp_transport_for_url(url: str) -> str:
+        return "udp" if "/udp/" in url.lower() else "tcp"
