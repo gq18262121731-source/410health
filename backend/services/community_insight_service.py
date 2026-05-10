@@ -837,7 +837,7 @@ class CommunityInsightService:
             part
             for part in [
                 question,
-                "community elder care risk follow-up intervention guidance",
+                "社区养老 风险分层 随访 处置建议 巡查 干预指引",
                 *(entity.reasons[0] for entity in analysis.high_risk_entities[:3] if entity.reasons),
                 *(analysis.trend_findings[:2]),
             ]
@@ -859,7 +859,7 @@ class CommunityInsightService:
         normalized = hit.strip()
         if normalized.startswith("[") and "]" in normalized:
             source, snippet = normalized[1:].split("]", maxsplit=1)
-            title = source.strip() or "knowledge-base"
+            title = source.strip() or "知识库"
             return AgentSourceItem(
                 source_type="knowledge_base",
                 title=title,
@@ -868,7 +868,7 @@ class CommunityInsightService:
             )
         return AgentSourceItem(
             source_type="knowledge_base",
-            title="knowledge-base",
+            title="知识库",
             url=None,
             snippet=normalized[:320],
         )
