@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 
+from backend.config import get_settings
 from backend.dependencies import (
     get_external_camera_bridge_service,
     get_target_user_fall_service,
     get_target_user_service,
 )
 from backend.models.target_user_model import TargetUserCreateResponse, TargetUserDeleteResponse, TargetUserMatchResult, TargetUserRecord
+from backend.services.camera_service import CameraService
 
 
 router = APIRouter(prefix="/target-users", tags=["target-users"])
@@ -116,4 +118,44 @@ async def external_camera_fall_detect(
         session_id=session_id,
         target_only=target_only,
         include_annotated_image=include_annotated_image,
+    )
+
+
+@router.get("/local-camera/snapshot")
+async def local_camera_snapshot() -> Response:
+    settings = get_settings().model_copy(update={"camera_source_mode": "local"})
+    try:
+        image_bytes, headers = await __import__("asyncio").to_thread(CameraService(settings).capture_local_jpeg)
+    except RuntimeError as exc:
+        code = str(exc)
+        raise HTTPException(status_code=503, detail=code) from exc
+    return Response(content=image_bytes, media_type="image/jpeg", headers=headers)
+
+
+@router.post("/local-camera/pose-detect")
+async def local_camera_pose_detect(
+    target_only: bool = True,
+    session_id: str = "default",
+    mode: str = "metadata",
+) -> dict:
+    settings = get_settings().model_copy(update={"camera_source_mode": "local"})
+    try:
+        image_bytes, _headers = await __import__("asyncio").to_thread(CameraService(settings).capture_local_jpeg)
+    except RuntimeError as exc:
+        code = str(exc)
+        raise HTTPException(status_code=503, detail=code) from exc
+
+    include_annotated_image = mode.strip().lower() != "metadata"
+    api_base = f"http://127.0.0.1:{settings.port}{settings.api_v1_prefix}"
+    return get_external_camera_bridge_service().detect_image_bytes(
+        image_bytes,
+        session_id=session_id,
+        target_only=target_only,
+        include_annotated_image=include_annotated_image,
+        camera_source={
+            "viewer_url": f"{api_base}/camera/stream.mjpg",
+            "snapshot_url": f"{api_base}/target-users/local-camera/snapshot",
+            "mjpeg_url": f"{api_base}/camera/stream.mjpg",
+            "source_kind": "local_camera",
+        },
     )

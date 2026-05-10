@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -11,6 +13,7 @@ from backend.runtime_bootstrap import resolve_runtime_bootstrap
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+os.environ.setdefault("YOLO_CONFIG_DIR", str(BASE_DIR / "Ultralytics"))
 
 
 class Settings(BaseSettings):
@@ -159,9 +162,27 @@ class Settings(BaseSettings):
     camera_stream_keep_warm: bool = True
     camera_ptz_move_seconds: float = 0.35
     camera_ptz_speed: float = 0.45
+    camera1_name: str = "camera1"
+    camera1_ip: str = ""
+    camera1_user: str = ""
+    camera1_password: str = ""
+    camera1_rtsp_port: int = 0
+    camera1_onvif_port: int = 0
+    camera1_rtsp_path: str = ""
+    camera1_stream_rtsp_path: str = ""
+    camera1_audio_rtsp_path: str = ""
+    camera2_name: str = "camera2"
+    camera2_ip: str = ""
+    camera2_user: str = ""
+    camera2_password: str = ""
+    camera2_rtsp_port: int = 0
+    camera2_onvif_port: int = 0
+    camera2_rtsp_path: str = ""
+    camera2_stream_rtsp_path: str = ""
+    camera2_audio_rtsp_path: str = ""
     fall_detection_enabled: bool = False
-    fall_detection_model_root: str = r"D:\Program\model\fall_detection"
-    fall_detection_python: str = r"C:\Users\YANG\.conda\envs\AI\python.exe"
+    fall_detection_model_root: str = str(BASE_DIR / "fall_detection_model_bundle")
+    fall_detection_python: str = sys.executable
     fall_detection_event_log: str = str(BASE_DIR / "data" / "fall_events" / "camera_events.jsonl")
     fall_detection_snapshot_dir: str = str(BASE_DIR / "data" / "fall_events" / "snapshots")
     fall_detection_profile: str = "private_scene_fusion_v2"
@@ -196,6 +217,22 @@ class Settings(BaseSettings):
     fall_detection_multimodal_provider: Literal["auto", "qwen_omni", "siliconflow_script", "disabled"] = "auto"
     fall_detection_multimodal_min_score: float = 0.45
     fall_detection_multimodal_timeout_seconds: int = 45
+    pose_detection_enabled: bool = False
+    pose_detection_model_root: str = str(BASE_DIR / "pose_detection_model_bundle")
+    pose_detection_python: str = sys.executable
+    pose_detection_event_log: str = str(BASE_DIR / "data" / "pose_events" / "pose_events.jsonl")
+    pose_detection_latest_json: str = str(BASE_DIR / "data" / "pose_events" / "latest_pose.json")
+    pose_detection_snapshot_dir: str = str(BASE_DIR / "data" / "pose_events" / "snapshots")
+    pose_detection_profile: str = "default"
+    pose_detection_process_every_override: int = 0
+    pose_detection_status_log_interval_seconds: float = 1.5
+    pose_detection_restart_delay_seconds: float = 5.0
+    pose_detection_pose_conf_threshold: float = 0.25
+    pose_detection_track_max_det: int = 8
+    pose_detection_analysis_width: int = 960
+    pose_detection_min_pose_score: float = 0.20
+    pose_detection_bed_roi_rect: str = ""
+    pose_detection_floor_roi_rect: str = ""
 
     sos_broadcast_window_seconds: int = 15
     health_score_floor: int = 35
@@ -479,6 +516,19 @@ class Settings(BaseSettings):
     @property
     def mock_runtime_enabled(self) -> bool:
         return self.runtime_mode == "mock" and self.use_mock_data
+
+    @property
+    def resolved_fall_detection_target_device_mac(self) -> str:
+        configured = (self.fall_detection_target_device_mac or "").strip().upper()
+        legacy_default = "CAMERA-192.168.8.254"
+        if configured and configured != legacy_default:
+            return configured
+
+        camera_ip = self.camera_ip.strip() or self.camera2_ip.strip()
+        if camera_ip:
+            return f"CAMERA-{camera_ip}".upper()
+
+        return configured or legacy_default
 
 
 @lru_cache(maxsize=1)

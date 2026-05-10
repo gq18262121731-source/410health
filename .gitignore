@@ -62,3 +62,14 @@ camera_runtime_external/tools/python_libs/**/*.pyc
 # 页面本地日志
 tools/fall-camera-lite/*.log
 tools/target-user-console/*.log
+
+# Local model/runtime caches
+Ultralytics/
+.codex_tmp_docs/
+
+# Fall-detection generated datasets and runtime outputs
+fall_detection_model_bundle/data_processed/
+fall_detection_model_bundle/data_public/
+fall_detection_model_bundle/outputs/
+fall_detection_model_bundle/runs/yolo_posture_person_cls_fallpose_baseline_v1/
+fall_detection_model_bundle/runs/yolo_posture_person_cls_fallpose_baseline_v1-2/

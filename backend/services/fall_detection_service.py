@@ -61,6 +61,9 @@ class FallDetectionService:
 
     def status(self) -> dict[str, Any]:
         process_running = bool(self._process and self._process.returncode is None)
+        source_url = self._resolve_source_url()
+        model_root = Path(self._settings.fall_detection_model_root)
+        python = Path(self._settings.fall_detection_python)
         return {
             "enabled": self._settings.fall_detection_enabled,
             "running": bool(self._task and not self._task.done()),
@@ -75,6 +78,13 @@ class FallDetectionService:
             "accuracy_preserving": self._settings.fall_detection_speed_profile == "accuracy",
             "event_log": self._settings.fall_detection_event_log,
             "snapshot_dir": self._settings.fall_detection_snapshot_dir,
+            "source_mode": self._settings.camera_source_mode,
+            "source_url": source_url,
+            "resolved_target_device_mac": self._settings.resolved_fall_detection_target_device_mac,
+            "model_root": str(model_root),
+            "model_root_exists": model_root.exists(),
+            "python_command": self._settings.fall_detection_python,
+            "python_exists": python.exists() if python.is_absolute() else None,
             "roi": {
                 "enabled": self._settings.fall_detection_roi_enabled,
                 "rect": self._settings.fall_detection_roi_rect,
@@ -111,6 +121,15 @@ class FallDetectionService:
         python = Path(self._settings.fall_detection_python)
         event_log = Path(self._settings.fall_detection_event_log)
         snapshot_dir = Path(self._settings.fall_detection_snapshot_dir)
+        script_path = root / "scripts" / "realtime_fall_monitor.py"
+
+        if not root.exists():
+            raise FileNotFoundError(f"FALL_DETECTION_MODEL_ROOT_NOT_FOUND: {root}")
+        if not script_path.is_file():
+            raise FileNotFoundError(f"FALL_DETECTION_SCRIPT_NOT_FOUND: {script_path}")
+        if python.is_absolute() and not python.exists():
+            raise FileNotFoundError(f"FALL_DETECTION_PYTHON_NOT_FOUND: {python}")
+
         event_log.parent.mkdir(parents=True, exist_ok=True)
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         event_log.write_text("", encoding="utf-8")
@@ -151,7 +170,7 @@ class FallDetectionService:
             urls = service.stream_rtsp_urls
             if urls:
                 return urls[0]
-        return f"http://127.0.0.1:{self._settings.port}{self._settings.api_v1_prefix}/camera/stream.detect.mjpg"
+        return f"http://127.0.0.1:{self._settings.port}{self._settings.api_v1_prefix}/camera/stream.mjpg"
 
     def _build_command(self, *, source_url: str, event_log: Path, snapshot_dir: Path) -> list[str]:
         root = Path(self._settings.fall_detection_model_root)

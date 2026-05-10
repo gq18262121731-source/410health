@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from threading import RLock
@@ -7,6 +8,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+os.environ.setdefault("YOLO_CONFIG_DIR", str(Path.cwd() / "Ultralytics"))
 from ultralytics.trackers.byte_tracker import BYTETracker
 from ultralytics.utils import IterableSimpleNamespace
 
@@ -29,6 +31,8 @@ class TargetUserFallService:
         self._lock = RLock()
         self._session_match_cache: dict[str, dict[str, Any]] = {}
         self._session_trackers: dict[str, BYTETracker] = {}
+        self._session_track_boxes: dict[str, list[dict[str, Any]]] = {}
+        self._next_track_ids: dict[str, int] = {}
         self._match_cache_ttl_ms = 1800
         self._full_refresh_interval_ms = 900
         self._tracker_args = IterableSimpleNamespace(
@@ -223,7 +227,6 @@ class TargetUserFallService:
         return target_match
 
     def _resolve_tracked_persons(self, *, frame: np.ndarray, session_id: str) -> list[dict[str, Any]]:
-        tracker = self._get_or_create_tracker(session_id)
         person_boxes = self._target_user_service._collect_person_boxes(  # type: ignore[attr-defined]
             frame,
             self._target_user_service._person_model,  # type: ignore[attr-defined]
@@ -238,53 +241,74 @@ class TargetUserFallService:
                 conf=0.2,
             )
         if not person_boxes:
+            self._session_track_boxes[session_id] = []
             return []
+        person_boxes = person_boxes[:3]
+        return self._assign_session_tracks(frame=frame, session_id=session_id, person_boxes=person_boxes)
 
-        class _TrackResults:
-            def __init__(self, boxes):
-                xywh = []
-                conf = []
-                cls = []
-                for box, score, label in boxes:
-                    x1, y1, x2, y2 = [float(v) for v in box]
-                    xywh.append([(x1 + x2) * 0.5, (y1 + y2) * 0.5, max(1.0, x2 - x1), max(1.0, y2 - y1)])
-                    conf.append(float(score))
-                    cls.append(0.0 if label == "person" else 1.0)
-                self.xywh = np.asarray(xywh, dtype=np.float32)
-                self.conf = np.asarray(conf, dtype=np.float32)
-                self.cls = np.asarray(cls, dtype=np.float32)
-
-        tracks = tracker.update(_TrackResults(person_boxes), frame)
-        if tracks is None or len(tracks) == 0:
-            return []
-
-        cache_entry = self._get_cache_entry(session_id)
-        preferred_track_id = cache_entry.get("track_id") if cache_entry else None
-        ordered_tracks = list(tracks)
-        if preferred_track_id is not None:
-            ordered_tracks.sort(key=lambda item: 0 if int(item[4]) == int(preferred_track_id) else 1)
-
-        people: list[dict[str, Any]] = []
+    def _assign_session_tracks(
+        self,
+        *,
+        frame: np.ndarray,
+        session_id: str,
+        person_boxes: list[tuple[np.ndarray, float, str]],
+    ) -> list[dict[str, Any]]:
+        previous_tracks = list(self._session_track_boxes.get(session_id, []))
+        next_track_id = int(self._next_track_ids.get(session_id, 1))
+        used_previous: set[int] = set()
+        assigned_tracks: list[dict[str, Any]] = []
         h, w = frame.shape[:2]
-        for selected in ordered_tracks:
-            x1, y1, x2, y2, track_id, *_rest = [float(v) for v in selected]
+
+        for box, _score, _label in person_boxes:
+            x1, y1, x2, y2 = [float(v) for v in box]
             x1i = max(0, min(w - 1, int(round(x1))))
             y1i = max(0, min(h - 1, int(round(y1))))
             x2i = max(0, min(w, int(round(x2))))
             y2i = max(0, min(h, int(round(y2))))
             if x2i <= x1i or y2i <= y1i:
                 continue
+
+            bbox = [x1i, y1i, x2i, y2i]
+            best_previous_index = -1
+            best_iou = 0.0
+            for index, previous in enumerate(previous_tracks):
+                if index in used_previous:
+                    continue
+                iou = self._bbox_iou(bbox, previous["bbox"])
+                if iou > best_iou:
+                    best_iou = iou
+                    best_previous_index = index
+
+            if best_previous_index >= 0 and best_iou >= 0.3:
+                track_id = int(previous_tracks[best_previous_index]["track_id"])
+                used_previous.add(best_previous_index)
+            else:
+                track_id = next_track_id
+                next_track_id += 1
+
             crop = frame[y1i:y2i, x1i:x2i]
             if crop.size == 0:
                 continue
-            people.append(
+
+            assigned_tracks.append(
                 {
-                    "track_id": int(track_id),
-                    "bbox": [x1i, y1i, x2i, y2i],
+                    "track_id": track_id,
+                    "bbox": bbox,
                     "crop": crop,
                 }
             )
-        return people
+
+        self._session_track_boxes[session_id] = [
+            {"track_id": int(item["track_id"]), "bbox": list(item["bbox"])}
+            for item in assigned_tracks
+        ]
+        self._next_track_ids[session_id] = next_track_id
+
+        cache_entry = self._get_cache_entry(session_id)
+        preferred_track_id = cache_entry.get("track_id") if cache_entry else None
+        if preferred_track_id is not None:
+            assigned_tracks.sort(key=lambda item: 0 if int(item["track_id"]) == int(preferred_track_id) else 1)
+        return assigned_tracks
 
     def _pick_target_candidate(
         self,
@@ -365,6 +389,22 @@ class TargetUserFallService:
     def _clear_cache_entry(self, session_id: str) -> None:
         with self._lock:
             self._session_match_cache.pop(session_id, None)
+
+    @staticmethod
+    def _bbox_iou(box_a: list[int], box_b: list[int]) -> float:
+        ax1, ay1, ax2, ay2 = [float(v) for v in box_a]
+        bx1, by1, bx2, by2 = [float(v) for v in box_b]
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter = inter_w * inter_h
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
 
     def _crop_target_roi(self, frame: np.ndarray, bbox: list[int]) -> tuple[np.ndarray | None, list[int] | None]:
         if frame is None or frame.size == 0:

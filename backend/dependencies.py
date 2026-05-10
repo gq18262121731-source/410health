@@ -40,7 +40,8 @@ from backend.repositories.wearable_repo import WearableRepository
 from backend.services.alarm_priority_queue import AlarmPriorityQueue
 from backend.services.alarm_service import AlarmService
 from backend.services.camera_audio_hub import CameraAudioHub
-from backend.services.camera_stream_hub import CameraDetectionFrameHub, CameraFrameHub
+from backend.services.camera_source_registry import CameraSourceRegistry
+from backend.services.camera_stream_hub import CameraDetectionFrameHub, CameraFrameHub, CameraPoseFrameHub
 from backend.services.community_insight_service import CommunityInsightService
 from backend.services.care_service import CareService
 from backend.services.device_service import DeviceService
@@ -51,9 +52,15 @@ from backend.services.health_data_repository import HealthDataRepository
 from backend.services.health_score_service import HealthScoreService as StructuredHealthScoreService
 from backend.services.health_stability_service import HealthStabilityService
 from backend.services.notification_service import NotificationService
+from backend.services.pose_detection_service import PoseDetectionService
+from backend.services.pose_detection_config_service import PoseDetectionConfigService
+from backend.services.pose_state_service import PoseStateService
+from backend.services.posture_event_service import PostureEventService
+from backend.services.posture_knowledge_service import PostureKnowledgeService
 from backend.services.relation_service import RelationService
 from backend.services.stream_service import StreamService
 from backend.services.external_camera_bridge_service import ExternalCameraBridgeService
+from backend.services.target_pose_service import TargetPoseService
 from backend.services.target_user_service import TargetUserService
 from backend.services.target_user_fall_service import TargetUserFallService
 from backend.services.user_service import UserService
@@ -75,9 +82,9 @@ _camera_frame_hub = CameraFrameHub(
     _settings.model_copy(
         update={
             "camera_stream_profile": "quality",
-            "camera_stream_rtsp_path": "/udp/av0_0",
-            "camera_stream_quality_path": "/udp/av0_0",
-            "camera_stream_smooth_path": "/tcp/av0_1",
+            "camera_stream_rtsp_path": "/udp/av0_1",
+            "camera_stream_quality_path": "/udp/av0_1",
+            "camera_stream_smooth_path": "/udp/av0_1",
             "camera_stream_fps": 12.0,
             "camera_stream_width": 1024,
             "camera_stream_jpeg_quality": 6,
@@ -89,9 +96,9 @@ _camera_detection_frame_hub = CameraDetectionFrameHub(
     _settings.model_copy(
         update={
             "camera_stream_profile": "balanced",
-            "camera_stream_rtsp_path": "/tcp/av0_1",
-            "camera_stream_quality_path": "/udp/av0_0",
-            "camera_stream_smooth_path": "/tcp/av0_1",
+            "camera_stream_rtsp_path": "/udp/av0_1",
+            "camera_stream_quality_path": "/udp/av0_1",
+            "camera_stream_smooth_path": "/udp/av0_1",
             "camera_stream_fps": 12.0,
             "camera_stream_width": 0,
             "camera_stream_send_timeout_seconds": 1.2,
@@ -104,23 +111,54 @@ _camera_detection_frame_hub = CameraDetectionFrameHub(
         else None
     ),
 )
+_pose_state_service = PoseStateService()
+_pose_detection_config_service = PoseDetectionConfigService(_settings)
+_camera_pose_frame_hub = CameraPoseFrameHub(
+    _settings.model_copy(
+        update={
+            "camera_stream_profile": "balanced",
+            "camera_stream_rtsp_path": "/tcp/av0_1",
+            "camera_stream_quality_path": "/udp/av0_0",
+            "camera_stream_smooth_path": "/tcp/av0_1",
+            "camera_stream_fps": 10.0,
+            "camera_stream_width": 0,
+            "camera_stream_send_timeout_seconds": 1.2,
+            "camera_stream_keep_warm": False,
+        }
+    ),
+    payload_provider=lambda: (
+        _pose_state_service.latest()
+        if "_pose_state_service" in globals()
+        else None
+    ),
+)
 _camera_audio_hub = CameraAudioHub(_settings)
+_camera_source_registry = CameraSourceRegistry(_settings)
+_camera_source_frame_hubs: dict[str, CameraFrameHub] = {}
+_camera_source_audio_hubs: dict[str, CameraAudioHub] = {}
 _alarm_priority_queue = AlarmPriorityQueue(redis_url=_settings.redis_url)
 _mobile_push_device_repo = MobilePushDeviceRepository(_settings.database_url)
 _notification_service = NotificationService(_mobile_push_device_repo)
 _health_data_repository = HealthDataRepository(database_url=_settings.database_url)
+_fall_detection_model_root = Path(_settings.fall_detection_model_root)
 _target_user_service = TargetUserService(
     data_root=_settings.data_dir,
-    model_root=Path(r"D:\Program\model\fall_detection"),
+    model_root=_fall_detection_model_root,
 )
 _target_user_fall_service = TargetUserFallService(
     data_root=_settings.data_dir,
-    model_root=Path(r"D:\Program\model\fall_detection"),
+    model_root=_fall_detection_model_root,
     target_user_service=_target_user_service,
 )
+_target_pose_service = TargetPoseService(model_root=_fall_detection_model_root)
+_posture_event_service = PostureEventService()
+_posture_knowledge_service = PostureKnowledgeService(resources_root=Path(__file__).resolve().parent / "resources")
 _external_camera_bridge_service = ExternalCameraBridgeService(
     data_root=_settings.data_dir,
     target_user_fall_service=_target_user_fall_service,
+    target_pose_service=_target_pose_service,
+    posture_event_service=_posture_event_service,
+    posture_knowledge_service=_posture_knowledge_service,
 )
 _realtime_detector = RealtimeAnomalyDetector(
     window_size=_settings.realtime_window_size,
@@ -228,6 +266,10 @@ class _FallTrackState:
 _fall_track_states: dict[str, _FallTrackState] = {}
 
 
+def _fall_target_device_mac() -> str:
+    return _settings.resolved_fall_detection_target_device_mac
+
+
 def _fall_event_is_suspected_candidate(event: dict[str, object]) -> bool:
     state = str(event.get("state") or "").strip().lower()
     if state != "suspected_fall":
@@ -297,7 +339,7 @@ async def _broadcast_fall_review_pending(
     await _websocket_manager.broadcast_alarm(
         {
             "type": "fall_alarm_pending_review",
-            "device_mac": _settings.fall_detection_target_device_mac,
+            "device_mac": _fall_target_device_mac(),
             "incident_id": incident_id,
             "track_id": track_id,
             "title": "系统正在复核现场，请稍等",
@@ -320,7 +362,7 @@ async def _broadcast_fall_review_finalized(
     await _websocket_manager.broadcast_alarm(
         {
             "type": "fall_alarm_finalized",
-            "device_mac": _settings.fall_detection_target_device_mac,
+            "device_mac": _fall_target_device_mac(),
             "incident_id": incident_id,
             "track_id": track_id,
             "catalog_code": presentation.get("catalog_code"),
@@ -423,7 +465,7 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
     title = str(presentation.get("title") or "跌倒告警").strip()
     lead = str(presentation.get("lead") or "").strip()
     alarm = AlarmRecord(
-        device_mac=_settings.fall_detection_target_device_mac,
+        device_mac=_fall_target_device_mac(),
         alarm_type=alarm_type,
         alarm_level=priority,
         alarm_layer=AlarmLayer.REALTIME,
@@ -1135,6 +1177,7 @@ def _fall_alarm_priority(*, severity: str, injury_level: str, state: str) -> Ala
 
 
 _fall_detection_service = FallDetectionService(_settings, _handle_fall_detection_event)
+_pose_detection_service = PoseDetectionService(_settings)
 
 
 # NOTE: ingest_sample is defined further below (after helper functions)
@@ -1197,12 +1240,27 @@ def get_camera_detection_frame_hub() -> CameraFrameHub:
     return _camera_detection_frame_hub
 
 
+def get_camera_pose_frame_hub() -> CameraFrameHub:
+    return _camera_pose_frame_hub
+
+
 def get_camera_audio_hub() -> CameraAudioHub:
     return _camera_audio_hub
 
 
 def get_fall_detection_service() -> FallDetectionService:
     return _fall_detection_service
+
+
+def get_pose_detection_service() -> PoseDetectionService:
+    payload = _pose_detection_service.latest()
+    if payload is not None:
+        _pose_state_service.update(payload)
+    return _pose_detection_service
+
+
+def get_pose_detection_config_service() -> PoseDetectionConfigService:
+    return _pose_detection_config_service
 
 
 def get_fall_multimodal_review_status() -> dict[str, object]:
@@ -1230,6 +1288,60 @@ def get_target_user_service() -> TargetUserService:
 
 def get_target_user_fall_service() -> TargetUserFallService:
     return _target_user_fall_service
+
+
+def get_target_pose_service() -> TargetPoseService:
+    return _target_pose_service
+
+
+def get_posture_event_service() -> PostureEventService:
+    return _posture_event_service
+
+
+def get_posture_knowledge_service() -> PostureKnowledgeService:
+    return _posture_knowledge_service
+
+
+def get_camera_source_registry() -> CameraSourceRegistry:
+    return _camera_source_registry
+
+
+def get_camera_source_settings(camera_id: str):
+    return _camera_source_registry.settings_for(camera_id)
+
+
+def get_camera_source_frame_hub(camera_id: str) -> CameraFrameHub:
+    source_settings = get_camera_source_settings(camera_id).model_copy(
+        update={
+            "camera_stream_keep_warm": False,
+            "camera_stream_fps": min(max(_settings.camera_stream_fps, 1.0), 24.0),
+        }
+    )
+    normalized = camera_id.strip().lower()
+    hub = _camera_source_frame_hubs.get(normalized)
+    if hub is None:
+        hub = CameraFrameHub(source_settings)
+        _camera_source_frame_hubs[normalized] = hub
+    return hub
+
+
+def get_camera_source_audio_hub(camera_id: str) -> CameraAudioHub:
+    source_settings = get_camera_source_settings(camera_id)
+    normalized = camera_id.strip().lower()
+    hub = _camera_source_audio_hubs.get(normalized)
+    if hub is None:
+        hub = CameraAudioHub(source_settings)
+        _camera_source_audio_hubs[normalized] = hub
+    return hub
+
+
+async def shutdown_camera_source_hubs() -> None:
+    for hub in list(_camera_source_audio_hubs.values()):
+        await hub.shutdown()
+    _camera_source_audio_hubs.clear()
+    for hub in list(_camera_source_frame_hubs.values()):
+        await hub.stop_keep_warm()
+    _camera_source_frame_hubs.clear()
 
 
 def get_external_camera_bridge_service() -> ExternalCameraBridgeService:
@@ -1526,7 +1638,7 @@ def _build_alarm_context_from_directory(
 
 
 def _build_configured_camera_alarm_context(normalized_mac: str, directory) -> dict[str, object]:
-    target_mac = _settings.fall_detection_target_device_mac.strip().upper()
+    target_mac = _fall_target_device_mac().strip().upper()
     if not target_mac or normalized_mac != target_mac:
         return {}
 

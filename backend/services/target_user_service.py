@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any
 from uuid import uuid4
 
+os.environ.setdefault("YOLO_CONFIG_DIR", str(Path.cwd() / "Ultralytics"))
+
 import cv2
 import numpy as np
+import torch
 from pydantic import ValidationError
 from ultralytics import YOLO
 
@@ -39,6 +43,7 @@ class TargetUserService:
         self._sface_path = self._assets / "face_recognition_sface.onnx"
         self._face_detector_yn = None
         self._face_recognizer_sf = None
+        self._person_imgsz = 640 if torch.cuda.is_available() else 512
         self._init_face_models()
         self._person_model = YOLO(str(model_root / "yolo11n.pt"))
         self._fallback_person_model = YOLO(str(model_root / "weights" / "yolo_fall_detector_v1.pt"))
@@ -383,7 +388,7 @@ class TargetUserService:
         allowed_labels: set[str],
         conf: float,
     ) -> list[tuple[np.ndarray, float, str]]:
-        result = model.predict(frame, verbose=False, imgsz=640, conf=conf, iou=0.45)[0]
+        result = model.predict(frame, verbose=False, imgsz=640 if torch.cuda.is_available() else 512, conf=conf, iou=0.45)[0]
         if result.boxes is None or len(result.boxes) == 0:
             return []
         names = result.names if hasattr(result, "names") else model.names
@@ -396,7 +401,14 @@ class TargetUserService:
             if label not in allowed_labels:
                 continue
             person_boxes.append((box, float(score), label))
-        return person_boxes
+        person_boxes.sort(
+            key=lambda item: (
+                item[1],
+                float(max(1.0, item[0][2] - item[0][0]) * max(1.0, item[0][3] - item[0][1])),
+            ),
+            reverse=True,
+        )
+        return person_boxes[:4]
 
     @staticmethod
     def _best_face_similarity(face_embedding: list[float] | None, gallery: list[list[float]]) -> float:

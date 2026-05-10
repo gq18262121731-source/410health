@@ -35,7 +35,9 @@ class FallFrameTestService:
         self._posture: YOLO | None = None
         self._device: str | int = "cpu"
         self._half = False
-        self._model_root = Path(r"D:\Program\model\fall_detection")
+        self._detector_imgsz = 512
+        self._posture_imgsz = 256
+        self._model_root = Path(settings.fall_detection_model_root)
         self._detector_path = self._model_root / "weights" / "yolo_fall_detector_v1.pt"
         self._posture_path = self._model_root / "runs" / "yolo_posture_person_binary_cls_v1" / "weights" / "best.pt"
 
@@ -112,6 +114,12 @@ class FallFrameTestService:
             use_cuda = torch.cuda.is_available()
             self._device = 0 if use_cuda else "cpu"
             self._half = use_cuda
+            if use_cuda:
+                self._detector_imgsz = 640
+                self._posture_imgsz = 384
+            else:
+                self._detector_imgsz = 512
+                self._posture_imgsz = 256
             self._detector = YOLO(str(self._detector_path))
             self._posture = YOLO(str(self._posture_path))
             self._loaded = True
@@ -122,7 +130,7 @@ class FallFrameTestService:
         result = self._detector.predict(
             frame,
             verbose=False,
-            imgsz=640,
+            imgsz=self._detector_imgsz,
             conf=0.2,
             iou=0.45,
             device=self._device,
@@ -171,7 +179,7 @@ class FallFrameTestService:
         result = self._posture.predict(
             crop,
             verbose=False,
-            imgsz=384,
+            imgsz=self._posture_imgsz,
             device=self._device,
             half=self._half,
         )[0]
