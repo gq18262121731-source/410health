@@ -1270,6 +1270,72 @@ progress::-moz-progress-bar {
   color: #dc2626;
 }
 
+.pose-debug-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.pose-debug-overview__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.dashboard-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pose-stream-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.pose-stream-card {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.pose-stream-card figcaption {
+  font-size: 0.88rem;
+  color: var(--text-sub);
+  font-weight: 600;
+}
+
+.pose-stream-card img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: #0f172a;
+}
+
+.pose-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.pose-debug-grid .pose-config-panel {
+  grid-column: span 7;
+}
+
+.pose-debug-grid .pose-status-panel,
+.pose-debug-grid .pose-latest-panel {
+  grid-column: span 5;
+}
+
+.pose-debug-grid .pose-track-panel {
+  grid-column: span 12;
+}
+
 .empty-inline {
   margin: 0;
   color: var(--text-muted);
@@ -1301,6 +1367,10 @@ progress::-moz-progress-bar {
   }
 
   .device-demo-register__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .pose-stream-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1386,6 +1456,11 @@ progress::-moz-progress-bar {
   .panel-head {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .pose-debug-overview__head {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .device-demo-register__readouts,

@@ -6,6 +6,7 @@ import {
   Network,
   SquareTerminal,
   type LucideIcon,
+  UserRoundSearch,
   UsersRound,
 } from "lucide-vue-next";
 import type { PageKey } from "../../composables/useHashRouting";
@@ -31,7 +32,7 @@ const navItems = computed<NavItem[]>(() =>
     {
       page: "overview" as PageKey,
       label: "总览监护",
-      description: "实时曲线与告警",
+      description: "实时状态与告警",
       icon: Activity,
     },
     {
@@ -45,6 +46,12 @@ const navItems = computed<NavItem[]>(() =>
       label: "成员设备",
       description: "注册、绑定与台账",
       icon: UsersRound,
+    },
+    {
+      page: "target-users" as PageKey,
+      label: "目标用户",
+      description: "照片注册与识别联调",
+      icon: UserRoundSearch,
     },
     {
       page: "agent" as PageKey,
@@ -66,9 +73,9 @@ const navItems = computed<NavItem[]>(() =>
   <nav v-if="navItems.length" class="modern-primary-nav" aria-label="主导航">
     <div class="modern-primary-nav__header">
       <h3 class="modern-primary-nav__title">社区工作台</h3>
-      <p class="modern-primary-nav__subtitle">监护、拓扑、成员设备等智能体分区协作</p>
+      <p class="modern-primary-nav__subtitle">监护、拓扑、目标用户和智能分析统一入口</p>
     </div>
-    
+
     <div class="modern-primary-nav__items">
       <button
         v-for="item in navItems"
@@ -144,7 +151,7 @@ const navItems = computed<NavItem[]>(() =>
 }
 
 .modern-primary-nav__item::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   top: 0;

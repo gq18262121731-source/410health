@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { api } from "../api/client";
+import PoseDebugPanel from "../components/PoseDebugPanel.vue";
 import TrendChart from "../components/TrendChart.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import { useDebugDashboard } from "../composables/useDebugDashboard";
@@ -14,7 +16,21 @@ const emit = defineEmits<{
   navigate: [page: PageKey];
 }>();
 
-const { dashboardLoadError, dashboardLoading, debugRows, devices, lastSyncAt, latest, refreshDebugData } = useDebugDashboard(5000);
+const {
+  dashboardLoadError,
+  dashboardLoading,
+  debugRows,
+  devices,
+  lastSyncAt,
+  latest,
+  poseConfig,
+  poseLatest,
+  poseSaveMessage,
+  poseSavePending,
+  poseStatus,
+  refreshDebugData,
+  savePoseConfig,
+} = useDebugDashboard(5000);
 const selectedDeviceMac = ref("");
 const { focusLatest, focusTrend, trendWindowMinutes } = useDeviceTrend({
   selectedDeviceMac,
@@ -31,6 +47,9 @@ const pageMeta = computed(() => [
   `当前对象 ${selectedDeviceMac.value || "未选择"}`,
   `同步 ${syncLabel.value}`,
 ]);
+const rawStreamUrl = computed(() => api.getCameraStreamUrl());
+const detectionStreamUrl = computed(() => api.getCameraDetectionStreamUrl());
+const poseStreamUrl = computed(() => api.getCameraPoseStreamUrl());
 
 watch(
   devices,
@@ -52,7 +71,7 @@ watch(
     <PageHeader
       eyebrow="Tool Entry / Debug"
       title="调试看板"
-      description="调试入口已经从主头部与主导航降级到工具入口，这里只展示设备实时数据、原始字段和趋势调试信息。"
+      description="调试入口已经从主头部与主导航降级到工具入口，这里集中展示设备实时数据、姿态检测状态和 ROI 调参能力。"
       :meta="pageMeta"
     >
       <template #actions>
@@ -63,7 +82,21 @@ watch(
 
     <p v-if="dashboardLoadError" class="feedback-banner feedback-error">{{ dashboardLoadError }}</p>
 
-    <div v-else-if="dashboardLoading && !debugRows.length" class="state-block state-loading">
+    <PoseDebugPanel
+      :loading="dashboardLoading"
+      :save-pending="poseSavePending"
+      :save-message="poseSaveMessage"
+      :pose-status="poseStatus"
+      :pose-latest="poseLatest"
+      :pose-config="poseConfig"
+      :raw-stream-url="rawStreamUrl"
+      :detection-stream-url="detectionStreamUrl"
+      :pose-stream-url="poseStreamUrl"
+      @reload="refreshDebugData"
+      @save-config="savePoseConfig"
+    />
+
+    <div v-if="dashboardLoading && !debugRows.length" class="state-block state-loading">
       <strong>正在加载调试数据</strong>
       <p>设备实时数据、原始字段和趋势曲线会在这里集中展示。</p>
     </div>

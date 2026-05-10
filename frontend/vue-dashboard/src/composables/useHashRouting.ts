@@ -1,7 +1,7 @@
 import { computed, ref, type Ref } from "vue";
 import type { SessionUser } from "../api/client";
 
-export type PageKey = "overview" | "topology" | "members" | "agent" | "family" | "debug" | "none";
+export type PageKey = "overview" | "topology" | "members" | "agent" | "family" | "target-users" | "debug" | "none";
 
 const pageHash: Record<Exclude<PageKey, "none">, string> = {
   overview: "#/overview",
@@ -9,6 +9,7 @@ const pageHash: Record<Exclude<PageKey, "none">, string> = {
   members: "#/members",
   agent: "#/agent",
   family: "#/family",
+  "target-users": "#/target-users",
   debug: "#/debug",
 };
 
@@ -39,7 +40,7 @@ export function useHashRouting(sessionUser: Ref<SessionUser | null>) {
     if (!sessionUser.value) return [];
     if (sessionUser.value.role === "family") return ["family"];
     if (sessionUser.value.role === "community" || sessionUser.value.role === "admin") {
-      return ["overview", "topology", "members", "agent"];
+      return ["overview", "topology", "members", "agent", "target-users"];
     }
     return [];
   });
