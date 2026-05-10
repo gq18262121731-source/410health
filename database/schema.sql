@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS device_bind_logs (
 );
 
 CREATE TABLE IF NOT EXISTS health_data (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGSERIAL,
     device_mac VARCHAR(32) NOT NULL,
     timestamp TIMESTAMPTZ NOT NULL,
     heart_rate INTEGER NOT NULL,
@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS health_data (
     blood_pressure VARCHAR(16) NOT NULL,
     battery INTEGER NOT NULL,
     sos_flag BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, timestamp)
 );
 
 SELECT create_hypertable('health_data', 'timestamp', if_not_exists => TRUE);
@@ -77,7 +78,7 @@ CREATE TABLE IF NOT EXISTS alarms (
 );
 
 CREATE TABLE IF NOT EXISTS sensor_samples (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGSERIAL,
     device_mac VARCHAR(32) NOT NULL,
     timestamp TIMESTAMPTZ NOT NULL,
     heart_rate INTEGER NOT NULL,
@@ -96,7 +97,8 @@ CREATE TABLE IF NOT EXISTS sensor_samples (
     raw_packet_b TEXT,
     anomaly_score NUMERIC(8,4),
     health_score INTEGER,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, timestamp)
 );
 
 SELECT create_hypertable('sensor_samples', 'timestamp', if_not_exists => TRUE);

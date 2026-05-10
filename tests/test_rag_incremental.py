@@ -1,10 +1,10 @@
 import sys
 import os
-import shutil
 import time
 from pathlib import Path
 from io import StringIO
 import contextlib
+from unittest.mock import MagicMock
 
 # Add the project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -12,11 +12,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from agent.langchain_rag_service import LangChainRAGService
 from backend.config import Settings
 
-def test_incremental_rag():
+def test_incremental_rag(tmp_path):
     # Setup temp knowledge dir
-    test_dir = Path("tmp_knowledge_test")
-    if test_dir.exists():
-        shutil.rmtree(test_dir)
+    test_dir = tmp_path / "knowledge"
     test_dir.mkdir()
     
     # Create test files
@@ -28,14 +26,12 @@ def test_incremental_rag():
     
     # Mock settings
     settings = MagicMock(spec=Settings)
-    settings.chroma_path = "tmp_chroma_test"
+    settings.chroma_path = str(tmp_path / "chroma")
     settings.rag_chunk_size = 500
     settings.rag_chunk_overlap = 50
     settings.tongyi_embedding_configured = False 
     settings.qwen_enable_rerank = False
     
-    if Path(settings.chroma_path).exists():
-        shutil.rmtree(settings.chroma_path)
     Path(settings.chroma_path).mkdir()
 
     print("--- Initial Run ---")
@@ -87,14 +83,12 @@ def test_incremental_rag():
     assert "test3.md" in sources
     print("✓ Correctly handled addition and deletion")
 
-    # Cleanup
-    shutil.rmtree(test_dir)
-    shutil.rmtree(settings.chroma_path)
-
 if __name__ == "__main__":
     from unittest.mock import MagicMock
+    import tempfile
     try:
-        test_incremental_rag()
+        with tempfile.TemporaryDirectory() as tmp:
+            test_incremental_rag(Path(tmp))
         print("\nIncremental RAG Verification PASSED!")
     except Exception as e:
         print(f"\nVerification FAILED: {e}")

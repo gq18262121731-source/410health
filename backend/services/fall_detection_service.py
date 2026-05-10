@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -32,6 +33,7 @@ class FallDetectionService:
         self._started_at: float | None = None
         self._restart_count = 0
         self._stopping = False
+        self._python_fallback_logged = False
 
     async def start(self) -> None:
         if not self._settings.fall_detection_enabled:
@@ -108,7 +110,11 @@ class FallDetectionService:
 
     async def _run_once(self) -> None:
         root = Path(self._settings.fall_detection_model_root)
-        python = Path(self._settings.fall_detection_python)
+        python = self._resolve_python()
+        script = root / "scripts" / "realtime_fall_monitor.py"
+        if not script.exists():
+            raise RuntimeError(f"FALL_DETECTION_SCRIPT_NOT_FOUND: {script}")
+
         event_log = Path(self._settings.fall_detection_event_log)
         snapshot_dir = Path(self._settings.fall_detection_snapshot_dir)
         event_log.parent.mkdir(parents=True, exist_ok=True)
@@ -135,7 +141,12 @@ class FallDetectionService:
         try:
             returncode = await self._process.wait()
             if returncode not in (0, None) and not self._stopping:
-                self._last_error = f"FALL_DETECTION_EXIT_{returncode}"
+                detail = self._last_error
+                self._last_error = (
+                    f"FALL_DETECTION_EXIT_{returncode}: {detail}"
+                    if detail
+                    else f"FALL_DETECTION_EXIT_{returncode}"
+                )
         finally:
             tail_task.cancel()
             stderr_task.cancel()
@@ -155,7 +166,7 @@ class FallDetectionService:
 
     def _build_command(self, *, source_url: str, event_log: Path, snapshot_dir: Path) -> list[str]:
         root = Path(self._settings.fall_detection_model_root)
-        python = Path(self._settings.fall_detection_python)
+        python = self._resolve_python()
         command = [
             str(python),
             str(root / "scripts" / "realtime_fall_monitor.py"),
@@ -185,6 +196,22 @@ class FallDetectionService:
 
         command.extend(self._speed_profile_args())
         return command
+
+    def _resolve_python(self) -> Path:
+        configured = Path(str(self._settings.fall_detection_python or "").strip())
+        if configured.exists():
+            return configured
+        current = Path(sys.executable)
+        if current.exists():
+            if not self._python_fallback_logged:
+                logger.warning(
+                    "Configured fall detection Python is unavailable, using current interpreter: %s -> %s",
+                    configured,
+                    current,
+                )
+                self._python_fallback_logged = True
+            return current
+        raise RuntimeError(f"FALL_DETECTION_PYTHON_NOT_FOUND: {configured}")
 
     def _speed_profile_args(self) -> list[str]:
         override = int(self._settings.fall_detection_process_every_override or 0)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -59,6 +60,9 @@ class FrameStore:
             self.last_error = message
             self.last_error_at = now
             self.consecutive_failures += 1
+            if self.latest_frame_at is not None and now - self.latest_frame_at > 5.0:
+                self.latest_jpeg = None
+                self.latest_frame_at = None
             if self._last_logged_error_at is None or now - self._last_logged_error_at >= 2.0:
                 should_log = True
                 self._last_logged_error_at = now
@@ -70,6 +74,10 @@ class FrameStore:
             self.last_opened_at = time.time()
             self.current_stream = stream
             self.reconnect_count += 1
+
+    def set_current_stream(self, stream: str) -> None:
+        with self.lock:
+            self.current_stream = stream
 
     def snapshot(self) -> FrameSnapshot:
         with self.lock:
@@ -109,8 +117,8 @@ class CameraRuntime:
         self._last_successful_stream: str | None = None
         self._read_retry_count = 20
         self._read_retry_sleep_seconds = 0.05
-        self._max_read_failures_before_reconnect = 10
-        self._max_stale_seconds_before_reconnect = max(3.0, self.frame_interval_seconds * 80)
+        self._max_read_failures_before_reconnect = 4
+        self._max_stale_seconds_before_reconnect = max(1.8, self.frame_interval_seconds * 40)
         self._stream_failure_times: dict[str, list[float]] = {}
         self._stream_cooldown_until: dict[str, float] = {}
         self._stream_failure_window_seconds = 120.0
@@ -172,12 +180,24 @@ class CameraRuntime:
         opened = None
         for stream, url in candidates:
             logger.info("Trying RTSP candidate: %s", self._mask_url(url))
-            cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap = cv2.VideoCapture()
+            previous_ffmpeg_options = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
+            rtsp_transport = "udp" if f"/udp/" in url.lower() else "tcp"
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                f"rtsp_transport;{rtsp_transport}|stimeout;3000000|max_delay;500000|fflags;nobuffer"
+            )
             if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
-                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
             if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
-                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 3000)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            try:
+                cap.open(url, cv2.CAP_FFMPEG)
+            finally:
+                if previous_ffmpeg_options is None:
+                    os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+                else:
+                    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = previous_ffmpeg_options
 
             if not cap.isOpened():
                 cap.release()
@@ -204,6 +224,7 @@ class CameraRuntime:
 
         stream, url, cap, first_frame = opened
         self._last_successful_stream = stream
+        self.camera_config.stream = stream
         self.frame_store.mark_opened(stream)
         logger.info("Opened RTSP stream via OpenCV: %s", self._mask_url(url))
         stream_failed = False
@@ -243,6 +264,7 @@ class CameraRuntime:
             cap.release()
             if stream_failed and not self._stop_event.is_set():
                 self._mark_stream_failure(stream)
+                self._last_successful_stream = "av0_0" if stream == "av0_1" else "av0_1"
 
     def _mark_stream_failure(self, stream: str) -> None:
         now = time.time()
@@ -269,14 +291,24 @@ class CameraRuntime:
             self.frame_store.update(encoded.tobytes())
 
     def _build_rtsp_candidates(self) -> list[tuple[str, str]]:
-        # Current field evidence suggests 554/tcp with admin/admin is valid on this device, while
-        # historic docs may still mention 10554 or other passwords. We prioritize the currently
-        # observed combinations and fall back conservatively.
-        users = [self.camera_config.username, "admin"]
-        passwords = [self.camera_config.password, "admin", "8888888", "123456"]
-        ports = [self.camera_config.rtsp_port, 554, 10554]
-        transports = [self.camera_config.transport, "tcp", "udp"]
-        streams = [self._last_successful_stream or self.camera_config.stream, "av0_0", "av0_1"]
+        def unique(values: list[object]) -> list[object]:
+            result: list[object] = []
+            for value in values:
+                if value in result:
+                    continue
+                result.append(value)
+            return result
+
+        users = unique([self.camera_config.username])
+        passwords = unique([self.camera_config.password])
+        ports = unique([self.camera_config.rtsp_port])
+        transports = unique([self.camera_config.transport])
+        streams = unique([
+            self._last_successful_stream or self.camera_config.stream,
+            self.camera_config.stream,
+            "av0_1",
+            "av0_0",
+        ])
 
         seen: set[str] = set()
         candidates: list[tuple[str, str]] = []
@@ -298,18 +330,23 @@ class CameraRuntime:
                 score -= 2
             if self._stream_cooldown_until.get(stream, 0.0) > now:
                 score += 60
-            if ":554/" in url:
-                score -= 8
-            if "/tcp/" in url:
+            if f":{self.camera_config.rtsp_port}/" in url:
                 score -= 4
-            if "@{}:".format(self.camera_config.host) in url and "admin:admin@" in url:
-                score -= 10
-            if stream == "av0_0":
+            if f"/{self.camera_config.transport}/" in url:
+                score -= 4
+            if stream == "av0_1":
                 score -= 2
             return (score, len(url), 0)
 
         candidates.sort(key=priority)
         return candidates
+
+    def effective_masked_rtsp_url(self) -> str:
+        stream = self._last_successful_stream or self.frame_store.snapshot().current_stream or self.camera_config.stream
+        return self._mask_url(
+            f"rtsp://{self.camera_config.username}:{self.camera_config.password}"
+            f"@{self.camera_config.host}:{self.camera_config.rtsp_port}/{self.camera_config.transport}/{stream}"
+        )
 
     def _mask_url(self, url: str) -> str:
         password = self.camera_config.password

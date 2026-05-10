@@ -129,6 +129,14 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .camera-config-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: minmax(150px, 1fr) minmax(110px, 0.7fr) minmax(90px, 0.5fr) minmax(96px, 0.5fr) minmax(150px, 1fr) auto;
+      align-items: end;
+      margin: 12px 0 14px;
+    }
+
     .field {
       display: grid;
       gap: 6px;
@@ -144,11 +152,11 @@
       color: var(--muted);
     }
 
-    input, textarea, button {
+    input, textarea, select, button {
       font: inherit;
     }
 
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 12px;
@@ -314,7 +322,7 @@
     }
 
     @media (max-width: 1080px) {
-      .grid, .match-grid, .form-grid {
+      .grid, .match-grid, .form-grid, .camera-config-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -423,7 +431,7 @@
       </section>
     </section>
 
-    <section class="panel">
+    <section id="liveCameraSection" class="panel">
       <div class="panel-head">
         <div class="section-title">
           <strong>目标用户列表</strong>
@@ -442,6 +450,48 @@
       <div class="section-title">
         <strong>实时摄像头 target-only 跌倒检测</strong>
         <span>每帧先做目标用户匹配，命中目标用户才继续跌倒检测；非目标用户直接过滤。</span>
+      </div>
+
+      <div class="camera-config-grid">
+        <div class="field">
+          <label for="cameraHostInput">Camera IP</label>
+          <input id="cameraHostInput" type="text" value="192.168.8.248" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="cameraUsernameInput">User</label>
+          <input id="cameraUsernameInput" type="text" value="admin" autocomplete="username">
+        </div>
+        <div class="field">
+          <label for="cameraRtspPortInput">RTSP Port</label>
+          <input id="cameraRtspPortInput" type="number" min="1" max="65535" value="554">
+        </div>
+        <div class="field">
+          <label for="cameraStreamSelect">Stream</label>
+          <select id="cameraStreamSelect">
+            <option value="av0_1">av0_1</option>
+            <option value="av0_0">av0_0</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="cameraPasswordInput">Plain Password</label>
+          <input id="cameraPasswordInput" type="password" placeholder="留空则沿用已保存密码" autocomplete="current-password">
+        </div>
+        <button id="saveCameraConfigBtn" class="btn btn-primary" type="button">保存并重启摄像头</button>
+      </div>
+
+      <div class="actions" style="margin-bottom:10px;">
+        <button id="discoverCameraBtn" class="btn btn-secondary" type="button">搜索局域网摄像头</button>
+        <button id="probeCameraConfigBtn" class="btn btn-secondary" type="button">探测并应用可用源</button>
+      </div>
+
+      <div id="cameraConfigStatusBox" class="status-box warn">
+        <strong>摄像头连接尚未验证</strong>
+        <small>如需更换密码，请输入摄像头 App 中的 RTSP/ONVIF 明文密码；留空会沿用本机已保存密码。</small>
+      </div>
+
+      <div id="cameraProbeStatusBox" class="status-box">
+        <strong>摄像头源尚未探测</strong>
+        <small>点击“探测并应用可用源”后，系统会测试常见 RTSP 组合，成功后自动切换到可用源。</small>
       </div>
 
       <div class="actions">
@@ -513,6 +563,9 @@
     const TARGET_USERS_MATCH_URL = API_BASE + "/target-users/match";
     const TARGET_USERS_FALL_URL = API_BASE + "/target-users/fall-detect?mode=metadata&target_only=true";
     const EXTERNAL_CAMERA_HEALTH_URL = API_BASE + "/target-users/external-camera/health";
+    const EXTERNAL_CAMERA_CONFIG_URL = API_BASE + "/target-users/external-camera/config";
+    const EXTERNAL_CAMERA_PROBE_URL = API_BASE + "/target-users/external-camera/probe";
+    const EXTERNAL_CAMERA_DISCOVER_URL = API_BASE + "/target-users/external-camera/discover";
     const EXTERNAL_CAMERA_FALL_URL = API_BASE + "/target-users/external-camera/fall-detect?mode=metadata";
     const EXTERNAL_CAMERA_REFRESH_URL = API_BASE + "/target-users/external-camera/refresh";
     const LIVE_SESSION_ID = "target-user-console-" + Math.random().toString(36).slice(2, 10);
@@ -532,8 +585,11 @@
     let liveRuntimeRefreshBusy = false;
     let lastRuntimeRefreshAt = 0;
     let lastLiveDrawAt = 0;
+    let lastSmoothPose = null;
     const LIVE_STREAM_REFRESH_MS = 5000;
     const LIVE_SNAPSHOT_PULL_MS = 220;
+    const LIVE_RUNTIME_REFRESH_COOLDOWN_MS = 20000;
+    const LIVE_RUNTIME_REFRESH_STALE_SECONDS = 6;
 
     const ui = {
       apiChip: document.getElementById("apiChip"),
@@ -558,6 +614,16 @@
       fusedScoreText: document.getElementById("fusedScoreText"),
       userList: document.getElementById("userList"),
       globalErrorBox: document.getElementById("globalErrorBox"),
+      cameraHostInput: document.getElementById("cameraHostInput"),
+      cameraUsernameInput: document.getElementById("cameraUsernameInput"),
+      cameraRtspPortInput: document.getElementById("cameraRtspPortInput"),
+      cameraStreamSelect: document.getElementById("cameraStreamSelect"),
+      cameraPasswordInput: document.getElementById("cameraPasswordInput"),
+      saveCameraConfigBtn: document.getElementById("saveCameraConfigBtn"),
+      discoverCameraBtn: document.getElementById("discoverCameraBtn"),
+      probeCameraConfigBtn: document.getElementById("probeCameraConfigBtn"),
+      cameraConfigStatusBox: document.getElementById("cameraConfigStatusBox"),
+      cameraProbeStatusBox: document.getElementById("cameraProbeStatusBox"),
       startCameraBtn: document.getElementById("startCameraBtn"),
       stopCameraBtn: document.getElementById("stopCameraBtn"),
       targetOnlyToggle: document.getElementById("targetOnlyToggle"),
@@ -655,6 +721,230 @@
       container.innerHTML = files.map((file) => (
         '<div class="file-item"><strong>' + escapeHtml(file.name) + '</strong><small>' + Math.round(file.size / 1024) + ' KB</small></div>'
       )).join("");
+    }
+
+    function renderCameraConfigStatus(payload) {
+      const config = (payload && payload.config) || payload || {};
+      const health = (payload && payload.camera_health) || {};
+      const hasFrame = Boolean(health.has_frame || payload?.camera_available);
+      const lastError = String(health.last_error || payload?.error || "");
+      const rtspSource = config.source || [
+        "rtsp://",
+        config.username || "admin",
+        ":***@",
+        config.host || "192.168.8.248",
+        ":",
+        config.rtsp_port || 554,
+        "/",
+        config.transport || "tcp",
+        "/",
+        config.stream || "av0_1",
+      ].join("");
+      ui.cameraHostInput.value = config.host || ui.cameraHostInput.value || "192.168.8.248";
+      ui.cameraUsernameInput.value = config.username || ui.cameraUsernameInput.value || "admin";
+      ui.cameraRtspPortInput.value = config.rtsp_port || ui.cameraRtspPortInput.value || 554;
+      ui.cameraStreamSelect.value = config.stream || ui.cameraStreamSelect.value || "av0_1";
+      ui.cameraConfigStatusBox.className = "status-box " + (hasFrame ? "ok" : "warn");
+      ui.cameraConfigStatusBox.innerHTML = [
+        "<strong>" + (hasFrame ? "摄像头画面已获取" : "摄像头等待可用画面") + "</strong>",
+        "<small>当前 RTSP: " + escapeHtml(rtspSource)
+          + " · 密码" + (config.password_set ? "已设置" : "未设置") + "</small>",
+        payload?.runtime_root ? "<small>Runtime: " + escapeHtml(payload.runtime_root) + "</small>" : "",
+        lastError ? "<small>最近错误: " + escapeHtml(lastError) + "</small>" : "",
+      ].join("");
+    }
+
+    async function loadCameraConfig() {
+      try {
+        const config = await requestJson(EXTERNAL_CAMERA_CONFIG_URL);
+        renderCameraConfigStatus(config);
+      } catch (error) {
+        ui.cameraConfigStatusBox.className = "status-box error";
+        ui.cameraConfigStatusBox.innerHTML = "<strong>摄像头配置读取失败</strong><small>" + escapeHtml(error instanceof Error ? error.message : "读取失败") + "</small>";
+      }
+    }
+
+    async function saveCameraConfig() {
+      const password = ui.cameraPasswordInput.value;
+      const payload = {
+        host: ui.cameraHostInput.value.trim(),
+        username: ui.cameraUsernameInput.value.trim() || "admin",
+        rtsp_port: Number(ui.cameraRtspPortInput.value || 554),
+        transport: "tcp",
+        stream: ui.cameraStreamSelect.value || "av0_1",
+      };
+      if (password) {
+        payload.password = password;
+      }
+      if (!payload.host) {
+        setGlobalError("请填写摄像头 IP。");
+        return;
+      }
+      ui.saveCameraConfigBtn.disabled = true;
+      ui.cameraConfigStatusBox.className = "status-box warn";
+      ui.cameraConfigStatusBox.innerHTML = "<strong>正在保存并重启摄像头</strong><small>请稍等，系统会用本机配置重新连接 RTSP。</small>";
+      try {
+        stopLiveCamera();
+        const result = await requestJson(EXTERNAL_CAMERA_CONFIG_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        ui.cameraPasswordInput.value = "";
+        renderCameraConfigStatus(result);
+        setGlobalError(result.camera_available ? "" : "配置已保存，但摄像头仍未返回画面；请确认相机已通电、在同一网络，并且 IP/密码与摄像头 App 一致。");
+        if (result.camera_available) {
+          await startLiveCamera();
+        }
+      } catch (error) {
+        ui.cameraConfigStatusBox.className = "status-box error";
+        ui.cameraConfigStatusBox.innerHTML = "<strong>摄像头配置保存失败</strong><small>" + escapeHtml(error instanceof Error ? error.message : "保存失败") + "</small>";
+        setGlobalError(error instanceof Error ? error.message : "摄像头配置保存失败");
+      } finally {
+        ui.saveCameraConfigBtn.disabled = false;
+      }
+    }
+
+    function buildCameraConfigPayload() {
+      const payload = {
+        host: ui.cameraHostInput.value.trim(),
+        username: ui.cameraUsernameInput.value.trim() || "admin",
+        rtsp_port: Number(ui.cameraRtspPortInput.value || 554),
+        transport: "tcp",
+        stream: ui.cameraStreamSelect.value || "av0_1",
+        apply_success: true,
+      };
+      const password = ui.cameraPasswordInput.value;
+      if (password) {
+        payload.password = password;
+      }
+      return payload;
+    }
+
+    function renderCameraProbeResult(result) {
+      const results = Array.isArray(result.results) ? result.results : [];
+      const winner = result.winner || null;
+      const rows = results.slice(0, 8).map((item, index) => {
+        const config = item.config || {};
+        const label = item.ok ? "成功" : (item.error === "RTSP_AUTH_FAILED" ? "密码/鉴权失败" : "失败");
+        const source = config.source || [
+          "rtsp://",
+          config.username || "admin",
+          ":***@",
+          config.host || "--",
+          ":",
+          config.rtsp_port || "--",
+          "/",
+          config.transport || "tcp",
+          "/",
+          config.stream || "--",
+        ].join("");
+        return "<small>" + (index + 1) + ". " + label + " · " + escapeHtml(source)
+          + " · " + escapeHtml(item.error || "OK")
+          + " · " + Math.round(Number(item.latency_ms) || 0) + " ms</small>";
+      }).join("");
+      ui.cameraProbeStatusBox.className = "status-box " + (winner ? "ok" : "error");
+      ui.cameraProbeStatusBox.innerHTML = [
+        "<strong>" + (winner ? "已找到并应用可用摄像头源" : "未找到可用摄像头源") + "</strong>",
+        winner ? "<small>当前可用源: " + escapeHtml(winner.source || "") + "</small>" : "<small>请确认摄像头在线、IP/端口/密码正确，或在上方改填后重新探测。</small>",
+        rows,
+      ].join("");
+    }
+
+    function applyDiscoveredCamera(device) {
+      const suggested = device.suggested || {};
+      if (suggested.host) ui.cameraHostInput.value = suggested.host;
+      if (suggested.rtsp_port) ui.cameraRtspPortInput.value = suggested.rtsp_port;
+      if (suggested.stream) ui.cameraStreamSelect.value = suggested.stream;
+      if (suggested.username) ui.cameraUsernameInput.value = suggested.username;
+      ui.cameraProbeStatusBox.className = "status-box warn";
+      ui.cameraProbeStatusBox.innerHTML = "<strong>已填入候选摄像头</strong><small>请确认密码后点击“探测并应用可用源”。如果显示鉴权失败，说明需要输入摄像头 RTSP 明文密码。</small>";
+    }
+
+    function renderCameraDiscovery(result) {
+      const devices = Array.isArray(result.devices) ? result.devices : [];
+      if (!devices.length) {
+        ui.cameraProbeStatusBox.className = "status-box error";
+        ui.cameraProbeStatusBox.innerHTML = "<strong>没有发现摄像头候选设备</strong><small>请确认摄像头与电脑在同一网络，或手动填写 IP 后探测。</small>";
+        return;
+      }
+      const rows = devices.slice(0, 6).map((device, index) => {
+        const suggested = device.suggested || {};
+        const rtsp = Array.isArray(device.rtsp) && device.rtsp.length ? device.rtsp[0] : {};
+        const source = suggested.rtsp_port
+          ? ["rtsp://admin:***@", suggested.host, ":", suggested.rtsp_port, "/", suggested.transport || "tcp", "/", suggested.stream || "av0_1"].join("")
+          : ("host " + (device.host || "--"));
+        const note = rtsp.auth_scheme
+          ? ("鉴权: " + rtsp.auth_scheme)
+          : (rtsp.sdp ? "已返回 SDP" : "端口: " + (device.open_ports || []).join(","));
+        return '<button class="btn btn-secondary" type="button" data-camera-device-index="' + index + '">'
+          + escapeHtml(source) + ' · ' + escapeHtml(note) + '</button>';
+      }).join("");
+      ui.cameraProbeStatusBox.className = "status-box warn";
+      ui.cameraProbeStatusBox.innerHTML = [
+        "<strong>发现 " + devices.length + " 个候选设备</strong>",
+        "<small>点击候选源会自动填入 IP/端口/码流，然后输入正确密码并探测。</small>",
+        rows,
+      ].join("");
+      ui.cameraProbeStatusBox.querySelectorAll("[data-camera-device-index]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const index = Number(button.getAttribute("data-camera-device-index") || 0);
+          applyDiscoveredCamera(devices[index]);
+        });
+      });
+    }
+
+    async function discoverCameraConfig() {
+      ui.discoverCameraBtn.disabled = true;
+      ui.cameraProbeStatusBox.className = "status-box warn";
+      ui.cameraProbeStatusBox.innerHTML = "<strong>正在搜索局域网摄像头</strong><small>会扫描当前网段常见摄像头端口，通常需要 5-15 秒。</small>";
+      try {
+        const result = await requestJson(EXTERNAL_CAMERA_DISCOVER_URL + "?subnet=192.168.8.0&limit=254");
+        renderCameraDiscovery(result);
+      } catch (error) {
+        ui.cameraProbeStatusBox.className = "status-box error";
+        ui.cameraProbeStatusBox.innerHTML = "<strong>搜索摄像头失败</strong><small>" + escapeHtml(error instanceof Error ? error.message : "搜索失败") + "</small>";
+      } finally {
+        ui.discoverCameraBtn.disabled = false;
+      }
+    }
+
+    async function probeCameraConfig() {
+      const payload = buildCameraConfigPayload();
+      if (!payload.host) {
+        setGlobalError("请填写摄像头 IP。");
+        return;
+      }
+      ui.probeCameraConfigBtn.disabled = true;
+      ui.saveCameraConfigBtn.disabled = true;
+      ui.cameraProbeStatusBox.className = "status-box warn";
+      ui.cameraProbeStatusBox.innerHTML = "<strong>正在探测摄像头源</strong><small>会依次测试当前配置和常见 RTSP 组合，成功后自动应用。</small>";
+      try {
+        stopLiveCamera();
+        const result = await requestJson(EXTERNAL_CAMERA_PROBE_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        ui.cameraPasswordInput.value = "";
+        renderCameraProbeResult(result);
+        if (result.applied_result) {
+          renderCameraConfigStatus(result.applied_result);
+        }
+        if (result.applied) {
+          setGlobalError("");
+          await startLiveCamera();
+        } else {
+          setGlobalError("摄像头源探测失败：当前没有候选 RTSP 源返回可用画面。");
+        }
+      } catch (error) {
+        ui.cameraProbeStatusBox.className = "status-box error";
+        ui.cameraProbeStatusBox.innerHTML = "<strong>摄像头源探测失败</strong><small>" + escapeHtml(error instanceof Error ? error.message : "探测失败") + "</small>";
+        setGlobalError(error instanceof Error ? error.message : "摄像头源探测失败");
+      } finally {
+        ui.probeCameraConfigBtn.disabled = false;
+        ui.saveCameraConfigBtn.disabled = false;
+      }
     }
 
     async function requestJson(url, init) {
@@ -915,6 +1205,7 @@
       liveRuntimeRefreshBusy = false;
       lastRuntimeRefreshAt = 0;
       lastLiveDrawAt = 0;
+      lastSmoothPose = null;
       if (ui.cameraVideo) {
         ui.cameraVideo.removeAttribute("src");
       }
@@ -984,7 +1275,7 @@
         return;
       }
       const now = Date.now();
-      if (now - lastRuntimeRefreshAt < 8000) {
+      if (now - lastRuntimeRefreshAt < LIVE_RUNTIME_REFRESH_COOLDOWN_MS) {
         refreshLiveCameraStream(reason);
         return;
       }
@@ -1079,41 +1370,189 @@
 
         const pose = lastLiveOverlay && lastLiveOverlay.pose && lastLiveOverlay.pose.pose;
         if (pose && Array.isArray(pose.connections) && Array.isArray(pose.points)) {
-          const scaleX = canvas.width / sourceWidth;
-          const scaleY = canvas.height / sourceHeight;
-          const points = pose.points;
-          resultContext.lineWidth = 4;
-          pose.connections.forEach((item) => {
-            const from = points[item.from];
-            const to = points[item.to];
-            if (!from || !to) return;
-            if ((Number(from.score) || 0) < 0.2 || (Number(to.score) || 0) < 0.2) return;
-            resultContext.strokeStyle = "#ffd166";
-            resultContext.beginPath();
-            resultContext.moveTo((Number(from.x) || 0) * scaleX, (Number(from.y) || 0) * scaleY);
-            resultContext.lineTo((Number(to.x) || 0) * scaleX, (Number(to.y) || 0) * scaleY);
-            resultContext.stroke();
-          });
-          points.forEach((p) => {
-            if ((Number(p.score) || 0) < 0.2) return;
-            resultContext.fillStyle = "#ef476f";
-            resultContext.beginPath();
-            resultContext.arc((Number(p.x) || 0) * scaleX, (Number(p.y) || 0) * scaleY, 4.5, 0, Math.PI * 2);
-            resultContext.fill();
-          });
-          const posture = pose.posture || {};
-          if (posture.label) {
-            const poseText = `pose ${posture.label} ${(Number(posture.confidence) || 0).toFixed(2)}`;
-            resultContext.font = "700 18px Microsoft YaHei";
-            const textWidth = resultContext.measureText(poseText).width;
-            resultContext.fillStyle = "rgba(16,24,40,0.84)";
-            resultContext.fillRect(18, 18, textWidth + 18, 30);
-            resultContext.fillStyle = "#ffd166";
-            resultContext.fillText(poseText, 27, 22);
-          }
+          drawTargetSkeleton(resultContext, pose, canvas.width / sourceWidth, canvas.height / sourceHeight);
         }
       }
       liveRenderHandle = window.requestAnimationFrame(renderLiveResultFrame);
+    }
+
+    function smoothPoseForCanvas(pose) {
+      const points = Array.isArray(pose.points) ? pose.points : [];
+      const previous = lastSmoothPose && Array.isArray(lastSmoothPose.points) ? lastSmoothPose.points : [];
+      const next = points.map((point, index) => {
+        const prev = previous[index];
+        const score = Number(point.score) || 0;
+        let x = Number(point.x) || 0;
+        let y = Number(point.y) || 0;
+        if (prev && score >= 0.18) {
+          const alpha = score >= 0.5 ? 0.68 : 0.48;
+          x = (Number(prev.x) || x) * (1 - alpha) + x * alpha;
+          y = (Number(prev.y) || y) * (1 - alpha) + y * alpha;
+        } else if (prev && score < 0.18 && (Number(prev.score) || 0) >= 0.2) {
+          x = Number(prev.x) || x;
+          y = Number(prev.y) || y;
+        }
+        return { ...point, x, y };
+      });
+      lastSmoothPose = { points: next, at: performance.now() };
+      return next;
+    }
+
+    function normalizeBox(box) {
+      if (!Array.isArray(box) || box.length < 4) return null;
+      const values = box.slice(0, 4).map((value) => Number(value));
+      if (values.some((value) => !Number.isFinite(value))) return null;
+      const [x1, y1, x2, y2] = values;
+      if (x2 <= x1 || y2 <= y1) return null;
+      return { x1, y1, x2, y2 };
+    }
+
+    function boxOverlapRatio(a, b) {
+      if (!a || !b) return 0;
+      const ix1 = Math.max(a.x1, b.x1);
+      const iy1 = Math.max(a.y1, b.y1);
+      const ix2 = Math.min(a.x2, b.x2);
+      const iy2 = Math.min(a.y2, b.y2);
+      const inter = Math.max(0, ix2 - ix1) * Math.max(0, iy2 - iy1);
+      const areaA = Math.max(1, (a.x2 - a.x1) * (a.y2 - a.y1));
+      const areaB = Math.max(1, (b.x2 - b.x1) * (b.y2 - b.y1));
+      return Math.max(inter / areaA, inter / areaB);
+    }
+
+    function buildTargetOnlyOverlayDetections(fall, tracking, match, status) {
+      if (!ui.targetOnlyToggle.checked) {
+        return Array.isArray(fall && fall.detections) ? fall.detections : [];
+      }
+      if (!match || !match.matched || status === "filtered_non_target" || status === "target_not_localized") {
+        return [];
+      }
+
+      const roiBox = normalizeBox((((tracking || {}).roi || {}).bbox) || []);
+      const rawDetections = Array.isArray(fall && fall.detections) ? fall.detections : [];
+      const targetDetections = rawDetections.filter((item) => item && item.target_only === true);
+      if (targetDetections.length > 0) {
+        return targetDetections;
+      }
+      if (!roiBox) return [];
+
+      const filtered = rawDetections.filter((item) => {
+        const box = normalizeBox(item && item.bbox);
+        if (!box) return false;
+        const centerInside =
+          box.x1 + (box.x2 - box.x1) * 0.5 >= roiBox.x1 &&
+          box.x1 + (box.x2 - box.x1) * 0.5 <= roiBox.x2 &&
+          box.y1 + (box.y2 - box.y1) * 0.5 >= roiBox.y1 &&
+          box.y1 + (box.y2 - box.y1) * 0.5 <= roiBox.y2;
+        return centerInside || boxOverlapRatio(box, roiBox) >= 0.25;
+      });
+      return [
+        {
+          bbox: [roiBox.x1, roiBox.y1, roiBox.x2, roiBox.y2],
+          label: "target",
+          confidence: Number(match.fused_score) || 0,
+          target_only: true,
+          source: "frontend_target_roi",
+        },
+        ...filtered.slice(0, 3),
+      ];
+    }
+
+    function drawTargetSkeleton(ctx, pose, scaleX, scaleY) {
+      const quality = pose.quality || {};
+      const visiblePoints = Number(quality.visible_points || 0);
+      const meanScore = Number(quality.mean_score || 0);
+      if (visiblePoints < 5 || meanScore < 0.16) {
+        return;
+      }
+      const points = smoothPoseForCanvas(pose);
+      const connections = Array.isArray(pose.connections) ? pose.connections : [];
+      const posture = pose.posture || {};
+      const palette = {
+        torso: "#18c4a8",
+        head: "#f6c453",
+        left_arm: "#4dabf7",
+        right_arm: "#ff7b9c",
+        left_leg: "#7c5cff",
+        right_leg: "#ff9f1c",
+      };
+      const drawLine = (from, to, part, shadow) => {
+        const a = points[from];
+        const b = points[to];
+        if (!a || !b) return;
+        const scoreA = Number(a.score) || 0;
+        const scoreB = Number(b.score) || 0;
+        if (scoreA < 0.2 || scoreB < 0.2) return;
+        const x1 = (Number(a.x) || 0) * scaleX;
+        const y1 = (Number(a.y) || 0) * scaleY;
+        const x2 = (Number(b.x) || 0) * scaleX;
+        const y2 = (Number(b.y) || 0) * scaleY;
+        const confidence = Math.min(1, Math.max(0.25, (scoreA + scoreB) * 0.5));
+        ctx.save();
+        ctx.globalAlpha = shadow ? 0.28 : (0.42 + confidence * 0.52);
+        ctx.strokeStyle = shadow ? "rgba(6,12,24,0.92)" : (palette[part] || "#ffd166");
+        ctx.lineWidth = shadow ? 11 : (part === "torso" ? 6.5 : 5);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        if (!shadow && (a.estimated || b.estimated || confidence < 0.32)) {
+          ctx.setLineDash([10, 9]);
+        }
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.restore();
+      };
+
+      connections.forEach((item) => drawLine(item.from, item.to, item.part || "torso", true));
+      connections.forEach((item) => drawLine(item.from, item.to, item.part || "torso", false));
+
+      points.forEach((point) => {
+        const score = Number(point.score) || 0;
+        if (score < 0.2) return;
+        const x = (Number(point.x) || 0) * scaleX;
+        const y = (Number(point.y) || 0) * scaleY;
+        const important = [0, 5, 6, 11, 12].includes(Number(point.index));
+        const radius = important ? 6.5 : 5;
+        ctx.save();
+        ctx.globalAlpha = point.estimated ? 0.48 : Math.min(1, 0.5 + score * 0.55);
+        ctx.fillStyle = "rgba(6,12,24,0.82)";
+        ctx.beginPath();
+        ctx.arc(x, y, radius + 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = point.estimated ? "#b8c2cc" : "#ffffff";
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = point.estimated ? "#94a3b8" : "#18c4a8";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+      });
+
+      const label = String(posture.label || "unknown");
+      const confidenceText = formatScore(posture.confidence);
+      const qualityText = `${Number(quality.visible_points || 0)}/17`;
+      const poseText = `姿态 ${label} ${confidenceText} · 骨架 ${qualityText}`;
+      ctx.save();
+      ctx.font = "700 18px Microsoft YaHei";
+      const textWidth = ctx.measureText(poseText).width;
+      ctx.fillStyle = "rgba(9,18,33,0.86)";
+      roundRect(ctx, 18, 18, textWidth + 26, 34, 10);
+      ctx.fill();
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillText(poseText, 31, 42);
+      ctx.restore();
+    }
+
+    function roundRect(ctx, x, y, width, height, radius) {
+      const r = Math.min(radius, width / 2, height / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + width, y, x + width, y + height, r);
+      ctx.arcTo(x + width, y + height, x, y + height, r);
+      ctx.arcTo(x, y + height, x, y, r);
+      ctx.arcTo(x, y, x + width, y, r);
+      ctx.closePath();
     }
 
     async function runLiveDetect() {
@@ -1146,10 +1585,11 @@
         ui.liveFusedScoreText.textContent = formatScore(match.fused_score);
         const status = payload.status || "unknown";
         const cameraProblem = ["camera_unavailable", "camera_frame_stale", "camera_snapshot_failed"].includes(status);
+        const overlayDetections = cameraProblem ? [] : buildTargetOnlyOverlayDetections(fall, tracking, match, status);
         lastLiveOverlay = cameraProblem
           ? { detections: [], pose: null }
           : {
-              detections: (fall && fall.detections) || [],
+              detections: overlayDetections,
               pose: poseResult,
             };
         lastLiveFrameSize = {
@@ -1167,7 +1607,9 @@
           ui.externalCameraChip.textContent = "外部摄像头: " + (cameraProblem ? "异常" : "已连接") + " · 帧龄 " + frameAge.toFixed(1) + "s";
         }
         if (cameraProblem || (Number.isFinite(frameAge) && frameAge > 2.5)) {
-          void refreshLiveCameraRuntime(cameraProblem ? "异常恢复" : "帧龄偏高");
+          if (cameraProblem || (Number.isFinite(frameAge) && frameAge > LIVE_RUNTIME_REFRESH_STALE_SECONDS)) {
+            void refreshLiveCameraRuntime(cameraProblem ? "异常恢复" : "帧龄偏高");
+          }
         }
 
         const decision = match.decision || "unknown";
@@ -1250,6 +1692,9 @@
     ui.refreshUsersBtn.addEventListener("click", () => void refreshUsers());
     ui.matchBtn.addEventListener("click", () => void runMatch());
     ui.fallDetectBtn.addEventListener("click", () => void runTargetFallDetect());
+    ui.saveCameraConfigBtn.addEventListener("click", () => void saveCameraConfig());
+    ui.discoverCameraBtn.addEventListener("click", () => void discoverCameraConfig());
+    ui.probeCameraConfigBtn.addEventListener("click", () => void probeCameraConfig());
     ui.startCameraBtn.addEventListener("click", () => void startLiveCamera());
     ui.stopCameraBtn.addEventListener("click", () => stopLiveCamera());
     ui.userList.addEventListener("click", (event) => {
@@ -1263,6 +1708,7 @@
 
     renderSelectedFiles(ui.photoInput, ui.photoFileList);
     renderSelectedFiles(ui.matchInput, ui.matchFileList);
+    void loadCameraConfig();
     void refreshStatus();
     void refreshUsers();
   </script>

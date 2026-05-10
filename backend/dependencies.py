@@ -78,8 +78,8 @@ _camera_frame_hub = CameraFrameHub(
     _settings.model_copy(
         update={
             "camera_stream_profile": "quality",
-            "camera_stream_rtsp_path": "/udp/av0_0",
-            "camera_stream_quality_path": "/udp/av0_0",
+            "camera_stream_rtsp_path": "/tcp/av0_0",
+            "camera_stream_quality_path": "/tcp/av0_0",
             "camera_stream_smooth_path": "/tcp/av0_1",
             "camera_stream_fps": 12.0,
             "camera_stream_width": 1024,

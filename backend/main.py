@@ -104,17 +104,20 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_serial_stream_loop()))
     if settings.data_mode == "mqtt" and settings.mqtt_enabled:
         tasks.append(asyncio.create_task(_mqtt_stream_loop()))
-    if settings.camera_stream_keep_warm:
+    camera_stream_keep_warm = bool(getattr(settings, "camera_stream_keep_warm", False))
+    if camera_stream_keep_warm:
         await get_camera_frame_hub().start_keep_warm()
-    tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
-    tasks.append(asyncio.create_task(_warmup_target_user_vision_after_startup()))
+    if bool(getattr(settings, "fall_detection_enabled", False)):
+        tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
+    if bool(getattr(settings, "target_user_vision_warmup_enabled", False)):
+        tasks.append(asyncio.create_task(_warmup_target_user_vision_after_startup()))
     app.state.background_tasks = tasks
     try:
         yield
     finally:
         await get_fall_detection_service().stop()
         await get_camera_audio_hub().shutdown()
-        if settings.camera_stream_keep_warm:
+        if camera_stream_keep_warm:
             await get_camera_frame_hub().stop_keep_warm()
         await get_camera_detection_frame_hub().stop_keep_warm()
         for task in tasks:

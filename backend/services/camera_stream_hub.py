@@ -45,6 +45,8 @@ class CameraFrameHub:
         self._frame_cache_ttl = 0.15  # 缓存150ms，适合6fps
         self._cache_hits = 0
         self._cache_misses = 0
+        self._last_snapshot_failure_at = 0.0
+        self._snapshot_failure_backoff_seconds = 2.0
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -169,28 +171,36 @@ class CameraFrameHub:
                     else:
                         await self._run_ffmpeg_stream(service)
                 except Exception as exc:
-                    self._last_error = f"{exc.__class__.__name__}: {exc}"
+                    self._last_error = self._sanitize_error(f"{exc.__class__.__name__}: {exc}")
                     logger.warning("Camera stream failed, retrying: %s", self._last_error)
-                    if preferred_mode != "local":
-                        try:
-                            await self._run_snapshot_stream(service)
-                        except Exception as snapshot_exc:
-                            self._last_error = f"{snapshot_exc.__class__.__name__}: {snapshot_exc}"
-                            logger.warning("RTSP snapshot fallback failed, retrying: %s", self._last_error)
-                            if service.can_use_local_camera_fallback() and not service.should_fail_closed_on_rtsp_errors():
-                                try:
-                                    await self._run_local_snapshot_stream(service)
-                                except Exception as fallback_exc:
-                                    self._last_error = f"{fallback_exc.__class__.__name__}: {fallback_exc}"
-                                    logger.warning("Local camera fallback failed, retrying: %s", self._last_error)
-                                    await self._run_snapshot_stream(service)
-                            else:
-                                await self._run_snapshot_stream(service)
-                    else:
-                        await self._run_snapshot_stream(service)
+                    await self._run_fallback_stream(service, preferred_mode=preferred_mode)
                     await asyncio.sleep(0.6)
         except asyncio.CancelledError:
             raise
+
+    async def _run_fallback_stream(self, service: CameraService, *, preferred_mode: str) -> None:
+        now = time.monotonic()
+        if now - self._last_snapshot_failure_at < self._snapshot_failure_backoff_seconds:
+            await asyncio.sleep(0.25)
+            return
+
+        fallback_attempts = []
+        if preferred_mode != "local":
+            fallback_attempts.append(("rtsp snapshot", self._run_snapshot_stream))
+            if service.can_use_local_camera_fallback() and not service.should_fail_closed_on_rtsp_errors():
+                fallback_attempts.append(("local camera", self._run_local_snapshot_stream))
+        else:
+            fallback_attempts.append(("local camera", self._run_local_snapshot_stream))
+
+        for label, runner in fallback_attempts:
+            try:
+                await runner(service)
+                return
+            except Exception as exc:
+                self._last_error = self._sanitize_error(f"{label} failed: {exc.__class__.__name__}: {exc}")
+                logger.warning("Camera fallback failed: %s", self._last_error)
+
+        self._last_snapshot_failure_at = time.monotonic()
 
     async def _run_ffmpeg_stream(self, service: CameraService) -> None:
         import imageio_ffmpeg
@@ -301,7 +311,7 @@ class CameraFrameHub:
             if process.stderr:
                 with suppress(Exception):
                     stderr = await asyncio.wait_for(process.stderr.read(), timeout=0.2)
-            last_error = stderr.decode("utf-8", errors="replace").strip()
+            last_error = self._sanitize_error(stderr.decode("utf-8", errors="replace").strip())
             if frame_count > 0:
                 return
 
@@ -339,13 +349,17 @@ class CameraFrameHub:
                 self._cache_hits += 1
             else:
                 try:
-                    # 优化4: 使用asyncio.to_thread避免阻塞
-                    frame, _headers = await asyncio.to_thread(service.capture_jpeg)
+                    # Keep broken cameras from occupying the default executor indefinitely.
+                    frame, _headers = await asyncio.wait_for(
+                        asyncio.to_thread(service.capture_jpeg),
+                        timeout=max(1.0, self._settings.camera_snapshot_timeout_seconds + 1.0),
+                    )
                     # 缓存帧
                     self._cache_frame(cache_key, frame)
                     self._cache_misses += 1
-                except Exception:
-                    return
+                except Exception as exc:
+                    self._last_error = f"snapshot failed: {exc.__class__.__name__}: {exc}"
+                    raise RuntimeError(self._last_error) from exc
             
             frame = self._decorate_frame(frame)
             self._latest_frame = frame
@@ -469,6 +483,17 @@ class CameraFrameHub:
             return None
         password = self._settings.camera_password
         return url.replace(password, "***") if password else url
+
+    def _sanitize_error(self, message: str) -> str:
+        sanitized = str(message or "")
+        for url in [self._active_url]:
+            masked = self._mask_url(url)
+            if masked:
+                sanitized = sanitized.replace(url, masked)
+        password = self._settings.camera_password
+        if password:
+            sanitized = sanitized.replace(password, "***")
+        return sanitized
 
     def _get_cached_frame(self, cache_key: str) -> bytes | None:
         """获取缓存的帧，如果过期则返回None"""

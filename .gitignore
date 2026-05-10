@@ -34,6 +34,7 @@ direct_test_snapshot.jpg
 
 # 运行与调试产物
 runtime_logs/
+runtime-logs/
 tmp_camera_bench2/
 tmp_camera_debug/
 tmp_camera_probe/
