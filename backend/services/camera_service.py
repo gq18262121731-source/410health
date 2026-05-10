@@ -290,18 +290,16 @@ class CameraService:
                 return self.capture_local_jpeg()
             raise RuntimeError("CAMERA_NOT_CONFIGURED")
 
-        # 优化：先尝试HTTP快照（P2P摄像头的最佳方式）
-        try:
-            return self._capture_jpeg_via_http()
-        except RuntimeError:
-            pass  # HTTP失败，继续尝试RTSP
-
         try:
             return self._capture_jpeg_with_opencv()
         except RuntimeError as rtsp_error:
             image_bytes = self._capture_jpeg_with_ffmpeg()
             if image_bytes:
                 return image_bytes, {"Cache-Control": "no-store, max-age=0"}
+            try:
+                return self._capture_jpeg_via_http()
+            except RuntimeError:
+                pass
             if self.can_use_local_camera_fallback() and not self.should_fail_closed_on_rtsp_errors():
                 try:
                     return self.capture_local_jpeg()
@@ -466,8 +464,6 @@ class CameraService:
             f"http://{ip}/snapshot.jpg",
             f"http://{ip}/image/jpeg.cgi",
             f"http://{ip}/tmpfs/auto.jpg",
-            # 带认证的路径
-            f"http://{ip}/cgi-bin/api.cgi?cmd=Snap&channel=0&user={user}&password={password}",
             # 其他常见路径
             f"http://{ip}:{self._settings.camera_onvif_port}/snapshot.jpg",
             f"http://{ip}:{self._settings.camera_rtsp_port}/snapshot.jpg",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -11,14 +12,30 @@ from ultralytics import YOLO
 
 
 COCO_SKELETON = [
-    (0, 1), (0, 2), (1, 3), (2, 4),
-    (5, 6),
-    (5, 7), (7, 9),
-    (6, 8), (8, 10),
-    (5, 11), (6, 12),
-    (11, 12),
-    (11, 13), (13, 15),
-    (12, 14), (14, 16),
+    {"from": 0, "to": 1, "part": "head"},
+    {"from": 0, "to": 2, "part": "head"},
+    {"from": 1, "to": 3, "part": "head"},
+    {"from": 2, "to": 4, "part": "head"},
+    {"from": 5, "to": 6, "part": "torso"},
+    {"from": 5, "to": 7, "part": "left_arm"},
+    {"from": 7, "to": 9, "part": "left_arm"},
+    {"from": 6, "to": 8, "part": "right_arm"},
+    {"from": 8, "to": 10, "part": "right_arm"},
+    {"from": 5, "to": 11, "part": "torso"},
+    {"from": 6, "to": 12, "part": "torso"},
+    {"from": 11, "to": 12, "part": "torso"},
+    {"from": 11, "to": 13, "part": "left_leg"},
+    {"from": 13, "to": 15, "part": "left_leg"},
+    {"from": 12, "to": 14, "part": "right_leg"},
+    {"from": 14, "to": 16, "part": "right_leg"},
+]
+
+
+POSE_POINT_NAMES = [
+    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
+    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist", "left_hip", "right_hip",
+    "left_knee", "right_knee", "left_ankle", "right_ankle",
 ]
 
 
@@ -33,6 +50,8 @@ class TargetPoseService:
         self._device: str | int = "cpu"
         self._half = False
         self._pose_path = model_root / "yolo11n-pose.pt"
+        self._session_states: dict[str, dict[str, Any]] = {}
+        self._max_state_age_ms = 1600
 
     def status(self) -> dict[str, Any]:
         return {
@@ -54,6 +73,8 @@ class TargetPoseService:
         bbox: list[int] | None = None,
         imgsz: int = 640,
         conf: float = 0.2,
+        session_id: str = "default",
+        track_id: int | str | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         try:
@@ -97,16 +118,22 @@ class TargetPoseService:
                 points.append(
                     {
                         "index": idx,
+                        "name": POSE_POINT_NAMES[idx] if idx < len(POSE_POINT_NAMES) else str(idx),
                         "x": round(float(x) + offset_x, 1),
                         "y": round(float(y) + offset_y, 1),
                         "score": round(float(score), 4),
+                        "tracked": False,
+                        "estimated": False,
                     }
                 )
+            points = self._smooth_points(session_id=session_id, track_id=track_id, points=points, bbox=bbox)
 
             connections = []
-            for a, b in COCO_SKELETON:
+            for item in COCO_SKELETON:
+                a = int(item["from"])
+                b = int(item["to"])
                 if a < len(points) and b < len(points):
-                    connections.append({"from": a, "to": b})
+                    connections.append({"from": a, "to": b, "part": item["part"]})
 
             posture = self._classify_posture(points)
             return {
@@ -115,6 +142,7 @@ class TargetPoseService:
                     "points": points,
                     "connections": connections,
                     "posture": posture,
+                    "quality": self._pose_quality(points),
                 },
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "model": self.status(),
@@ -137,6 +165,95 @@ class TargetPoseService:
             self._model = YOLO(str(self._pose_path))
             self._loaded = True
             self._load_error = None
+
+    def _smooth_points(
+        self,
+        *,
+        session_id: str,
+        track_id: int | str | None,
+        points: list[dict[str, Any]],
+        bbox: list[int] | None,
+    ) -> list[dict[str, Any]]:
+        now_ms = int(time.perf_counter() * 1000)
+        state_key = f"{session_id}:{track_id if track_id is not None else 'target'}"
+        previous = self._session_states.get(state_key)
+        if previous and (now_ms - int(previous.get("ts_ms", 0))) > self._max_state_age_ms:
+            previous = None
+
+        bbox_diag = 240.0
+        if bbox is not None and len(bbox) >= 4:
+            box_w = max(1.0, float(bbox[2]) - float(bbox[0]))
+            box_h = max(1.0, float(bbox[3]) - float(bbox[1]))
+            bbox_diag = max(80.0, float(np.hypot(box_w, box_h)))
+        max_jump = bbox_diag * 0.18
+        smoothed: list[dict[str, Any]] = []
+        prev_points = previous.get("points") if previous else None
+
+        for point in points:
+            idx = int(point["index"])
+            score = float(point.get("score") or 0.0)
+            x = float(point.get("x") or 0.0)
+            y = float(point.get("y") or 0.0)
+            prev = None
+            if isinstance(prev_points, list):
+                prev = next((item for item in prev_points if int(item.get("index", -1)) == idx), None)
+
+            estimated = False
+            tracked = False
+            if prev is not None:
+                px = float(prev.get("x") or x)
+                py = float(prev.get("y") or y)
+                prev_score = float(prev.get("score") or 0.0)
+                jump = float(np.hypot(x - px, y - py))
+                if score < 0.18 <= prev_score:
+                    x, y = px, py
+                    score = max(0.12, min(0.32, prev_score * 0.82))
+                    estimated = True
+                    tracked = True
+                elif jump > max_jump and prev_score >= 0.28:
+                    blend = 0.72
+                    x = px * blend + x * (1.0 - blend)
+                    y = py * blend + y * (1.0 - blend)
+                    score = min(score, max(0.24, prev_score * 0.92))
+                    tracked = True
+                elif score >= 0.18:
+                    alpha = 0.55 if score >= 0.5 else 0.38
+                    x = px * (1.0 - alpha) + x * alpha
+                    y = py * (1.0 - alpha) + y * alpha
+                    tracked = True
+
+            smoothed.append(
+                {
+                    **point,
+                    "x": round(x, 1),
+                    "y": round(y, 1),
+                    "score": round(max(0.0, min(1.0, score)), 4),
+                    "tracked": tracked,
+                    "estimated": estimated,
+                }
+            )
+
+        history = deque(maxlen=6)
+        if previous and isinstance(previous.get("history"), deque):
+            history = previous["history"]
+        history.append(smoothed)
+        self._session_states[state_key] = {
+            "ts_ms": now_ms,
+            "points": smoothed,
+            "history": history,
+        }
+        return smoothed
+
+    @staticmethod
+    def _pose_quality(points: list[dict[str, Any]]) -> dict[str, Any]:
+        if not points:
+            return {"visible_points": 0, "mean_score": 0.0, "estimated_points": 0}
+        scores = [float(item.get("score") or 0.0) for item in points]
+        return {
+            "visible_points": sum(1 for score in scores if score >= 0.2),
+            "mean_score": round(sum(scores) / max(1, len(scores)), 4),
+            "estimated_points": sum(1 for item in points if item.get("estimated")),
+        }
 
     @staticmethod
     def _classify_posture(points: list[dict[str, Any]]) -> dict[str, Any]:

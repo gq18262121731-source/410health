@@ -1,13 +1,13 @@
 param(
     [string]$Config = "camera_live_config.json",
-    [string]$CameraIp = "192.168.8.248",
+    [string]$CameraIp = "192.168.8.254",
     [string]$Username = "admin",
-    [string]$Password = "admin",
+    [string]$Password = "8888888",
     [ValidateSet("av0_1", "av0_0")]
     [string]$Stream = "av0_1",
     [ValidateSet("tcp", "udp")]
     [string]$Transport = "tcp",
-    [int]$RtspPort = 554,
+    [int]$RtspPort = 10554,
     [int]$ListenPort = 8090
 )
 
@@ -34,9 +34,6 @@ if (-not (Test-Path $script)) {
 $targets = @()
 $targets += Get-CimInstance Win32_Process | Where-Object {
     $_.Name -eq 'python.exe' -and $_.CommandLine -match 'camera_runtime_main\.py|camera_live_server\.py'
-}
-$targets += Get-CimInstance Win32_Process | Where-Object {
-    $_.Name -eq 'powershell.exe' -and $_.CommandLine -match 'run_camera_live_server\.ps1|camera_runtime_main\.py|camera_live_server\.py'
 }
 
 $targets | Group-Object ProcessId | ForEach-Object {

@@ -1,5 +1,5 @@
 param(
-    [string]$CondaEnv = "health"
+    [string]$CondaEnv = "helth"
 )
 
 $ErrorActionPreference = "Stop"

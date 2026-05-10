@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from backend.logger import get_logger
 from backend.ml.inference import HealthInferenceEngine, InferenceError, ModelArtifactMissingError
-from backend.ml.preprocess import DataValidationError
+from backend.ml.preprocess import DataValidationError, validate_inference_record
 from backend.ml.rule_engine import HealthRuleEngine, RISK_ORDER
 from backend.repositories.score_repo import ScoreRepository
 from backend.repositories.warning_repo import WarningRepository
@@ -49,6 +49,7 @@ class HealthScoreService:
     def score(self, request: HealthScoreRequest) -> HealthScoreResponse:
         """Score a realtime health request and persist the result."""
 
+        self._validate_api_vitals(request)
         return self.evaluate_vitals(
             vitals=request,
             elderly_id=request.elderly_id,
@@ -57,6 +58,18 @@ class HealthScoreService:
             persist=True,
             stateful_stability=True,
         )
+
+    @staticmethod
+    def _validate_api_vitals(vitals: VitalSignsPayload) -> None:
+        try:
+            validate_inference_record(vitals.model_dump(mode="python"))
+        except DataValidationError as exc:
+            raise ServiceError(
+                code="VALIDATION_ERROR",
+                message=str(exc),
+                status_code=400,
+                details={"payload": vitals.model_dump(mode="json")},
+            ) from exc
 
     def evaluate_vitals(
         self,

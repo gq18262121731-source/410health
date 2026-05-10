@@ -1,18 +1,18 @@
 ﻿{
     "camera":  {
-                   "host":  "192.168.8.248",
+                   "host":  "192.168.8.253",
                    "username":  "admin",
                    "password":  "admin",
                    "rtsp_port":  554,
                    "transport":  "tcp",
-                   "stream":  "av0_0"
+                   "stream":  "av0_1"
                },
     "viewer":  {
                    "listen_host":  "127.0.0.1",
                    "listen_port":  8090,
                    "jpeg_quality":  68,
                    "frame_interval_seconds":  0.05,
-                   "log_dir":  "runtime_logs",
+                   "log_dir":  "D:\\Program\\410health_new\\health1\\camera_runtime_external\\runtime_logs",
                    "auth_enabled":  false,
                    "auth_username":  "camera",
                    "auth_password":  "camera"

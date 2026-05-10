@@ -900,7 +900,13 @@ class HealthAgentService:
             return False
         normalized_question = question.lower()
         explicit_search_terms = ("搜索", "查找", "检索", "search", "政策", "指南", "天气", "空气", "周边", "假期", "网页", "新闻")
-        return workflow in {"free_chat", "device_focus"} and any(term in normalized_question for term in explicit_search_terms)
+        health_knowledge_terms = (
+            "高血压", "低血压", "血压", "血糖", "血氧", "心率", "体温", "发热", "发烧",
+            "头晕", "胸闷", "跌倒", "摔倒", "饮食", "早餐", "用药", "复测", "就医",
+        )
+        return workflow in {"free_chat", "device_focus"} and any(
+            term in normalized_question for term in (*explicit_search_terms, *health_knowledge_terms)
+        )
 
     def _serialize_tool_result(self, call: ToolInvocation, item: Any) -> dict[str, Any]:
         attachments = self._tool_result_attachments(call.name, item.data if isinstance(item.data, dict) else {})

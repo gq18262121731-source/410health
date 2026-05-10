@@ -339,7 +339,7 @@ class LangChainRAGService:
             "docs_hash": self._calculate_global_hash(fingerprints),
             "vector_collection": self._vector_collection_name,
             "knowledge_dir": str(self._knowledge_dir),
-            "files": {f.source: asdict(f) for f in fingerprints},
+            "files": [asdict(f) for f in sorted(fingerprints, key=lambda item: item.source)],
             "last_indexed": datetime.now().isoformat()
         }
         self._manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

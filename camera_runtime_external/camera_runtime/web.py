@@ -107,6 +107,25 @@ def build_handler(runtime: CameraRuntime):
       color: #9ed2ff;
       font-size: 13px;
     }}
+    .status {{
+      display: grid;
+      gap: 6px;
+      margin: 12px 0 14px;
+      padding: 12px;
+      border: 1px solid #243655;
+      border-radius: 12px;
+      background: #101c30;
+      color: #d9e7f7;
+      line-height: 1.6;
+    }}
+    .status.ok {{
+      border-color: #1f8f5a;
+      background: #10281f;
+    }}
+    .status.error {{
+      border-color: #b84b5d;
+      background: #30151c;
+    }}
     button {{
       padding: 8px 12px;
       border: 0;
@@ -129,7 +148,7 @@ def build_handler(runtime: CameraRuntime):
 <body>
   <div class="wrap">
     <h2>Camera Runtime Viewer</h2>
-    <p>Source: <code>{runtime.camera_config.masked_rtsp_url}</code></p>
+    <p>Source: <code>{runtime.effective_masked_rtsp_url()}</code></p>
     <div class="toolbar">
       <span class="badge">Fast snapshot mode</span>
       <span class="badge" id="fps">Viewer FPS: --</span>
@@ -140,15 +159,50 @@ def build_handler(runtime: CameraRuntime):
     <p><a href="/api/v1/camera/health" style="color:#8bd3ff">/api/v1/camera/health</a> |
        <a href="/api/v1/camera/snapshot" style="color:#8bd3ff">/api/v1/camera/snapshot</a> |
        <a href="/api/v1/camera/stream.mjpg" style="color:#8bd3ff">/api/v1/camera/stream.mjpg</a></p>
+    <div id="status" class="status">Checking camera health...</div>
     <img id="cam" alt="camera stream">
   </div>
   <script>
     const img = document.getElementById('cam');
     const fps = document.getElementById('fps');
+    const statusBox = document.getElementById('status');
     let frames = 0;
     let started = performance.now();
+    let lastGoodFrameAt = 0;
+    function renderHealth(payload) {{
+      const age = Number(payload.frame_age_seconds);
+      const fresh = Boolean(payload.fresh_frame);
+      const hasFrame = Boolean(payload.has_frame);
+      statusBox.className = 'status ' + (fresh ? 'ok' : 'error');
+      statusBox.innerHTML = [
+        '<strong>' + (fresh ? 'Camera frame is live' : 'Camera frame unavailable') + '</strong>',
+        '<span>stream=' + (payload.current_stream || payload.stream || '--') +
+          ' · transport=' + (payload.transport || '--') +
+          ' · age=' + (Number.isFinite(age) ? age.toFixed(1) + 's' : '--') +
+          ' · frames=' + (payload.frame_count || 0) + '</span>',
+        payload.last_error ? '<span>last_error=' + String(payload.last_error) + '</span>' : '',
+        !hasFrame ? '<span>No usable frame yet. Snapshot requests are paused to avoid repeated 503 noise.</span>' : ''
+      ].join('');
+      return fresh;
+    }}
+    async function health() {{
+      try {{
+        const response = await fetch('/api/v1/camera/health?ts=' + Date.now(), {{ cache: 'no-store' }});
+        return renderHealth(await response.json());
+      }} catch (error) {{
+        statusBox.className = 'status error';
+        statusBox.textContent = 'Camera runtime health request failed: ' + error;
+        return false;
+      }}
+    }}
     async function refresh() {{
+      const fresh = await health();
+      if (!fresh && Date.now() - lastGoodFrameAt > 2500) {{
+        img.removeAttribute('src');
+        return;
+      }}
       img.src = '/api/v1/camera/snapshot?ts=' + Date.now();
+      lastGoodFrameAt = Date.now();
       frames += 1;
       const now = performance.now();
       const elapsed = (now - started) / 1000;
@@ -181,7 +235,7 @@ def build_handler(runtime: CameraRuntime):
                 frame_age_seconds = max(0.0, now - state.latest_frame_at)
             payload = {
                 "running": state.running,
-                "source": runtime.camera_config.masked_rtsp_url,
+                "source": runtime.effective_masked_rtsp_url(),
                 "stream": runtime.camera_config.stream,
                 "transport": runtime.camera_config.transport,
                 "rtsp_port": runtime.camera_config.rtsp_port,
@@ -218,6 +272,27 @@ def build_handler(runtime: CameraRuntime):
                 self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if frame_age_seconds is None or frame_age_seconds > STALE_FRAME_SECONDS:
+                body = json.dumps(
+                    {
+                        "error": "STALE_FRAME",
+                        "message": "Camera runtime has no fresh frame.",
+                        "frame_age_seconds": frame_age_seconds,
+                        "last_error": state.last_error,
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                self.send_response(HTTPStatus.SERVICE_UNAVAILABLE)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("X-Camera-Frame-Count", str(state.frame_count))
+                if frame_age_seconds is not None:
+                    self.send_header("X-Camera-Frame-Age-Ms", str(int(frame_age_seconds * 1000)))
+                    self.send_header("X-Camera-Frame-Stale", "1")
                 self.end_headers()
                 self.wfile.write(body)
                 return

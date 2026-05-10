@@ -50,10 +50,10 @@ def load_runtime_config(path: Path) -> RuntimeConfig:
     viewer = raw.get("viewer", {})
     return RuntimeConfig(
         camera=CameraConfig(
-            host=str(camera.get("host", "192.168.8.248")),
+            host=str(camera.get("host", "192.168.8.254")),
             username=str(camera.get("username", "admin")),
-            password=str(camera.get("password", "admin")),
-            rtsp_port=int(camera.get("rtsp_port", 554)),
+            password=str(camera.get("password", "8888888")),
+            rtsp_port=int(camera.get("rtsp_port", 10554)),
             transport=str(camera.get("transport", "tcp")),
             stream=str(camera.get("stream", "av0_1")),
         ),

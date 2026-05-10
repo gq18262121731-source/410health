@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+
+from pydantic import BaseModel
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from backend.dependencies import (
@@ -11,6 +14,19 @@ from backend.models.target_user_model import TargetUserCreateResponse, TargetUse
 
 
 router = APIRouter(prefix="/target-users", tags=["target-users"])
+
+
+class ExternalCameraConfigUpdate(BaseModel):
+    host: str | None = None
+    username: str | None = None
+    password: str | None = None
+    rtsp_port: int | None = None
+    transport: str | None = None
+    stream: str | None = None
+
+
+class ExternalCameraProbeRequest(ExternalCameraConfigUpdate):
+    apply_success: bool = True
 
 
 @router.get("", response_model=list[TargetUserRecord])
@@ -48,7 +64,8 @@ async def create_target_user(
         raise HTTPException(status_code=400, detail="TARGET_USER_IMAGES_REQUIRED")
 
     try:
-        return get_target_user_service().create_user(
+        return await asyncio.to_thread(
+            get_target_user_service().create_user,
             display_name=display_name,
             group=group,
             note=note,
@@ -61,7 +78,7 @@ async def create_target_user(
 @router.delete("/{user_id}", response_model=TargetUserDeleteResponse)
 async def delete_target_user(user_id: str) -> TargetUserDeleteResponse:
     try:
-        return get_target_user_service().delete_user(user_id)
+        return await asyncio.to_thread(get_target_user_service().delete_user, user_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -75,7 +92,7 @@ async def match_target_user(file: UploadFile = File(...)) -> TargetUserMatchResu
     blob = await file.read()
     if len(blob) < 100:
         raise HTTPException(status_code=400, detail="TARGET_USER_IMAGES_REQUIRED")
-    return get_target_user_service().match_target_from_image(blob)
+    return await asyncio.to_thread(get_target_user_service().match_target_from_image, blob)
 
 
 @router.post("/fall-detect")
@@ -93,7 +110,8 @@ async def target_user_fall_detect(
     if len(blob) < 100:
         raise HTTPException(status_code=400, detail="TARGET_USER_IMAGES_REQUIRED")
     include_annotated_image = mode.strip().lower() != "metadata"
-    return get_target_user_fall_service().detect(
+    return await asyncio.to_thread(
+        get_target_user_fall_service().detect,
         blob,
         include_annotated_image=include_annotated_image,
         target_only=target_only,
@@ -104,12 +122,69 @@ async def target_user_fall_detect(
 
 @router.get("/external-camera/health")
 async def external_camera_health() -> dict:
-    return get_external_camera_bridge_service().health()
+    return await asyncio.to_thread(get_external_camera_bridge_service().health)
+
+
+@router.get("/external-camera/config")
+async def external_camera_config() -> dict:
+    bridge = get_external_camera_bridge_service()
+    return await asyncio.to_thread(
+        lambda: {
+            "config": bridge.get_runtime_config(),
+            "camera_health": bridge.health(),
+            **bridge._camera_source(),
+        }
+    )
+
+
+@router.post("/external-camera/config")
+async def external_camera_config_update(payload: ExternalCameraConfigUpdate) -> dict:
+    try:
+        return await asyncio.to_thread(
+            get_external_camera_bridge_service().configure_runtime,
+            host=payload.host,
+            username=payload.username,
+            password=payload.password,
+            rtsp_port=payload.rtsp_port,
+            transport=payload.transport,
+            stream=payload.stream,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/external-camera/probe")
+async def external_camera_probe(payload: ExternalCameraProbeRequest) -> dict:
+    try:
+        return await asyncio.to_thread(
+            get_external_camera_bridge_service().probe_runtime_candidates,
+            host=payload.host,
+            username=payload.username,
+            password=payload.password,
+            rtsp_port=payload.rtsp_port,
+            transport=payload.transport,
+            stream=payload.stream,
+            apply_success=payload.apply_success,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/external-camera/discover")
+async def external_camera_discover(subnet: str | None = None, limit: int = 256) -> dict:
+    return await asyncio.to_thread(
+        get_external_camera_bridge_service().discover_camera_candidates,
+        subnet=subnet,
+        limit=limit,
+    )
 
 
 @router.post("/external-camera/refresh")
 async def external_camera_refresh(prefer_stream: str | None = None) -> dict:
-    return get_external_camera_bridge_service().refresh_stream(prefer_stream=prefer_stream)
+    return await asyncio.to_thread(
+        get_external_camera_bridge_service().refresh_stream,
+        prefer_stream=prefer_stream,
+    )
 
 
 @router.post("/external-camera/fall-detect")
@@ -120,7 +195,8 @@ async def external_camera_fall_detect(
     speed_mode: str = "balanced",
 ) -> dict:
     include_annotated_image = mode.strip().lower() != "metadata"
-    return get_external_camera_bridge_service().detect_latest(
+    return await asyncio.to_thread(
+        get_external_camera_bridge_service().detect_latest,
         session_id=session_id,
         target_only=target_only,
         include_annotated_image=include_annotated_image,

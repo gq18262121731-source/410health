@@ -44,6 +44,7 @@ class TargetUserFallService:
         self._lock = RLock()
         self._session_match_cache: dict[str, dict[str, Any]] = {}
         self._session_trackers: dict[str, BYTETracker] = {}
+        self._session_fall_windows: dict[str, list[dict[str, Any]]] = {}
         self._match_cache_ttl_ms = 1800
         self._full_refresh_interval_ms = 900
         self._tracker_args = IterableSimpleNamespace(
@@ -163,6 +164,7 @@ class TargetUserFallService:
             target_match = self._resolve_target_match(
                 face_embedding=target_features["face_embedding"],
                 body_profile=target_features["body_profile"],
+                body_embedding=target_features["body_embedding"],
                 session_id=session_id,
                 now_ms=now_ms,
                 track_id=tracked_person["track_id"] if tracked_person is not None else None,
@@ -179,6 +181,21 @@ class TargetUserFallService:
                 "target_match": target_match.model_dump(mode="json"),
                 "fall_result": None,
                 "warnings": target_features["warnings"],
+                "speed": speed,
+                "tracking": tracking_payload,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+            }
+
+        if target_only and target_match.matched and tracked_person is None:
+            return {
+                "ok": True,
+                "status": "target_not_localized",
+                "target_match": target_match.model_dump(mode="json"),
+                "fall_result": None,
+                "pose_result": None,
+                "posture_event": None,
+                "posture_guidance": None,
+                "warnings": [*target_features["warnings"], "TARGET_MATCHED_BUT_NO_TRACK_ROI"],
                 "speed": speed,
                 "tracking": tracking_payload,
                 "latency_ms": int((time.perf_counter() - started) * 1000),
@@ -210,11 +227,14 @@ class TargetUserFallService:
                     posture_imgsz=speed["posture_imgsz"],
                 )
                 self._offset_detections(fall_result, roi_bbox)
+                self._limit_fall_result_to_target(fall_result, roi_bbox, target_match=target_match)
                 pose_result = self._target_pose_service.estimate_pose(
                     frame,
                     bbox=roi_bbox,
                     imgsz=speed["pose_imgsz"],
                     conf=speed["pose_conf"],
+                    session_id=session_id,
+                    track_id=tracked_person["track_id"],
                 )
                 posture_event = self._posture_event_service.analyze(
                     session_id=session_id,
@@ -222,6 +242,12 @@ class TargetUserFallService:
                     target_matched=True,
                 )
                 posture_guidance = self._posture_knowledge_service.get((posture_event or {}).get("type", "normal"))
+                self._stabilize_target_fall_result(
+                    session_id=session_id,
+                    fall_result=fall_result,
+                    pose_result=pose_result,
+                    posture_event=posture_event,
+                )
                 roi_info = {
                     "bbox": roi_bbox,
                     "used_roi": True,
@@ -233,11 +259,14 @@ class TargetUserFallService:
                     imgsz=speed["fall_imgsz"],
                     posture_imgsz=speed["posture_imgsz"],
                 )
+                self._limit_fall_result_to_target(fall_result, tracked_person["bbox"], target_match=target_match)
                 pose_result = self._target_pose_service.estimate_pose(
                     frame,
                     bbox=tracked_person["bbox"],
                     imgsz=speed["pose_imgsz"],
                     conf=speed["pose_conf"],
+                    session_id=session_id,
+                    track_id=tracked_person["track_id"],
                 )
                 posture_event = self._posture_event_service.analyze(
                     session_id=session_id,
@@ -245,6 +274,12 @@ class TargetUserFallService:
                     target_matched=True,
                 )
                 posture_guidance = self._posture_knowledge_service.get((posture_event or {}).get("type", "normal"))
+                self._stabilize_target_fall_result(
+                    session_id=session_id,
+                    fall_result=fall_result,
+                    pose_result=pose_result,
+                    posture_event=posture_event,
+                )
         else:
             fall_result = self._fall_frame_service.detect_frame(
                 frame,
@@ -252,6 +287,8 @@ class TargetUserFallService:
                 imgsz=speed["fall_imgsz"],
                 posture_imgsz=speed["posture_imgsz"],
             )
+            if target_only:
+                fall_result["detections"] = []
 
         if fall_result.get("frame"):
             fall_result["frame"] = {"width": frame.shape[1], "height": frame.shape[0]}
@@ -277,6 +314,7 @@ class TargetUserFallService:
         *,
         face_embedding: list[float] | None,
         body_profile: dict[str, float] | None,
+        body_embedding: list[float] | None,
         session_id: str,
         now_ms: int,
         track_id: int | None,
@@ -293,11 +331,23 @@ class TargetUserFallService:
 
         if cached:
             if face_embedding is None and body_profile is not None and cached.get("body_profile") is not None:
+                if (
+                    track_id is None
+                    or cached.get("track_id") is None
+                    or int(cached["track_id"]) != int(track_id)
+                    or not cached.get("face_confirmed")
+                    or (now_ms - int(cached.get("last_full_match_ms", 0))) > 2500
+                ):
+                    return self._target_user_service.match_target(
+                        face_embedding=face_embedding,
+                        body_profile=body_profile,
+                        body_embedding=body_embedding,
+                    )
                 body_score = self._target_user_service._best_body_similarity(  # type: ignore[attr-defined]
                     body_profile,
                     [cached["body_profile"]],
                 )
-                if body_score >= 0.84:
+                if body_score >= 0.90:
                     match = cached["match"].model_copy(update={
                         "body_score": round(body_score, 4),
                         "fused_score": round(max(float(cached["match"].fused_score), body_score), 4),
@@ -308,6 +358,7 @@ class TargetUserFallService:
                         "last_feature_match_ms": now_ms,
                         "match": match,
                         "body_profile": body_profile,
+                        "body_embedding": body_embedding,
                         "track_id": track_id if track_id is not None else cached.get("track_id"),
                     }
                     self._set_cache_entry(session_id, updated)
@@ -316,6 +367,7 @@ class TargetUserFallService:
         target_match = self._target_user_service.match_target(
             face_embedding=face_embedding,
             body_profile=body_profile,
+            body_embedding=body_embedding,
         )
         if target_match.matched:
             last_full_match_ms = now_ms
@@ -329,7 +381,9 @@ class TargetUserFallService:
                     "last_feature_match_ms": now_ms,
                     "match": target_match,
                     "body_profile": body_profile,
+                    "body_embedding": body_embedding,
                     "track_id": track_id,
+                    "face_confirmed": face_embedding is not None and float(target_match.face_score or 0.0) >= 0.70,
                 },
             )
         else:
@@ -371,6 +425,16 @@ class TargetUserFallService:
                 self.xywh = np.asarray(xywh, dtype=np.float32)
                 self.conf = np.asarray(conf, dtype=np.float32)
                 self.cls = np.asarray(cls, dtype=np.float32)
+
+            def __len__(self):
+                return int(len(self.conf))
+
+            def __getitem__(self, item):
+                sliced = object.__new__(_TrackResults)
+                sliced.xywh = np.asarray(self.xywh[item], dtype=np.float32).reshape(-1, 4)
+                sliced.conf = np.asarray(self.conf[item], dtype=np.float32).reshape(-1)
+                sliced.cls = np.asarray(self.cls[item], dtype=np.float32).reshape(-1)
+                return sliced
 
         tracks = tracker.update(_TrackResults(person_boxes), frame)
         if tracks is None or len(tracks) == 0:
@@ -461,6 +525,7 @@ class TargetUserFallService:
                         "warnings": [],
                         "face_embedding": None,
                         "body_profile": cached.get("body_profile"),
+                        "body_embedding": cached.get("body_embedding"),
                         "reused_locked_match": True,
                     }
                 preferred_features = self._target_user_service.extract_features_from_frame(
@@ -472,6 +537,7 @@ class TargetUserFallService:
                 preferred_match = self._resolve_target_match(
                     face_embedding=preferred_features["face_embedding"],
                     body_profile=preferred_features["body_profile"],
+                    body_embedding=preferred_features["body_embedding"],
                     session_id=session_id,
                     now_ms=now_ms,
                     track_id=preferred["track_id"],
@@ -494,6 +560,7 @@ class TargetUserFallService:
             candidate = self._target_user_service.match_target(
                 face_embedding=features["face_embedding"],
                 body_profile=features["body_profile"],
+                body_embedding=features["body_embedding"],
             )
             score = float(candidate.fused_score)
             if score > best_score:
@@ -508,6 +575,7 @@ class TargetUserFallService:
         final_match = self._resolve_target_match(
             face_embedding=best_features["face_embedding"],
             body_profile=best_features["body_profile"],
+            body_embedding=best_features["body_embedding"],
             session_id=session_id,
             now_ms=now_ms,
             track_id=best_person["track_id"],
@@ -523,10 +591,10 @@ class TargetUserFallService:
                 "mode": "low_latency",
                 "person_imgsz": 416,
                 "fall_imgsz": 416,
-            "posture_imgsz": 256,
-            "pose_imgsz": 384,
-            "pose_conf": 0.25,
-            "body_imgsz": 416,
+                "posture_imgsz": 256,
+                "pose_imgsz": 384,
+                "pose_conf": 0.25,
+                "body_imgsz": 416,
                 "match_cache_ttl_ms": 3200,
                 "full_refresh_interval_ms": 1800,
                 "track_lock_reuse_ms": 650,
@@ -566,6 +634,96 @@ class TargetUserFallService:
         with self._lock:
             self._session_match_cache.pop(session_id, None)
 
+    def _stabilize_target_fall_result(
+        self,
+        *,
+        session_id: str,
+        fall_result: dict[str, Any],
+        pose_result: dict[str, Any] | None,
+        posture_event: dict[str, Any] | None,
+    ) -> None:
+        if not fall_result.get("ok"):
+            return
+
+        now_ms = int(time.perf_counter() * 1000)
+        scores = fall_result.get("scores") if isinstance(fall_result.get("scores"), dict) else {}
+        fall_score = float(scores.get("fall") or fall_result.get("fall_score") or 0.0)
+        detector_score = float(scores.get("detector") or 0.0)
+        posture_score = float(scores.get("posture") or 0.0)
+        pose = (pose_result or {}).get("pose") or {}
+        pose_posture = pose.get("posture") or {}
+        pose_quality = pose.get("quality") or {}
+        pose_label = str(pose_posture.get("label") or "unknown")
+        pose_conf = float(pose_posture.get("confidence") or 0.0)
+        visible_points = int(pose_quality.get("visible_points") or 0)
+        event_type = str((posture_event or {}).get("type") or "normal")
+        event_level = str((posture_event or {}).get("level") or "normal")
+
+        entry = {
+            "ts_ms": now_ms,
+            "status": str(fall_result.get("status") or "normal"),
+            "fall_score": fall_score,
+            "detector_score": detector_score,
+            "posture_score": posture_score,
+            "pose_label": pose_label,
+            "pose_conf": pose_conf,
+            "visible_points": visible_points,
+            "event_type": event_type,
+            "event_level": event_level,
+        }
+        with self._lock:
+            window = self._session_fall_windows.setdefault(session_id, [])
+            window.append(entry)
+            cutoff = now_ms - 2200
+            window[:] = [item for item in window[-16:] if int(item["ts_ms"]) >= cutoff]
+            recent = list(window)
+
+        risky_pose = (
+            pose_label in {"fall_like", "slumped"}
+            and pose_conf >= 0.58
+            and visible_points >= 8
+        )
+        risky_event = event_type in {"fall_fast", "fall_slow", "collapse_or_slump"} or event_level in {"danger", "critical"}
+        risky_frames = sum(
+            1
+            for item in recent
+            if float(item["fall_score"]) >= 0.42
+            or str(item["pose_label"]) in {"fall_like", "slumped"}
+            or str(item["event_level"]) in {"danger", "critical"}
+        )
+
+        confirmed = (
+            detector_score >= 0.58
+            or fall_score >= 0.82
+            or (fall_score >= 0.62 and (risky_pose or risky_event))
+            or (fall_score >= 0.48 and risky_frames >= 3 and (risky_pose or risky_event))
+        )
+        suspected = fall_score >= 0.36 or risky_pose or risky_event or risky_frames >= 2
+
+        original_status = str(fall_result.get("status") or "normal")
+        if confirmed:
+            fall_result["status"] = "fall"
+            fall_result["fall_detected"] = True
+        elif suspected:
+            fall_result["status"] = "suspected"
+            fall_result["fall_detected"] = False
+        else:
+            fall_result["status"] = "normal"
+            fall_result["fall_detected"] = False
+
+        fall_result["temporal_verification"] = {
+            "enabled": True,
+            "original_status": original_status,
+            "confirmed": confirmed,
+            "risky_frames": risky_frames,
+            "window_frames": len(recent),
+            "pose_label": pose_label,
+            "pose_confidence": round(pose_conf, 4),
+            "visible_points": visible_points,
+            "event_type": event_type,
+            "event_level": event_level,
+        }
+
     def _crop_target_roi(self, frame: np.ndarray, bbox: list[int]) -> tuple[np.ndarray | None, list[int] | None]:
         if frame is None or frame.size == 0:
             return None, None
@@ -602,3 +760,54 @@ class TargetUserFallService:
                 round(float(box[2]) + ox, 1),
                 round(float(box[3]) + oy, 1),
             ]
+
+    @staticmethod
+    def _limit_fall_result_to_target(
+        fall_result: dict[str, Any],
+        target_bbox: list[int] | list[float] | None,
+        *,
+        target_match: Any,
+    ) -> None:
+        if target_bbox is None or len(target_bbox) < 4:
+            fall_result["detections"] = []
+            return
+
+        tx1, ty1, tx2, ty2 = [float(v) for v in target_bbox[:4]]
+        if tx2 <= tx1 or ty2 <= ty1:
+            fall_result["detections"] = []
+            return
+
+        target_area = max(1.0, (tx2 - tx1) * (ty2 - ty1))
+        kept: list[dict[str, Any]] = []
+        for item in fall_result.get("detections") or []:
+            box = item.get("bbox")
+            if not box or len(box) < 4:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in box[:4]]
+            ix1 = max(tx1, x1)
+            iy1 = max(ty1, y1)
+            ix2 = min(tx2, x2)
+            iy2 = min(ty2, y2)
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            box_area = max(1.0, (x2 - x1) * (y2 - y1))
+            center_inside = tx1 <= (x1 + x2) * 0.5 <= tx2 and ty1 <= (y1 + y2) * 0.5 <= ty2
+            if center_inside or inter / target_area >= 0.12 or inter / box_area >= 0.35:
+                kept.append({**item, "target_only": True})
+
+        label = "target"
+        if kept:
+            risky = max(float(item.get("confidence") or 0.0) for item in kept)
+            risky_labels = {"fall", "fallen", "lying"}
+            label = "target_" + ("risk" if any(str(item.get("label", "")).lower() in risky_labels for item in kept) else "tracked")
+            confidence = max(risky, float(getattr(target_match, "fused_score", 0.0) or 0.0))
+        else:
+            confidence = float(getattr(target_match, "fused_score", 0.0) or 0.0)
+
+        target_detection = {
+            "bbox": [round(tx1, 1), round(ty1, 1), round(tx2, 1), round(ty2, 1)],
+            "label": label,
+            "confidence": round(max(0.0, min(1.0, confidence)), 4),
+            "target_only": True,
+            "source": "target_track_roi",
+        }
+        fall_result["detections"] = [target_detection, *kept[:3]]

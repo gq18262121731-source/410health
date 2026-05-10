@@ -1,6 +1,11 @@
 $port = 9200
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$python = "C:\Users\YANG\.conda\envs\AI\python.exe"
+$pythonCandidates = @(
+  "C:\Users\YANG\.conda\envs\helth\python.exe",
+  "C:\Users\YANG\.conda\envs\AI\python.exe",
+  "python"
+)
+$python = $pythonCandidates | Where-Object { $_ -eq "python" -or (Test-Path $_) } | Select-Object -First 1
 
 $existing = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Where-Object { $_.State -eq "Listen" } | Select-Object -First 1
 if ($existing) {
@@ -9,7 +14,7 @@ if ($existing) {
   exit 0
 }
 
-if (-not (Test-Path $python)) {
+if (-not $python) {
   throw "Python not found: $python"
 }
 
