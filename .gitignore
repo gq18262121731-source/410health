@@ -76,7 +76,9 @@ fall_detection_model_bundle/runs/yolo_posture_person_cls_fallpose_baseline_v1-2/
 
 # Local camera SDK/manual bundles and generated backups
 docs/change_backups/
-摄像头说明书/
+摄像头说明书/SDK_phone (2)/
+摄像头说明书/WEB-SDK2024/
+摄像头说明书/摄像头内网查找器 (2)/
 backend/workers/__pycache__/
 mobile/flutter_app/lib/features/alarm/widgets/*_copy.dart
 mobile/flutter_app/lib/features/alarm/widgets/*_excerpt.dart
