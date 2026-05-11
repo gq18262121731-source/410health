@@ -34,12 +34,15 @@ const pendingFallReview = ref<FallReviewPendingMessage | null>(null);
 const isCommunityWorkspace = computed(
   () => props.sessionUser.role === "community" || props.sessionUser.role === "admin",
 );
+const showStandaloneNav = computed(
+  () => !isCommunityWorkspace.value && props.sessionUser.role !== "family" && props.allowedPages.length > 0,
+);
 const canShowFallOverlay = computed(
   () => props.sessionUser.role === "community" || props.sessionUser.role === "admin" || props.sessionUser.role === "family",
 );
 const mergedHeaderPages = new Set<PageKey>(["overview", "topology", "members", "agent"]);
 const showGlobalHeader = computed(
-  () => !isCommunityWorkspace.value || !mergedHeaderPages.has(props.activePage),
+  () => props.activePage !== "family" && (!isCommunityWorkspace.value || !mergedHeaderPages.has(props.activePage)),
 );
 const showMergedPageAccountBar = computed(
   () => isCommunityWorkspace.value && mergedHeaderPages.has(props.activePage),
@@ -604,7 +607,7 @@ watch(
       />
 
       <div
-        v-if="!isCommunityWorkspace && allowedPages.length"
+        v-if="showStandaloneNav"
         class="app-shell__controls"
       >
         <PrimaryNav

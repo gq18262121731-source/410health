@@ -60,25 +60,25 @@ const stageSummary = computed(() => {
     return "当前还没有实时样本，暂时无法判断异常演进位置。同步到新样本后会自动更新阶段。";
   }
   if (props.focusAlarm) {
-    return `当前已触发告警，消息为“${props.focusAlarm.message}”。建议先处理告警链路，再回看结构化报告和关键发现。`;
+    return `当前已触发告警，消息为“${props.focusAlarm.message}”。建议优先处理告警链路，再回看结构化报告和关键发现。`;
   }
   if (sustainedAbnormal.value) {
     return "最近多个样本连续异常，已经从单次波动升级为持续异常，建议立即进入重点观察状态。";
   }
   if (isAbnormal(props.sample)) {
-    return "当前出现单次异常样本，建议继续看后续样本是否恢复，避免遗漏持续异常。";
+    return "当前出现单次异常样本，建议继续观察后续样本是否恢复，避免遗漏持续异常。";
   }
   return "当前样本整体平稳，仍处于常规观察阶段，可继续结合报告建议做日常关注。";
 });
 
 const evidence = computed(() => {
   const rows: string[] = [];
-  if (!props.sample) return ["当前还没有实时样本，暂无法判断异常演进链路。"];
+  if (!props.sample) return ["当前还没有实时样本，暂无异常链路判断依据。"];
   if (props.sample.blood_oxygen < 93) rows.push(`当前血氧 ${props.sample.blood_oxygen}% ，已低于常规观察阈值。`);
   if (props.sample.temperature >= 37.8) rows.push(`当前体温 ${props.sample.temperature.toFixed(1)}°C ，已进入异常观察区间。`);
   if (props.sample.heart_rate >= 110 || props.sample.heart_rate <= 45) rows.push(`当前心率 ${props.sample.heart_rate} bpm ，需要重点关注。`);
   if (props.sample.sos_flag) rows.push("当前样本包含 SOS 标记。");
-  if (sustainedAbnormal.value) rows.push("最近连续 3 个样本均表现为异常，已满足持续异常观察条件。");
+  if (sustainedAbnormal.value) rows.push("最近连续 3 个样本均表现为异常，已满足持续异常条件。");
   if (props.focusAlarm) rows.push(`当前已生成告警：${props.focusAlarm.message}`);
   if (!rows.length) rows.push("当前样本整体平稳，仍处于常规观察阶段。");
   return rows;
@@ -127,7 +127,7 @@ const actionChecklist = computed(() => {
   <section class="panel alarm-escalation-panel">
     <div class="alarm-head">
       <div>
-        <h2>异常到报警流</h2>
+        <h2>异常到报警流程</h2>
         <p class="panel-subtitle">用现有结构化指标解释当前位于哪一阶段、为什么会到这里，以及下一步建议怎么处理。</p>
       </div>
       <div class="alarm-head-meta">
@@ -138,7 +138,7 @@ const actionChecklist = computed(() => {
 
     <div class="alarm-overview">
       <article class="alarm-stage-card" :class="`tone-${stageTone}`">
-        <p class="section-eyebrow">Alarm Stage</p>
+        <p class="section-eyebrow">报警阶段</p>
         <h3>{{ currentStage.label }}</h3>
         <p>{{ stageSummary }}</p>
         <div class="alarm-stage-meta">
@@ -223,9 +223,9 @@ const actionChecklist = computed(() => {
 .flow-card,
 .flow-evidence,
 .alarm-detail-item {
-  border: 1px solid rgba(56, 189, 248, 0.10);
+  border: 1px solid var(--line-medium);
   border-radius: 22px;
-  background: rgba(13, 22, 38, 0.90);
+  background: #ffffff;
   padding: 18px;
 }
 
@@ -249,18 +249,18 @@ const actionChecklist = computed(() => {
 }
 
 .alarm-stage-card.tone-critical {
-  border-color: rgba(248, 113, 113, 0.24);
-  background: linear-gradient(180deg, rgba(33, 18, 30, 0.96), rgba(52, 20, 28, 0.92));
+  border-color: rgba(248, 113, 113, 0.3);
+  background: #fef2f2;
 }
 
 .alarm-stage-card.tone-warning {
-  border-color: rgba(251, 146, 60, 0.22);
-  background: linear-gradient(180deg, rgba(28, 20, 30, 0.96), rgba(52, 30, 16, 0.92));
+  border-color: rgba(251, 146, 60, 0.28);
+  background: #fff7ed;
 }
 
 .alarm-stage-card.tone-stable {
-  border-color: rgba(52, 211, 153, 0.22);
-  background: linear-gradient(180deg, rgba(14, 24, 34, 0.96), rgba(16, 42, 38, 0.92));
+  border-color: rgba(52, 211, 153, 0.28);
+  background: #ecfdf5;
 }
 
 .alarm-detail-grid {
@@ -287,7 +287,7 @@ const actionChecklist = computed(() => {
 .flow-card {
   display: grid;
   gap: 12px;
-  opacity: 0.58;
+  opacity: 0.72;
 }
 
 .flow-card.active {
@@ -295,8 +295,8 @@ const actionChecklist = computed(() => {
 }
 
 .flow-card.current {
-  border-color: rgba(34, 211, 238, 0.24);
-  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.26);
+  border-color: rgba(37, 99, 235, 0.22);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.08);
 }
 
 .flow-index {
@@ -306,8 +306,8 @@ const actionChecklist = computed(() => {
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: rgba(34, 211, 238, 0.10);
-  color: #67e8f9;
+  background: #eff6ff;
+  color: #2563eb;
   font-weight: 800;
 }
 

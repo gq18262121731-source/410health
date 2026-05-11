@@ -34,6 +34,88 @@ class CameraRepository {
         Map<String, dynamic>.from(response.data as Map));
   }
 
+  Future<Map<String, CameraDetectionRuntimeStatus>>
+      getDetectionModelsStatus() async {
+    final response = await _apiClient.get('camera/detection-models/status');
+    return _parseDetectionModelsStatus(response.data);
+  }
+
+  Future<Map<String, CameraDetectionRuntimeStatus>>
+      setDetectionModelsEnabled({
+    bool? fallDetectionEnabled,
+    bool? poseDetectionEnabled,
+  }) async {
+    final response = await _apiClient.post(
+      'camera/detection-models/enabled',
+      data: <String, dynamic>{
+        if (fallDetectionEnabled != null)
+          'fall_detection_enabled': fallDetectionEnabled,
+        if (poseDetectionEnabled != null)
+          'pose_detection_enabled': poseDetectionEnabled,
+      },
+    );
+    return _parseDetectionModelsStatus(response.data);
+  }
+
+  Future<CameraDetectionRuntimeStatus> getFallDetectionStatus() async {
+    final response = await _apiClient.get('camera/fall-detection/status');
+    return CameraDetectionRuntimeStatus.fromJson(
+        Map<String, dynamic>.from(response.data as Map));
+  }
+
+  Future<CameraDetectionRuntimeStatus> setFallDetectionEnabled(
+      bool enabled) async {
+    final statuses = await setDetectionModelsEnabled(
+      fallDetectionEnabled: enabled,
+    );
+    return statuses['fall_detection']!;
+  }
+
+  Future<CameraDetectionRuntimeStatus> getPoseDetectionStatus() async {
+    final response = await _apiClient.get('camera/pose-detection/status');
+    return CameraDetectionRuntimeStatus.fromJson(
+        Map<String, dynamic>.from(response.data as Map));
+  }
+
+  Future<CameraDetectionRuntimeStatus> setPoseDetectionEnabled(
+      bool enabled) async {
+    final statuses = await setDetectionModelsEnabled(
+      poseDetectionEnabled: enabled,
+    );
+    return statuses['pose_detection']!;
+  }
+
+  Future<PoseDetectionLatest> getPoseDetectionLatest() async {
+    final response = await _apiClient.get('camera/pose-detection/latest');
+    return PoseDetectionLatest.fromJson(
+        Map<String, dynamic>.from(response.data as Map));
+  }
+
+  Future<CameraFrameAnalysisStatus> getFrameAnalysisStatus() async {
+    final response = await _apiClient.get('camera/analyze-frame/status');
+    return CameraFrameAnalysisStatus.fromJson(
+        Map<String, dynamic>.from(response.data as Map));
+  }
+
+  Future<Map<String, dynamic>> analyzeFrame(
+    Uint8List imageBytes, {
+    String sessionId = 'browser-preview',
+  }) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        imageBytes,
+        filename: 'browser_frame.jpg',
+        contentType: DioMediaType('image', 'jpeg'),
+      ),
+    });
+    final response = await _apiClient.post(
+      'camera/analyze-frame?session_id=$sessionId',
+      data: formData,
+      options: Options(receiveTimeout: const Duration(seconds: 20)),
+    );
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
   Future<CameraSetupConfig> getSetupConfig() async {
     final response = await _apiClient.get('camera/setup/config');
     return CameraSetupConfig.fromJson(
@@ -84,5 +166,18 @@ class CameraRepository {
   WebSocketChannel connectAudioListenStream() {
     return WebSocketChannel.connect(
         Uri.parse('${_endpointConfig.wsBaseUrl}/ws/camera/audio/listen'));
+  }
+
+  Map<String, CameraDetectionRuntimeStatus> _parseDetectionModelsStatus(
+      Object? data) {
+    final payload = Map<String, dynamic>.from(data as Map);
+    return <String, CameraDetectionRuntimeStatus>{
+      'fall_detection': CameraDetectionRuntimeStatus.fromJson(
+        Map<String, dynamic>.from(payload['fall_detection'] as Map),
+      ),
+      'pose_detection': CameraDetectionRuntimeStatus.fromJson(
+        Map<String, dynamic>.from(payload['pose_detection'] as Map),
+      ),
+    };
   }
 }

@@ -61,6 +61,7 @@ from backend.services.posture_knowledge_service import PostureKnowledgeService
 from backend.services.relation_service import RelationService
 from backend.services.stream_service import StreamService
 from backend.services.external_camera_bridge_service import ExternalCameraBridgeService
+from backend.services.frame_analysis_worker_service import FrameAnalysisWorkerService
 from backend.services.target_pose_service import TargetPoseService
 from backend.services.target_user_service import TargetUserService
 from backend.services.target_user_fall_service import TargetUserFallService
@@ -153,6 +154,7 @@ _target_user_fall_service = TargetUserFallService(
     target_user_service=_target_user_service,
 )
 _target_pose_service = TargetPoseService(model_root=_fall_detection_model_root)
+_frame_analysis_worker_service = FrameAnalysisWorkerService(project_root=Path(__file__).resolve().parents[1])
 _posture_event_service = PostureEventService()
 _posture_knowledge_service = PostureKnowledgeService(resources_root=Path(__file__).resolve().parent / "resources")
 _external_camera_bridge_service = ExternalCameraBridgeService(
@@ -1298,6 +1300,10 @@ def get_target_user_fall_service() -> TargetUserFallService:
 
 def get_target_pose_service() -> TargetPoseService:
     return _target_pose_service
+
+
+def get_frame_analysis_worker_service() -> FrameAnalysisWorkerService:
+    return _frame_analysis_worker_service
 
 
 def get_posture_event_service() -> PostureEventService:

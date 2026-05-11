@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../models/camera_models.dart';
 import '../providers/camera_provider.dart';
+import '../widgets/local_camera_preview.dart';
+import '../widgets/local_camera_preview_controller.dart';
 
 class FamilyCameraScreen extends StatelessWidget {
   const FamilyCameraScreen({super.key});
@@ -43,6 +47,8 @@ class FamilyCameraScreen extends StatelessWidget {
           SizedBox(height: 16),
           _PtzPanel(),
           SizedBox(height: 16),
+          _AiAnalysisPanel(),
+          SizedBox(height: 16),
           _DiagnosticsPanel(),
           SizedBox(height: 16),
           _ErrorPanel(),
@@ -52,13 +58,46 @@ class FamilyCameraScreen extends StatelessWidget {
   }
 }
 
-class _VideoPanel extends StatelessWidget {
+class _VideoPanel extends StatefulWidget {
   const _VideoPanel();
+
+  @override
+  State<_VideoPanel> createState() => _VideoPanelState();
+}
+
+class _VideoPanelState extends State<_VideoPanel> {
+  bool _localPreviewReady = false;
+  String? _localPreviewError;
+  LocalCameraPreviewController? _localPreviewController;
+  Timer? _analysisTimer;
+
+  @override
+  void dispose() {
+    _analysisTimer?.cancel();
+    super.dispose();
+  }
+
+  void _syncAnalysisTimer(CameraProvider provider, bool useLocalPreview) {
+    final shouldRun = useLocalPreview && provider.autoRefresh && _localPreviewReady;
+    if (!shouldRun) {
+      _analysisTimer?.cancel();
+      _analysisTimer = null;
+      return;
+    }
+    if (_analysisTimer != null) return;
+    _analysisTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      final bytes = await _localPreviewController?.captureFrame();
+      if (bytes == null || !mounted) return;
+      await context.read<CameraProvider>().analyzeBrowserFrame(bytes);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<CameraProvider>();
     final frame = provider.frameBytes;
+    final useLocalPreview = provider.setupConfig.sourceMode == 'local';
+    _syncAnalysisTimer(provider, useLocalPreview);
 
     return Container(
       decoration: BoxDecoration(
@@ -85,7 +124,22 @@ class _VideoPanel extends StatelessWidget {
                 children: <Widget>[
                   ColoredBox(
                     color: const Color(0xFF0F172A),
-                    child: frame == null
+                    child: useLocalPreview
+                        ? LocalCameraPreview(
+                            active: provider.autoRefresh,
+                            onReadyChanged: (ready) {
+                              if (!mounted) return;
+                              setState(() => _localPreviewReady = ready);
+                            },
+                            onErrorChanged: (error) {
+                              if (!mounted) return;
+                              setState(() => _localPreviewError = error);
+                            },
+                            onControllerChanged: (controller) {
+                              _localPreviewController = controller;
+                            },
+                          )
+                        : frame == null
                         ? _VideoPlaceholder(isConnecting: provider.isConnecting)
                         : Image.memory(
                             frame,
@@ -96,10 +150,16 @@ class _VideoPanel extends StatelessWidget {
                   Positioned(
                     left: 12,
                     top: 12,
-                    child: _StatusPill(
-                      label: provider.streamLabel,
-                      isOnline: provider.hasFrame && provider.autoRefresh,
-                    ),
+                    child: useLocalPreview
+                        ? LocalPreviewBadge(
+                            active: provider.autoRefresh,
+                            ready: _localPreviewReady,
+                            error: _localPreviewError,
+                          )
+                        : _StatusPill(
+                            label: provider.streamLabel,
+                            isOnline: provider.hasFrame && provider.autoRefresh,
+                          ),
                   ),
                   Positioned(
                     right: 12,
@@ -109,6 +169,18 @@ class _VideoPanel extends StatelessWidget {
                       isOnline: provider.status?.online == true,
                     ),
                   ),
+                  if (provider.poseLatest?.primaryTrack != null)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          painter: _PoseSkeletonPainter(
+                            track: provider.poseLatest!.primaryTrack!,
+                            frameWidth: provider.poseLatest!.frameWidth,
+                            frameHeight: provider.poseLatest!.frameHeight,
+                          ),
+                        ),
+                      ),
+                    ),
                   if (provider.audioListening)
                     Positioned(
                       left: 12,
@@ -152,7 +224,9 @@ class _VideoPanel extends StatelessWidget {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          provider.endpointLabel,
+                          useLocalPreview
+                              ? '浏览器直接调用本机摄像头预览，后端低频做状态/算法分析'
+                              : provider.endpointLabel,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -598,15 +672,6 @@ class _ActionStrip extends StatelessWidget {
           children: <Widget>[
             Expanded(
               child: _ActionButton(
-                icon: provider.autoRefresh ? Icons.pause : Icons.play_arrow,
-                label: provider.autoRefresh ? '暂停画面' : '开始视频',
-                color: AppColors.primary,
-                onTap: provider.toggleFrameRefresh,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _ActionButton(
                 icon: provider.audioListening
                     ? Icons.volume_up
                     : Icons.hearing_outlined,
@@ -621,20 +686,22 @@ class _ActionStrip extends StatelessWidget {
                 onTap: provider.toggleAudioListen,
               ),
             ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        _ActionButton(
-          icon: Icons.call_outlined,
-          label: '语音对讲预留',
-          color: AppColors.textSub,
-          onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('双向对讲需要摄像头厂商 SDK 支持，当前暂未启用。'),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _ActionButton(
+                icon: Icons.call_outlined,
+                label: '语音对讲预留',
+                color: AppColors.textSub,
+                onTap: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('双向对讲需要摄像头厂商 SDK 支持，当前暂未启用。'),
+                    ),
+                  );
+                },
               ),
-            );
-          },
+            ),
+          ],
         ),
         if (provider.audioNotice != null) ...<Widget>[
           const SizedBox(height: 10),
@@ -787,6 +854,338 @@ class _DiagnosticsPanel extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class _AiAnalysisPanel extends StatelessWidget {
+  const _AiAnalysisPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = context.watch<CameraProvider>();
+    final poseStatus = provider.poseDetectionStatus;
+    final fallStatus = provider.fallDetectionStatus;
+    final poseLatest = provider.poseLatest;
+    final primaryTrack = poseLatest?.primaryTrack;
+    final multimodal = fallStatus?.multimodalReview;
+    final reviewProvider =
+        multimodal?['resolved_provider']?.toString() ?? 'none';
+    final reviewEnabled = multimodal?['enabled'] == true;
+    final fallEvent = fallStatus?.lastEvent;
+    final fallDetected = fallEvent?['fall_detected'] == true;
+    final fallStatusText = fallEvent?['status']?.toString();
+    final fallScore = _toPercent(fallEvent?['fall_score']);
+    final analysisAt = provider.lastAiAnalysisAt;
+    final analysisState = provider.aiAnalysisRunning
+        ? '正在分析'
+        : analysisAt == null
+            ? '等待首帧'
+            : '最近 ${_formatTime(analysisAt)}';
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Text(
+            'AI 姿态与跌倒分析',
+            style: TextStyle(
+              color: AppColors.textMain,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              _MetricChip(label: '单帧分析 $analysisState'),
+              _MetricChip(label: '姿态 ${poseStatus?.stateLabel ?? '检查中'}'),
+              _MetricChip(label: '跌倒 ${fallStatus?.stateLabel ?? '检查中'}'),
+              _MetricChip(label: '目标数 ${poseLatest?.tracks.length ?? 0}'),
+              _MetricChip(
+                label: '多模态复核 ${reviewEnabled ? reviewProvider : '未启用'}',
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _ModelToggleButton(
+                label: '姿态检测模型',
+                enabled: poseStatus?.enabled == true,
+                updating: provider.poseDetectionUpdating,
+                onPressed: () {
+                  provider
+                      .setPoseDetectionEnabled(!(poseStatus?.enabled == true));
+                },
+              ),
+              _ModelToggleButton(
+                label: '跌倒检测模型',
+                enabled: fallStatus?.enabled == true,
+                updating: provider.fallDetectionUpdating,
+                onPressed: () {
+                  provider
+                      .setFallDetectionEnabled(!(fallStatus?.enabled == true));
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _AnalysisRow(
+            label: 'posture',
+            value: poseLatest?.postureLabel ?? '暂无结果',
+            color: primaryTrack?.isRisk == true
+                ? AppColors.error
+                : AppColors.primary,
+          ),
+          _AnalysisRow(
+            label: 'posture event',
+            value: primaryTrack == null ? '暂无人体目标' : primaryTrack.eventLabel,
+            color: primaryTrack?.isRisk == true
+                ? AppColors.error
+                : primaryTrack?.isWarning == true
+                    ? AppColors.warning
+                    : AppColors.success,
+          ),
+          _AnalysisRow(
+            label: 'quality / confidence',
+            value: primaryTrack == null
+                ? '等待关键点'
+                : '关键点 ${primaryTrack.keypoints.length} 个 / pose ${(primaryTrack.poseScore * 100).toStringAsFixed(0)}% / state ${(primaryTrack.stateScore * 100).toStringAsFixed(0)}%',
+            color: AppColors.textSub,
+          ),
+          _AnalysisRow(
+            label: 'fall risk',
+            value: fallEvent == null
+                ? '等待跌倒分析'
+                : fallDetected
+                    ? '疑似跌倒，风险 ${fallScore ?? '--'}'
+                    : '未见明确跌倒线索${fallStatusText == null ? '' : '（$fallStatusText）'}',
+            color: fallDetected ? AppColors.error : AppColors.success,
+          ),
+          _AnalysisRow(
+            label: 'multimodal review',
+            value: reviewEnabled
+                ? '已启用，当前通道：$reviewProvider'
+                : '未启用或未配置复核通道',
+            color: reviewEnabled ? AppColors.primary : AppColors.textSub,
+          ),
+          if (fallStatus?.lastError != null)
+            _AnalysisRow(
+              label: 'fall error',
+              value: fallStatus!.lastError!,
+              color: AppColors.warning,
+            ),
+          if (poseStatus?.lastError != null)
+            _AnalysisRow(
+              label: 'pose error',
+              value: poseStatus!.lastError!,
+              color: AppColors.warning,
+            ),
+          if (provider.lastAiAnalysisError != null)
+            _AnalysisRow(
+              label: 'worker error',
+              value: provider.lastAiAnalysisError!,
+              color: AppColors.warning,
+            ),
+        ],
+      ),
+    );
+  }
+
+  static String? _toPercent(Object? value) {
+    final number = value is num ? value.toDouble() : double.tryParse('$value');
+    if (number == null) return null;
+    return '${(number * 100).clamp(0, 100).toStringAsFixed(0)}%';
+  }
+
+  static String _formatTime(DateTime time) {
+    final hour = time.hour.toString().padLeft(2, '0');
+    final minute = time.minute.toString().padLeft(2, '0');
+    final second = time.second.toString().padLeft(2, '0');
+    return '$hour:$minute:$second';
+  }
+}
+
+class _ModelToggleButton extends StatelessWidget {
+  final String label;
+  final bool enabled;
+  final bool updating;
+  final VoidCallback onPressed;
+
+  const _ModelToggleButton({
+    required this.label,
+    required this.enabled,
+    required this.updating,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = enabled ? AppColors.success : AppColors.primary;
+    final text = updating
+        ? '处理中...'
+        : enabled
+            ? '关闭$label'
+            : '开启$label';
+    return OutlinedButton.icon(
+      onPressed: updating ? null : onPressed,
+      icon: updating
+          ? SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: color,
+              ),
+            )
+          : Icon(enabled ? Icons.power_settings_new : Icons.play_arrow),
+      label: Text(text),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: color,
+        side: BorderSide(color: color.withValues(alpha: 0.38)),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        textStyle: const TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _AnalysisRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _AnalysisRow({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: <Widget>[
+          SizedBox(
+            width: 118,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.textSub,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PoseSkeletonPainter extends CustomPainter {
+  final PoseTrack track;
+  final int frameWidth;
+  final int frameHeight;
+
+  const _PoseSkeletonPainter({
+    required this.track,
+    required this.frameWidth,
+    required this.frameHeight,
+  });
+
+  static const List<(int, int)> _bones = <(int, int)>[
+    (5, 6),
+    (5, 7),
+    (7, 9),
+    (6, 8),
+    (8, 10),
+    (5, 11),
+    (6, 12),
+    (11, 12),
+    (11, 13),
+    (13, 15),
+    (12, 14),
+    (14, 16),
+    (0, 5),
+    (0, 6),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (frameWidth <= 0 || frameHeight <= 0 || track.keypoints.isEmpty) {
+      return;
+    }
+
+    final scale = (size.width / frameWidth).clamp(0.0, size.height / frameHeight);
+    final drawWidth = frameWidth * scale;
+    final drawHeight = frameHeight * scale;
+    final dx = (size.width - drawWidth) / 2;
+    final dy = (size.height - drawHeight) / 2;
+    Offset point(PoseKeypoint kp) => Offset(dx + kp.x * scale, dy + kp.y * scale);
+
+    final bonePaint = Paint()
+      ..color = track.isRisk
+          ? AppColors.error.withValues(alpha: 0.92)
+          : AppColors.success.withValues(alpha: 0.92)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round;
+    final pointPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    final haloPaint = Paint()
+      ..color = AppColors.primary.withValues(alpha: 0.52)
+      ..style = PaintingStyle.fill;
+
+    for (final bone in _bones) {
+      final a = bone.$1;
+      final b = bone.$2;
+      if (a >= track.keypoints.length || b >= track.keypoints.length) continue;
+      final pa = track.keypoints[a];
+      final pb = track.keypoints[b];
+      if (pa.confidence < 0.2 || pb.confidence < 0.2) continue;
+      canvas.drawLine(point(pa), point(pb), bonePaint);
+    }
+
+    for (final kp in track.keypoints) {
+      if (kp.confidence < 0.2) continue;
+      final p = point(kp);
+      canvas.drawCircle(p, 5, haloPaint);
+      canvas.drawCircle(p, 2.5, pointPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PoseSkeletonPainter oldDelegate) {
+    return oldDelegate.track != track ||
+        oldDelegate.frameWidth != frameWidth ||
+        oldDelegate.frameHeight != frameHeight;
   }
 }
 

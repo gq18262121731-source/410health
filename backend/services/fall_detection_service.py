@@ -139,6 +139,7 @@ class FallDetectionService:
 
         env = os.environ.copy()
         env.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|fflags;nobuffer|max_delay;0")
+        env.setdefault("YOLO_CONFIG_DIR", str(Path.cwd() / "Ultralytics"))
         self._started_at = time.time()
         self._last_error = None
         self._process = await asyncio.create_subprocess_exec(

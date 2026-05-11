@@ -361,6 +361,8 @@ class CameraFrameHub:
     async def _run_local_snapshot_stream(self, service: CameraService) -> None:
         fps = max(1.0, min(self._settings.camera_stream_fps, 8.0))
         delay = 1.0 / fps
+        await self._run_local_video_capture_stream(service, fps=fps, delay=delay)
+        return
         self._active_url = service.local_source_label()
         while True:
             async with self._lock:
@@ -417,6 +419,12 @@ class CameraFrameHub:
                     continue
                 with suppress(Exception):
                     await asyncio.to_thread(cap.set, cv2.CAP_PROP_BUFFERSIZE, 1)
+                with suppress(Exception):
+                    await asyncio.to_thread(cap.set, cv2.CAP_PROP_FRAME_WIDTH, 640)
+                with suppress(Exception):
+                    await asyncio.to_thread(cap.set, cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                with suppress(Exception):
+                    await asyncio.to_thread(cap.set, cv2.CAP_PROP_FPS, max(4.0, min(fps, 8.0)))
 
                 while True:
                     async with self._lock:
@@ -426,6 +434,9 @@ class CameraFrameHub:
                     ok, frame_data = await asyncio.to_thread(cap.read)
                     if not ok or frame_data is None:
                         raise RuntimeError("LOCAL_CAMERA_FRAME_READ_FAILED")
+                    if not service.is_usable_local_frame(frame_data):
+                        await asyncio.sleep(min(delay, 0.08))
+                        continue
 
                     frame, _headers = await asyncio.to_thread(
                         service._encode_frame_to_jpeg,  # noqa: SLF001

@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -21,6 +21,7 @@ from backend.dependencies import (
     get_camera_source_settings,
     get_fall_detection_service,
     get_fall_multimodal_review_status,
+    get_frame_analysis_worker_service,
     get_health_data_repository,
     get_pose_detection_config_service,
     get_pose_detection_service,
@@ -61,6 +62,47 @@ class PoseDetectionConfigRequest(BaseModel):
     pose_detection_pose_conf_threshold: float | None = None
     pose_detection_analysis_width: int | None = None
     pose_detection_floor_roi_rect: str | None = None
+
+
+class DetectionEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class DetectionModelsEnabledRequest(BaseModel):
+    fall_detection_enabled: bool | None = None
+    pose_detection_enabled: bool | None = None
+
+
+def _persist_env_value(key: str, value: str) -> None:
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    next_lines: list[str] = []
+    applied = False
+    for raw_line in lines:
+        if "=" not in raw_line or raw_line.lstrip().startswith("#"):
+            next_lines.append(raw_line)
+            continue
+        current_key, _sep, _current_value = raw_line.partition("=")
+        if current_key.strip().upper() == key:
+            next_lines.append(f"{key}={value}")
+            applied = True
+        else:
+            next_lines.append(raw_line)
+    if not applied:
+        next_lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _camera_detection_models_status() -> dict[str, object]:
+    fall_status = get_fall_detection_service().status()
+    fall_status["multimodal_review"] = get_fall_multimodal_review_status()
+    fall_status["resolved_target_device_mac"] = get_settings().resolved_fall_detection_target_device_mac
+    return {
+        "ok": True,
+        "fall_detection": fall_status,
+        "pose_detection": get_pose_detection_service().status(),
+        "frame_analysis": get_frame_analysis_worker_service().status(),
+    }
 
 
 @router.get("/status")
@@ -151,6 +193,39 @@ async def camera_audio_stream_status() -> dict[str, object]:
     return {"camera_id": active.camera_id, **get_camera_source_audio_hub("active").status()}
 
 
+@router.get("/detection-models/status")
+async def camera_detection_models_status() -> dict[str, object]:
+    return _camera_detection_models_status()
+
+
+@router.post("/detection-models/enabled")
+async def camera_detection_models_enabled(payload: DetectionModelsEnabledRequest) -> dict[str, object]:
+    settings = get_settings()
+    if payload.fall_detection_enabled is not None:
+        settings.fall_detection_enabled = payload.fall_detection_enabled
+        _persist_env_value(
+            "FALL_DETECTION_ENABLED",
+            "true" if payload.fall_detection_enabled else "false",
+        )
+        fall_service = get_fall_detection_service()
+        if payload.fall_detection_enabled:
+            await fall_service.start()
+        else:
+            await fall_service.stop()
+
+    if payload.pose_detection_enabled is not None:
+        get_pose_detection_config_service().update(
+            {"POSE_DETECTION_ENABLED": payload.pose_detection_enabled}
+        )
+        pose_service = get_pose_detection_service()
+        if payload.pose_detection_enabled:
+            await pose_service.start()
+        else:
+            await pose_service.stop()
+
+    return _camera_detection_models_status()
+
+
 @router.get("/fall-detection/status")
 async def camera_fall_detection_status() -> dict[str, object]:
     payload = get_fall_detection_service().status()
@@ -159,14 +234,76 @@ async def camera_fall_detection_status() -> dict[str, object]:
     return payload
 
 
+@router.post("/fall-detection/enabled")
+async def camera_fall_detection_enabled(payload: DetectionEnabledRequest) -> dict[str, object]:
+    settings = get_settings()
+    settings.fall_detection_enabled = payload.enabled
+    _persist_env_value("FALL_DETECTION_ENABLED", "true" if payload.enabled else "false")
+    service = get_fall_detection_service()
+    if payload.enabled:
+        await service.start()
+    else:
+        await service.stop()
+    status = service.status()
+    status["multimodal_review"] = get_fall_multimodal_review_status()
+    status["resolved_target_device_mac"] = settings.resolved_fall_detection_target_device_mac
+    return {"ok": True, "status": status}
+
+
 @router.get("/pose-detection/status")
 async def camera_pose_detection_status() -> dict[str, object]:
     return get_pose_detection_service().status()
 
 
+@router.post("/pose-detection/enabled")
+async def camera_pose_detection_enabled(payload: DetectionEnabledRequest) -> dict[str, object]:
+    config_service = get_pose_detection_config_service()
+    config_service.update({"POSE_DETECTION_ENABLED": payload.enabled})
+    service = get_pose_detection_service()
+    if payload.enabled:
+        await service.start()
+    else:
+        await service.stop()
+    return {"ok": True, "status": service.status()}
+
+
 @router.get("/pose-detection/latest")
 async def camera_pose_detection_latest() -> dict[str, object]:
     return get_pose_detection_service().latest() or {"status": "empty", "tracks": []}
+
+
+@router.post("/analyze-frame")
+async def camera_analyze_frame(
+    file: UploadFile = File(...),
+    session_id: str = "browser-preview",
+) -> dict[str, object]:
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp", "application/octet-stream"}:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_IMAGE_FORMAT")
+
+    blob = await file.read()
+    if len(blob) < 100:
+        raise HTTPException(status_code=400, detail="FRAME_IMAGE_REQUIRED")
+
+    try:
+        return await get_frame_analysis_worker_service().analyze_frame(
+            blob,
+            session_id=session_id,
+            run_fall=True,
+        )
+    except RuntimeError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "pose_latest": {"status": "worker_unavailable", "tracks": []},
+            "multimodal_review": get_fall_multimodal_review_status(),
+            "worker": get_frame_analysis_worker_service().status(),
+        }
+
+
+@router.get("/analyze-frame/status")
+async def camera_analyze_frame_status() -> dict[str, object]:
+    return get_frame_analysis_worker_service().status()
 
 
 @router.get("/pose-detection/config")

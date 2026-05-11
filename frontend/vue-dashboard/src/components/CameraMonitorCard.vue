@@ -24,11 +24,15 @@ import {
   type CameraPtzDirection,
   type CameraStatusResponse,
   type CameraStreamStatusResponse,
+  type AlarmRecord,
   type ExternalCameraFallDetectResponse,
   type ExternalCameraHealthResponse,
   type TargetUserRecord,
 } from "../api/client";
 import { PcmAudioPlayer, type PcmAudioPlayerState } from "../utils/pcmAudioPlayer";
+
+type CameraViewMode = "live" | "fall" | "pose";
+type FallSafetyTone = "safe" | "review" | "danger" | "offline";
 
 const status = ref<CameraStatusResponse | null>(null);
 const streamStatus = ref<CameraStreamStatusResponse | null>(null);
@@ -57,8 +61,11 @@ const audioDroppedBacklog = ref(0);
 const targetUsers = ref<TargetUserRecord[]>([]);
 const externalCameraHealth = ref<ExternalCameraHealthResponse | null>(null);
 const externalCameraResult = ref<ExternalCameraFallDetectResponse | null>(null);
+const activeAlarms = ref<AlarmRecord[]>([]);
+const cameraViewMode = ref<CameraViewMode>("live");
 const externalCameraBusy = ref(false);
 const poseBusy = ref(false);
+const acknowledgingFall = ref(false);
 const lastStatusErrorAt = ref(0);
 let statusTimer: number | undefined;
 let streamStatusTimer: number | undefined;
@@ -128,8 +135,110 @@ const poseDetectionTone = computed(() => {
 });
 
 const poseActionLabel = computed(() => {
-  if (poseBusy.value) return poseConfig.value?.enabled ? "关闭中..." : "开启中...";
-  return poseConfig.value?.enabled ? "关闭姿态检测" : "开启姿态检测";
+  if (poseBusy.value) return "姿态模式切换中...";
+  return cameraViewMode.value === "pose" ? "退出姿态模式" : "姿态检测";
+});
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function isFallAlarm(alarm: AlarmRecord) {
+  return alarm.alarm_type === "fall_detected" || alarm.alarm_type === "fall_injury_risk";
+}
+
+function fallEvent(alarm: AlarmRecord | null | undefined) {
+  return asRecord(alarm?.metadata?.event);
+}
+
+function fallReview(alarm: AlarmRecord | null | undefined) {
+  return asRecord(fallEvent(alarm)?.multimodal_review);
+}
+
+const activeFallAlarms = computed(() => activeAlarms.value.filter((alarm) => !alarm.acknowledged && isFallAlarm(alarm)));
+
+const primaryFallAlarm = computed(() => {
+  return [...activeFallAlarms.value].sort((left, right) => {
+    return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+  })[0] ?? null;
+});
+
+const fallScore = computed(() => {
+  const eventScore = numberValue(fallEvent(primaryFallAlarm.value)?.fall_score);
+  return eventScore ?? numberValue(primaryFallAlarm.value?.anomaly_probability);
+});
+
+const fallScoreLabel = computed(() => {
+  const score = fallScore.value;
+  if (score == null) return "暂无置信度";
+  const normalized = score <= 1 ? score * 100 : score;
+  return `${normalized.toFixed(0)}%`;
+});
+
+const fallSnapshotUrl = computed(() => {
+  const path = stringValue(fallEvent(primaryFallAlarm.value)?.snapshot_path);
+  return path ? api.getCameraFallSnapshotUrl(path) : "";
+});
+
+const fallRiskTitle = computed(() => {
+  const alarm = primaryFallAlarm.value;
+  if (!fallStatus.value?.enabled) return "跌倒检测未启用";
+  if (!fallStatus.value.process_running) return "跌倒检测未运行";
+  if (!alarm) return "安全看护中";
+  const judgement = stringValue(fallReview(alarm)?.judgement);
+  if (judgement === "no_fall") return "复核建议：暂未确认跌倒";
+  if (judgement === "possible_fall" || judgement === "uncertain") return "疑似跌倒，建议查看";
+  return "疑似跌倒告警";
+});
+
+const fallSafetyTone = computed<FallSafetyTone>(() => {
+  if (!fallStatus.value?.enabled || !fallStatus.value.process_running) return "offline";
+  const alarm = primaryFallAlarm.value;
+  if (!alarm) return "safe";
+  const judgement = stringValue(fallReview(alarm)?.judgement);
+  if (judgement === "no_fall") return "review";
+  if (judgement === "possible_fall" || judgement === "uncertain") return "review";
+  return "danger";
+});
+
+const fallRiskLead = computed(() => {
+  const alarm = primaryFallAlarm.value;
+  if (!fallStatus.value?.enabled) return "开启后，系统会从当前摄像头画面中持续识别跌倒风险。";
+  if (!fallStatus.value.process_running) return fallStatus.value.last_error || "检测服务暂未进入运行态。";
+  if (!alarm) {
+    const lastEventAt = fallStatus.value.last_event_at;
+    if (lastEventAt) {
+      const deltaSeconds = Math.max(0, Math.round(Date.now() / 1000 - lastEventAt));
+      return `最近检测 ${deltaSeconds} 秒前，未发现跌倒风险。`;
+    }
+    return "模型正在看护当前画面，暂无跌倒告警。";
+  }
+  const event = fallEvent(alarm);
+  const severity = stringValue(event?.severity) || "风险";
+  const state = stringValue(event?.state) || alarm.alarm_type;
+  return `${severity} · ${state} · 置信度 ${fallScoreLabel.value}`;
+});
+
+const fallRiskMeta = computed(() => {
+  const alarm = primaryFallAlarm.value;
+  if (!alarm) return fallStatus.value?.process_running ? "无活跃跌倒告警" : "等待模型运行";
+  return `告警时间 ${new Date(alarm.created_at).toLocaleTimeString("zh-CN", { hour12: false })}`;
 });
 
 const audioListenSupported = computed(() => audioStatus.value?.listen_supported === true);
@@ -286,6 +395,14 @@ async function refreshTargetUsers() {
   }
 }
 
+async function refreshAlarms() {
+  try {
+    activeAlarms.value = await api.listAlarms();
+  } catch {
+    activeAlarms.value = [];
+  }
+}
+
 async function refreshExternalCameraHealth() {
   try {
     externalCameraHealth.value = await api.getExternalCameraHealth();
@@ -311,16 +428,22 @@ async function runExternalCameraCheck() {
 }
 
 async function togglePoseDetection() {
+  if (cameraViewMode.value === "pose") {
+    setCameraViewMode("live");
+    return;
+  }
   poseBusy.value = true;
   try {
-    const nextEnabled = !(poseConfig.value?.enabled === true);
-    const result = await api.updateCameraPoseDetectionConfig({
-      pose_detection_enabled: nextEnabled,
-    });
-    poseConfig.value = result.config;
+    if (!poseConfig.value?.enabled) {
+      const result = await api.updateCameraPoseDetectionConfig({
+        pose_detection_enabled: true,
+      });
+      poseConfig.value = result.config;
+    }
     await refreshPoseStatus();
     await refreshStatus();
     await refreshStreamStatus();
+    setCameraViewMode("pose");
     emitDiagnosticsLog("togglePoseDetection");
   } catch (error) {
     errorMessage.value = formatCameraError(error instanceof Error ? error.message : "姿态检测切换失败");
@@ -328,6 +451,33 @@ async function togglePoseDetection() {
   } finally {
     poseBusy.value = false;
   }
+}
+
+async function acknowledgePrimaryFallAlarm() {
+  const alarm = primaryFallAlarm.value;
+  if (!alarm) return;
+  acknowledgingFall.value = true;
+  try {
+    await api.ackAlarm(alarm.id);
+    await refreshAlarms();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "跌倒告警确认失败";
+    lastStatusErrorAt.value = Date.now();
+  } finally {
+    acknowledgingFall.value = false;
+  }
+}
+
+function setCameraViewMode(mode: CameraViewMode) {
+  if (cameraViewMode.value === mode && autoRefresh.value) return;
+  cameraViewMode.value = mode;
+  if (!autoRefresh.value) return;
+  closeCameraTransport();
+  hasFrame.value = false;
+  clientFps.value = 0;
+  clientFpsFrames = 0;
+  clientFpsStartedAt = performance.now();
+  startPrimaryVideoTransport();
 }
 
 function ensureAudioPlayer() {
@@ -513,7 +663,12 @@ function recordClientFrame() {
 }
 
 function startCameraSocket() {
-  if (!autoRefresh.value || frameSocket?.readyState === WebSocket.OPEN || frameSocket?.readyState === WebSocket.CONNECTING) {
+  if (
+    cameraViewMode.value !== "live" ||
+    !autoRefresh.value ||
+    frameSocket?.readyState === WebSocket.OPEN ||
+    frameSocket?.readyState === WebSocket.CONNECTING
+  ) {
     return;
   }
 
@@ -558,6 +713,10 @@ function startCameraSocket() {
 }
 
 function startPrimaryVideoTransport() {
+  if (cameraViewMode.value !== "live") {
+    startMjpegFallback();
+    return;
+  }
   if (primaryStreamTransport === "websocket") {
     startCameraSocket();
     return;
@@ -566,7 +725,12 @@ function startPrimaryVideoTransport() {
 }
 
 function buildMjpegStreamUrl() {
-  const baseUrl = api.getActiveCameraStreamUrl();
+  const baseUrl =
+    cameraViewMode.value === "fall"
+      ? api.getCameraDetectionStreamUrl()
+      : cameraViewMode.value === "pose"
+        ? api.getCameraPoseStreamUrl()
+        : api.getActiveCameraStreamUrl();
   return `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}_ts=${Date.now()}`;
 }
 
@@ -704,6 +868,7 @@ onMounted(() => {
   void refreshPoseStatus();
   void refreshPoseConfig();
   void refreshTargetUsers();
+  void refreshAlarms();
   void refreshExternalCameraHealth();
   window.setInterval(clearStaleCameraError, 3000);
   statusTimer = window.setInterval(refreshStatus, 8000);
@@ -714,6 +879,7 @@ onMounted(() => {
     void refreshFallDetectionStatus();
     void refreshPoseStatus();
     void refreshPoseConfig();
+    void refreshAlarms();
     void refreshExternalCameraHealth();
   }, 3000);
   document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -784,6 +950,35 @@ onBeforeUnmount(() => {
         <Volume2 :size="15" />
         <span>{{ audioConnecting ? "音频连接中" : `实时音量 ${audioLevel.toFixed(0)}%` }}</span>
       </div>
+      <div class="camera-monitor-card__safety" :class="`is-${fallSafetyTone}`">
+        <div>
+          <span class="camera-monitor-card__safety-kicker">
+            {{ cameraViewMode === "fall" ? "跌倒检测画面" : "安全看护" }}
+          </span>
+          <strong>{{ fallRiskTitle }}</strong>
+          <p>{{ fallRiskLead }}</p>
+        </div>
+        <div class="camera-monitor-card__safety-side">
+          <span>{{ fallRiskMeta }}</span>
+          <button
+            v-if="primaryFallAlarm"
+            type="button"
+            :disabled="acknowledgingFall"
+            @click="acknowledgePrimaryFallAlarm"
+          >
+            {{ acknowledgingFall ? "确认中" : "确认已处理" }}
+          </button>
+        </div>
+      </div>
+      <a
+        v-if="fallSnapshotUrl"
+        class="camera-monitor-card__snapshot-link"
+        :href="fallSnapshotUrl"
+        target="_blank"
+        rel="noreferrer"
+      >
+        查看跌倒截图
+      </a>
     </div>
 
     <div class="camera-control-dock">
@@ -855,6 +1050,7 @@ onBeforeUnmount(() => {
           refreshAudioStatus();
           refreshAudioStreamStatus();
           refreshFallDetectionStatus();
+          refreshAlarms();
           refreshTargetUsers();
           refreshExternalCameraHealth();
         "
@@ -862,15 +1058,30 @@ onBeforeUnmount(() => {
         <RefreshCw :size="16" />
         刷新状态
       </button>
-      <button
-        type="button"
-        class="camera-action"
-        :disabled="poseBusy"
-        @click="togglePoseDetection"
-      >
-        <ShieldCheck :size="16" />
-        {{ poseActionLabel }}
-      </button>
+      <div class="camera-mode-switch" aria-label="画面模式切换">
+        <button
+          type="button"
+          :class="{ 'is-active': cameraViewMode === 'live' }"
+          @click="setCameraViewMode('live')"
+        >
+          实时画面
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': cameraViewMode === 'fall' }"
+          @click="setCameraViewMode('fall')"
+        >
+          跌倒检测
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': cameraViewMode === 'pose' }"
+          :disabled="poseBusy"
+          @click="togglePoseDetection"
+        >
+          {{ poseActionLabel }}
+        </button>
+      </div>
       <button
         type="button"
         class="camera-action"
@@ -1013,7 +1224,7 @@ onBeforeUnmount(() => {
 .camera-monitor-card__audio-mark {
   position: absolute;
   right: 14px;
-  bottom: 14px;
+  top: 14px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1024,6 +1235,109 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
   font-weight: 800;
   backdrop-filter: blur(12px);
+}
+
+.camera-monitor-card__safety {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-end;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  padding: 13px 14px;
+  color: #f8fafc;
+  background:
+    linear-gradient(135deg, rgba(15, 23, 42, 0.72), rgba(15, 23, 42, 0.42)),
+    radial-gradient(circle at 0% 0%, rgba(34, 197, 94, 0.18), transparent 35%);
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.22);
+  backdrop-filter: blur(16px);
+}
+
+.camera-monitor-card__safety.is-danger {
+  border-color: rgba(248, 113, 113, 0.4);
+  background:
+    linear-gradient(135deg, rgba(127, 29, 29, 0.82), rgba(15, 23, 42, 0.52)),
+    radial-gradient(circle at 0% 0%, rgba(248, 113, 113, 0.34), transparent 38%);
+}
+
+.camera-monitor-card__safety.is-review {
+  border-color: rgba(251, 191, 36, 0.42);
+  background:
+    linear-gradient(135deg, rgba(120, 53, 15, 0.78), rgba(15, 23, 42, 0.5)),
+    radial-gradient(circle at 0% 0%, rgba(251, 191, 36, 0.34), transparent 38%);
+}
+
+.camera-monitor-card__safety.is-offline {
+  border-color: rgba(148, 163, 184, 0.3);
+  background:
+    linear-gradient(135deg, rgba(51, 65, 85, 0.78), rgba(15, 23, 42, 0.5)),
+    radial-gradient(circle at 0% 0%, rgba(148, 163, 184, 0.2), transparent 38%);
+}
+
+.camera-monitor-card__safety-kicker {
+  display: block;
+  margin-bottom: 3px;
+  color: rgba(226, 232, 240, 0.78);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.camera-monitor-card__safety strong {
+  display: block;
+  font-size: clamp(1rem, 1.7vw, 1.28rem);
+  letter-spacing: -0.04em;
+}
+
+.camera-monitor-card__safety p {
+  max-width: 560px;
+  margin: 5px 0 0;
+  color: rgba(248, 250, 252, 0.82);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.camera-monitor-card__safety-side {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.camera-monitor-card__safety-side span {
+  color: rgba(248, 250, 252, 0.72);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.camera-monitor-card__safety-side button,
+.camera-monitor-card__snapshot-link {
+  border: 0;
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.camera-monitor-card__safety-side button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.camera-monitor-card__snapshot-link {
+  position: absolute;
+  right: 14px;
+  top: 52px;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.16);
 }
 
 .camera-control-dock {
@@ -1175,6 +1489,37 @@ onBeforeUnmount(() => {
   gap: 9px;
 }
 
+.camera-mode-switch {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: 999px;
+  padding: 4px;
+  background: rgba(241, 245, 249, 0.86);
+}
+
+.camera-mode-switch button {
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.camera-mode-switch button.is-active {
+  color: #ffffff;
+  background: #0f766e;
+  box-shadow: 0 8px 18px rgba(15, 118, 110, 0.18);
+}
+
+.camera-mode-switch button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .camera-action {
   border: 1px solid rgba(37, 99, 235, 0.16);
   border-radius: 999px;
@@ -1211,6 +1556,24 @@ onBeforeUnmount(() => {
 @media (max-width: 720px) {
   .camera-monitor-card__header {
     flex-direction: column;
+  }
+
+  .camera-monitor-card__safety {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .camera-monitor-card__safety-side {
+    justify-items: start;
+  }
+
+  .camera-mode-switch {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .camera-mode-switch button {
+    flex: 1;
   }
 
   .camera-action {

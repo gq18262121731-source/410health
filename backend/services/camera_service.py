@@ -337,7 +337,9 @@ class CameraService:
     def _capture_local_jpeg_subprocess(self) -> tuple[bytes, dict[str, str]]:
         script = r"""
 import sys
+import time
 import cv2
+import numpy as np
 
 index = int(sys.argv[1])
 cap = cv2.VideoCapture(index, cv2.CAP_ANY)
@@ -345,8 +347,21 @@ try:
     if not cap.isOpened():
         raise RuntimeError("Camera not opened")
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    ok, frame = cap.read()
-    if not ok or frame is None:
+    deadline = time.monotonic() + 2.5
+    frame = None
+    while time.monotonic() < deadline:
+        ok, candidate = cap.read()
+        if not ok or candidate is None:
+            time.sleep(0.04)
+            continue
+        gray = cv2.cvtColor(candidate, cv2.COLOR_BGR2GRAY)
+        mean = float(np.mean(gray))
+        std = float(np.std(gray))
+        if mean >= 8.0 and std >= 6.0:
+            frame = candidate
+            break
+        time.sleep(0.04)
+    if frame is None:
         raise RuntimeError("Frame read failed")
     ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 86])
     if not ok:
@@ -808,9 +823,12 @@ finally:
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     
                     # 尝试读取帧
-                    ok, frame = cap.read()
-                    if ok and frame is not None:
-                        return frame
+                    deadline = time.monotonic() + max(1.5, min(self._settings.camera_snapshot_timeout_seconds, 4.0))
+                    while time.monotonic() < deadline:
+                        ok, frame = cap.read()
+                        if ok and frame is not None and self.is_usable_local_frame(frame):
+                            return frame
+                        time.sleep(0.04)
                     
                     last_error = f"{backend_name}: Frame read failed"
                 finally:
@@ -820,6 +838,22 @@ finally:
                 continue
         
         raise RuntimeError(f"LOCAL_CAMERA_ALL_BACKENDS_FAILED: {last_error}")
+
+    @staticmethod
+    def is_usable_local_frame(frame: Any) -> bool:
+        try:
+            import cv2
+            import numpy as np
+        except ImportError:
+            return True
+
+        if frame is None:
+            return False
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            return float(np.mean(gray)) >= 8.0 and float(np.std(gray)) >= 6.0
+        except Exception:
+            return False
 
     def _encode_frame_to_jpeg(self, frame: Any) -> tuple[bytes, dict[str, str]]:
         try:

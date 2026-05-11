@@ -202,6 +202,214 @@ class CameraSetupConfig {
   }
 }
 
+class CameraDetectionRuntimeStatus {
+  final bool enabled;
+  final bool running;
+  final bool processRunning;
+  final int? pid;
+  final String? profile;
+  final String? lastError;
+  final Map<String, dynamic>? lastEvent;
+  final Map<String, dynamic>? multimodalReview;
+
+  const CameraDetectionRuntimeStatus({
+    required this.enabled,
+    required this.running,
+    required this.processRunning,
+    this.pid,
+    this.profile,
+    this.lastError,
+    this.lastEvent,
+    this.multimodalReview,
+  });
+
+  factory CameraDetectionRuntimeStatus.fromJson(Map<String, dynamic> json) {
+    return CameraDetectionRuntimeStatus(
+      enabled: json['enabled'] == true,
+      running: json['running'] == true,
+      processRunning: json['process_running'] == true,
+      pid: _toInt(json['pid']),
+      profile: json['profile']?.toString(),
+      lastError: json['last_error']?.toString(),
+      lastEvent: _toMap(json['last_event']),
+      multimodalReview: _toMap(json['multimodal_review']),
+    );
+  }
+
+  String get stateLabel {
+    if (!enabled) return '未启用';
+    if (processRunning) return '运行中';
+    if (running) return '启动中';
+    return '未运行';
+  }
+}
+
+class CameraFrameAnalysisStatus {
+  final bool enabled;
+  final bool running;
+  final int? pid;
+  final String? lastError;
+  final double? lastOkAt;
+  final int restartCount;
+  final double timeoutSeconds;
+
+  const CameraFrameAnalysisStatus({
+    required this.enabled,
+    required this.running,
+    this.pid,
+    this.lastError,
+    this.lastOkAt,
+    required this.restartCount,
+    required this.timeoutSeconds,
+  });
+
+  factory CameraFrameAnalysisStatus.fromJson(Map<String, dynamic> json) {
+    return CameraFrameAnalysisStatus(
+      enabled: json['enabled'] == true,
+      running: json['running'] == true,
+      pid: _toInt(json['pid']),
+      lastError: json['last_error']?.toString(),
+      lastOkAt: _toDouble(json['last_ok_at']),
+      restartCount: _toInt(json['restart_count']) ?? 0,
+      timeoutSeconds: _toDouble(json['timeout_seconds']) ?? 20,
+    );
+  }
+
+  String get stateLabel {
+    if (!enabled) return '接口未启用';
+    if (running) return 'worker 已启动';
+    return '等待首帧启动';
+  }
+}
+
+class PoseDetectionLatest {
+  final String? backend;
+  final String? profile;
+  final int frameWidth;
+  final int frameHeight;
+  final List<PoseTrack> tracks;
+
+  const PoseDetectionLatest({
+    this.backend,
+    this.profile,
+    required this.frameWidth,
+    required this.frameHeight,
+    required this.tracks,
+  });
+
+  factory PoseDetectionLatest.fromJson(Map<String, dynamic> json) {
+    final rawTracks = _toList(json['tracks']);
+    return PoseDetectionLatest(
+      backend: json['backend']?.toString(),
+      profile: json['profile']?.toString(),
+      frameWidth: _toInt(json['frame_width']) ?? 640,
+      frameHeight: _toInt(json['frame_height']) ?? 480,
+      tracks: rawTracks
+          .map(_toMap)
+          .whereType<Map<String, dynamic>>()
+          .map(PoseTrack.fromJson)
+          .toList(),
+    );
+  }
+
+  PoseTrack? get primaryTrack => tracks.isEmpty ? null : tracks.first;
+
+  String get postureLabel {
+    final label = primaryTrack?.stateLabel;
+    if (label == null || label.isEmpty) return '暂无目标';
+    return switch (label) {
+      'upright' => '正常站立/活动',
+      'leaning' => '弯腰/前倾',
+      'slumped' => '低位姿态',
+      'fall_like' => '疑似跌倒姿态',
+      'hand_to_chest_or_abdomen' => '手部靠近胸腹',
+      'unknown' => '姿态不明确',
+      'normal_activity' => '正常站立/活动',
+      'low_posture' => '低位姿态',
+      'floor_risk' => '地面停留风险',
+      _ => label,
+    };
+  }
+}
+
+class PoseTrack {
+  final int trackId;
+  final List<double> bbox;
+  final double poseScore;
+  final String stateLabel;
+  final double stateScore;
+  final List<PoseKeypoint> keypoints;
+  final Map<String, dynamic> features;
+
+  const PoseTrack({
+    required this.trackId,
+    required this.bbox,
+    required this.poseScore,
+    required this.stateLabel,
+    required this.stateScore,
+    required this.keypoints,
+    required this.features,
+  });
+
+  factory PoseTrack.fromJson(Map<String, dynamic> json) {
+    return PoseTrack(
+      trackId: _toInt(json['track_id']) ?? 0,
+      bbox: _toDoubleList(json['bbox']),
+      poseScore: _toDouble(json['pose_score']) ?? 0,
+      stateLabel: json['state_label']?.toString() ?? 'unknown',
+      stateScore: _toDouble(json['state_score']) ?? 0,
+      keypoints: _toList(json['keypoints'])
+          .map(PoseKeypoint.fromRaw)
+          .whereType<PoseKeypoint>()
+          .toList(),
+      features: _toMap(json['features']) ?? const <String, dynamic>{},
+    );
+  }
+
+  bool get isRisk => stateLabel == 'floor_risk' || stateLabel == 'fall_like';
+
+  bool get isWarning =>
+      stateLabel == 'low_posture' ||
+      stateLabel == 'leaning' ||
+      stateLabel == 'slumped' ||
+      stateLabel == 'hand_to_chest_or_abdomen';
+
+  String get eventLabel {
+    return switch (stateLabel) {
+      'floor_risk' => '地面停留风险',
+      'fall_like' => '疑似跌倒姿态',
+      'low_posture' || 'slumped' => '低位姿态',
+      'leaning' => '弯腰/前倾动作',
+      'hand_to_chest_or_abdomen' => '手部靠近胸腹',
+      'upright' || 'normal_activity' => '正常活动',
+      'unknown' => '人体姿态不明确',
+      _ => stateLabel,
+    };
+  }
+}
+
+class PoseKeypoint {
+  final double x;
+  final double y;
+  final double confidence;
+
+  const PoseKeypoint({
+    required this.x,
+    required this.y,
+    required this.confidence,
+  });
+
+  static PoseKeypoint? fromRaw(Object? raw) {
+    final values = _toDoubleList(raw);
+    if (values.length < 2) return null;
+    return PoseKeypoint(
+      x: values[0],
+      y: values[1],
+      confidence: values.length >= 3 ? values[2] : 1,
+    );
+  }
+}
+
 int? _toInt(Object? value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
@@ -212,4 +420,22 @@ double? _toDouble(Object? value) {
   if (value is double) return value;
   if (value is num) return value.toDouble();
   return double.tryParse(value?.toString() ?? '');
+}
+
+Map<String, dynamic>? _toMap(Object? value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) return Map<String, dynamic>.from(value);
+  return null;
+}
+
+List<dynamic> _toList(Object? value) {
+  if (value is List) return value;
+  return const <dynamic>[];
+}
+
+List<double> _toDoubleList(Object? value) {
+  return _toList(value)
+      .map(_toDouble)
+      .whereType<double>()
+      .toList(growable: false);
 }
