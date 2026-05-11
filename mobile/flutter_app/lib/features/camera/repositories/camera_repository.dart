@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../../core/network/api_client.dart';
@@ -29,6 +32,37 @@ class CameraRepository {
     final response = await _apiClient.get('camera/audio/status');
     return CameraAudioStatus.fromJson(
         Map<String, dynamic>.from(response.data as Map));
+  }
+
+  Future<CameraSetupConfig> getSetupConfig() async {
+    final response = await _apiClient.get('camera/setup/config');
+    return CameraSetupConfig.fromJson(
+        Map<String, dynamic>.from(response.data as Map));
+  }
+
+  Future<CameraSetupConfig> saveSetupConfig(CameraSetupConfig config) async {
+    final response = await _apiClient.post(
+      'camera/setup/config',
+      data: config.toJson(),
+    );
+    final payload = Map<String, dynamic>.from(response.data as Map);
+    return CameraSetupConfig.fromJson(
+        Map<String, dynamic>.from(payload['config'] as Map));
+  }
+
+  Future<Uint8List> testSetupSnapshot(CameraSetupConfig config) async {
+    final response = await _apiClient.post(
+      'camera/setup/test-snapshot',
+      data: config.toJson(),
+      options: Options(
+        responseType: ResponseType.bytes,
+        receiveTimeout: const Duration(seconds: 20),
+      ),
+    );
+    final data = response.data;
+    if (data is Uint8List) return data;
+    if (data is List<int>) return Uint8List.fromList(data);
+    throw Exception('快照数据格式异常');
   }
 
   Future<void> moveCamera(String direction,

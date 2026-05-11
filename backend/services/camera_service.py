@@ -4,6 +4,7 @@ import os
 import socket
 import subprocess
 import struct
+import sys
 import time
 import xml.etree.ElementTree as ET
 from contextlib import suppress
@@ -331,8 +332,54 @@ class CameraService:
                 pass  # 失败则继续尝试直接访问
         
         # 回退到直接访问摄像头
-        frame = self._capture_local_frame()
-        return self._encode_frame_to_jpeg(frame)
+        return self._capture_local_jpeg_subprocess()
+
+    def _capture_local_jpeg_subprocess(self) -> tuple[bytes, dict[str, str]]:
+        script = r"""
+import sys
+import cv2
+
+index = int(sys.argv[1])
+cap = cv2.VideoCapture(index, cv2.CAP_ANY)
+try:
+    if not cap.isOpened():
+        raise RuntimeError("Camera not opened")
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    ok, frame = cap.read()
+    if not ok or frame is None:
+        raise RuntimeError("Frame read failed")
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 86])
+    if not ok:
+        raise RuntimeError("JPEG encode failed")
+    height, width = frame.shape[:2]
+    print(f"WIDTH={width} HEIGHT={height}", file=sys.stderr)
+    sys.stdout.buffer.write(encoded.tobytes())
+finally:
+    cap.release()
+"""
+        timeout = max(3.0, min(float(self._settings.camera_snapshot_timeout_seconds), 12.0))
+        completed = subprocess.run(
+            [sys.executable, "-c", script, str(self._settings.camera_local_index)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+        image = completed.stdout
+        stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+        if completed.returncode != 0 or not image.startswith(b"\xff\xd8") or len(image) < 1000:
+            raise RuntimeError(f"LOCAL_CAMERA_CAPTURE_FAILED: {stderr or completed.returncode}")
+
+        headers = {
+            "Cache-Control": "no-store, max-age=0",
+            "X-Camera-Source": "local-subprocess",
+        }
+        for part in stderr.split():
+            if part.startswith("WIDTH="):
+                headers["X-Camera-Width"] = part.removeprefix("WIDTH=")
+            elif part.startswith("HEIGHT="):
+                headers["X-Camera-Height"] = part.removeprefix("HEIGHT=")
+        return image, headers
 
     def mjpeg_frames(self) -> Generator[bytes, None, None]:
         if not self.configured:
@@ -746,14 +793,10 @@ class CameraService:
             raise RuntimeError("OPENCV_NOT_INSTALLED") from exc
 
         # 尝试多种后端，解决异步环境下的OpenCV问题
-        backends = [
-            (cv2.CAP_DSHOW, "DSHOW"),
-            (cv2.CAP_MSMF, "MSMF"),  # Windows Media Foundation
-            (cv2.CAP_ANY, "ANY"),
-        ]
+        backends = self._local_camera_backends(cv2)
         
         last_error = ""
-        for backend, backend_name in backends:
+        for backend_name, backend in backends:
             try:
                 cap = cv2.VideoCapture(self._settings.camera_local_index, backend)
                 try:
@@ -861,17 +904,20 @@ class CameraService:
         else:
             candidates.extend(
                 [
-                    ("dshow", cv2_module.CAP_DSHOW),
                     ("any", cv2_module.CAP_ANY),
                     ("msmf", cv2_module.CAP_MSMF),
                 ]
             )
 
+        if preferred in {"any", "msmf", "dshow"}:
+            return candidates
+
         defaults = [
-            ("dshow", cv2_module.CAP_DSHOW),
             ("any", cv2_module.CAP_ANY),
             ("msmf", cv2_module.CAP_MSMF),
         ]
+        if preferred == "dshow":
+            defaults.append(("dshow", cv2_module.CAP_DSHOW))
         for item in defaults:
             if item not in candidates:
                 candidates.append(item)

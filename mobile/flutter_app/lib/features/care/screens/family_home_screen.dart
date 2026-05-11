@@ -566,7 +566,7 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
                       fontSize: 28,
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  SizedBox(height: 8),
                   Text(
                     '语音转文字与合成播报',
                     style: TextStyle(color: AppColors.textSub, fontSize: 20),
@@ -574,7 +574,7 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right, color: AppColors.textMuted),
+            Icon(Icons.chevron_right, color: AppColors.textMuted),
           ],
         ),
       ),
@@ -628,7 +628,7 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text(
-                    'Home camera monitor',
+                    '家庭摄像头监护',
                     style: TextStyle(
                       color: AppColors.textMain,
                       fontWeight: FontWeight.bold,
@@ -637,7 +637,7 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
                   ),
                   SizedBox(height: 8),
                   Text(
-                    'Open the live camera page for smoother relay video, PTZ control, and audio diagnostics.',
+                    '查看实时画面、云台控制、音频诊断和摄像头接入配置。',
                     style: TextStyle(
                       color: AppColors.textSub,
                       fontSize: 20,
@@ -695,7 +695,7 @@ class _FamilyHomeScreenState extends State<FamilyHomeScreen> {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.1),
+                  color: AppColors.primary.withValues(alpha: 0.1),
                   shape: BoxShape.circle,
                 ),
                 child: const Icon(

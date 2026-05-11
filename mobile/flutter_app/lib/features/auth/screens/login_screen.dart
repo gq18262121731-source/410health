@@ -45,7 +45,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   children: <Widget>[
                     const SizedBox(height: 48),
                     const Text(
-                      'AIoT Smart Care',
+                      'AIoT 智慧康养',
                       style: TextStyle(
                         color: AppColors.textMain,
                         fontSize: 48,
@@ -56,7 +56,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      'Elder monitoring system',
+                      '长者监护系统',
                       style: TextStyle(
                         color: AppColors.textSub,
                         fontSize: 20,
@@ -75,7 +75,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           border: Border.all(color: AppColors.border),
                         ),
                         child: Text(
-                          'Server: ${serverConfig.origin}',
+                          '服务器：${serverConfig.origin}',
                           style: const TextStyle(
                             color: AppColors.textSub,
                             fontSize: 13,
@@ -93,7 +93,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                       decoration: InputDecoration(
-                        hintText: 'Username',
+                        hintText: '用户名',
                         hintStyle: const TextStyle(
                             color: AppColors.textMuted, fontSize: 18),
                         filled: true,
@@ -122,7 +122,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                       decoration: InputDecoration(
-                        hintText: 'Password',
+                        hintText: '密码',
                         hintStyle: const TextStyle(
                             color: AppColors.textMuted, fontSize: 18),
                         filled: true,
@@ -146,7 +146,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       Padding(
                         padding: const EdgeInsets.only(bottom: 16),
                         child: Text(
-                          authProvider.errorMessage ?? 'Login failed',
+                          authProvider.errorMessage ?? '登录失败',
                           style: const TextStyle(
                             color: AppColors.error,
                             fontSize: 16,
@@ -183,7 +183,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               ),
                             )
                           : const Text(
-                              'Log In',
+                              '登录',
                               style: TextStyle(
                                 fontSize: 22,
                                 fontWeight: FontWeight.w900,
@@ -210,7 +210,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         elevation: 0,
                       ),
                       child: const Text(
-                        'Register',
+                        '注册',
                         style: TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.w800,
@@ -235,7 +235,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         builder: (_) => const ServerSettingsScreen()),
                   );
                 },
-                tooltip: 'Server settings',
+                tooltip: '服务器设置',
               ),
             ),
           ],

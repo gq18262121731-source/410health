@@ -40,6 +40,7 @@ from backend.repositories.wearable_repo import WearableRepository
 from backend.services.alarm_priority_queue import AlarmPriorityQueue
 from backend.services.alarm_service import AlarmService
 from backend.services.camera_audio_hub import CameraAudioHub
+from backend.services.camera_setup_config_service import CameraSetupConfigService
 from backend.services.camera_source_registry import CameraSourceRegistry
 from backend.services.camera_stream_hub import CameraDetectionFrameHub, CameraFrameHub, CameraPoseFrameHub
 from backend.services.community_insight_service import CommunityInsightService
@@ -134,6 +135,7 @@ _camera_pose_frame_hub = CameraPoseFrameHub(
 )
 _camera_audio_hub = CameraAudioHub(_settings)
 _camera_source_registry = CameraSourceRegistry(_settings)
+_camera_setup_config_service = CameraSetupConfigService(_settings, _camera_source_registry)
 _camera_source_frame_hubs: dict[str, CameraFrameHub] = {}
 _camera_source_audio_hubs: dict[str, CameraAudioHub] = {}
 _alarm_priority_queue = AlarmPriorityQueue(redis_url=_settings.redis_url)
@@ -1261,6 +1263,10 @@ def get_pose_detection_service() -> PoseDetectionService:
 
 def get_pose_detection_config_service() -> PoseDetectionConfigService:
     return _pose_detection_config_service
+
+
+def get_camera_setup_config_service() -> CameraSetupConfigService:
+    return _camera_setup_config_service
 
 
 def get_fall_multimodal_review_status() -> dict[str, object]:

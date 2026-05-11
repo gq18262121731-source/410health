@@ -13,14 +13,32 @@ class CameraProvider extends ChangeNotifier {
   CameraStatus? status;
   CameraStreamStatus? streamStatus;
   CameraAudioStatus? audioStatus;
+  CameraSetupConfig setupConfig = const CameraSetupConfig(
+    sourceMode: 'local',
+    localIndex: 0,
+    localBackend: 'any',
+    ip: '',
+    user: 'admin',
+    password: '',
+    rtspPort: 10554,
+    rtspPath: '/tcp/av0_0',
+    streamRtspPath: '/tcp/av0_1',
+    audioRtspPath: '/tcp/av0_1',
+    onvifPort: 10080,
+  );
+  Uint8List? setupSnapshotBytes;
   Uint8List? frameBytes;
   String? errorMessage;
   String? audioNotice;
+  String? setupMessage;
   String? activeDirection;
-  bool autoRefresh = true;
+  bool autoRefresh = false;
   bool isConnecting = false;
   bool audioListening = false;
   bool audioConnecting = false;
+  bool setupLoading = false;
+  bool setupTesting = false;
+  bool setupSaving = false;
   int audioLevel = 0;
 
   WebSocketChannel? _frameChannel;
@@ -46,26 +64,25 @@ class CameraProvider extends ChangeNotifier {
   bool get hasFrame => frameBytes != null;
 
   String get streamLabel {
-    if (!autoRefresh) return 'Paused';
-    if (hasFrame) return 'Live ${clientFps.toStringAsFixed(1)} fps';
-    if (isConnecting) return 'Connecting';
-    return 'No frame';
+    if (!autoRefresh) return '已暂停';
+    if (hasFrame) return '实时 ${clientFps.toStringAsFixed(1)} fps';
+    if (isConnecting) return '连接中';
+    return '暂无画面';
   }
 
-  String get endpointLabel =>
-      status?.endpoint ?? 'Waiting for backend camera config';
+  String get endpointLabel => status?.endpoint ?? '等待后端摄像头配置';
 
   String get audioLabel {
-    if (audioConnecting) return 'Connecting audio';
-    if (!audioListening) return 'Audio off';
-    if (audioLevel >= 45) return 'Audio high $audioLevel%';
-    if (audioLevel >= 12) return 'Listening $audioLevel%';
-    return 'Listening quietly';
+    if (audioConnecting) return '音频连接中';
+    if (!audioListening) return '音频关闭';
+    if (audioLevel >= 45) return '音量较高 $audioLevel%';
+    if (audioLevel >= 12) return '监听中 $audioLevel%';
+    return '低音量监听';
   }
 
   Future<void> start() async {
+    await loadSetupConfig();
     await refreshStatus();
-    _startFrameStream();
     _statusTimer?.cancel();
     _statusTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       refreshDiagnostics();
@@ -81,10 +98,65 @@ class CameraProvider extends ChangeNotifier {
         errorMessage = status!.error;
       }
     } catch (error) {
-      errorMessage =
-          _formatError(error, fallback: 'Failed to load camera status');
+      errorMessage = _formatError(error, fallback: '摄像头状态加载失败');
     }
     notifyListeners();
+  }
+
+  Future<void> loadSetupConfig() async {
+    setupLoading = true;
+    notifyListeners();
+    try {
+      setupConfig = await _repository.getSetupConfig();
+      setupMessage = null;
+    } catch (error) {
+      setupMessage = _formatError(error, fallback: '摄像头配置加载失败');
+    } finally {
+      setupLoading = false;
+      notifyListeners();
+    }
+  }
+
+  void updateSetupConfig(CameraSetupConfig nextConfig) {
+    setupConfig = nextConfig;
+    setupMessage = null;
+    notifyListeners();
+  }
+
+  Future<void> testSetupSnapshot() async {
+    setupTesting = true;
+    setupMessage = null;
+    setupSnapshotBytes = null;
+    notifyListeners();
+    try {
+      setupSnapshotBytes = await _repository.testSetupSnapshot(setupConfig);
+      setupMessage = '测试快照成功';
+    } catch (error) {
+      setupMessage = _formatError(error, fallback: '测试快照失败');
+    } finally {
+      setupTesting = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> saveSetupConfig() async {
+    setupSaving = true;
+    setupMessage = null;
+    notifyListeners();
+    try {
+      setupConfig = await _repository.saveSetupConfig(setupConfig);
+      setupMessage = '摄像头配置已保存';
+      await refreshDiagnostics();
+      if (autoRefresh) {
+        _closeFrameStream(clearFrame: true);
+        _startFrameStream();
+      }
+    } catch (error) {
+      setupMessage = _formatError(error, fallback: '摄像头配置保存失败');
+    } finally {
+      setupSaving = false;
+      notifyListeners();
+    }
   }
 
   Future<void> refreshDiagnostics() async {
@@ -120,7 +192,7 @@ class CameraProvider extends ChangeNotifier {
     try {
       await _repository.moveCamera(direction);
     } catch (error) {
-      errorMessage = _formatError(error, fallback: 'PTZ command failed');
+      errorMessage = _formatError(error, fallback: '云台控制失败');
       activeDirection = null;
       notifyListeners();
     }
@@ -132,14 +204,14 @@ class CameraProvider extends ChangeNotifier {
     try {
       await _repository.moveCamera('stop');
     } catch (error) {
-      errorMessage = _formatError(error, fallback: 'Failed to stop PTZ');
+      errorMessage = _formatError(error, fallback: '云台停止失败');
       notifyListeners();
     }
   }
 
   Future<void> toggleAudioListen() async {
     if (audioListening || audioConnecting) {
-      await stopAudioListen(notice: 'Audio listen stopped.');
+      await stopAudioListen(notice: '已停止音频监听');
       return;
     }
     await startAudioListen();
@@ -147,19 +219,17 @@ class CameraProvider extends ChangeNotifier {
 
   Future<void> startAudioListen() async {
     audioConnecting = true;
-    audioNotice = 'Connecting to camera ambient audio...';
+    audioNotice = '正在连接摄像头环境音...';
     notifyListeners();
 
     try {
       final latestStatus = await _repository.getAudioStatus();
       audioStatus = latestStatus;
       if (!latestStatus.listenSupported) {
-        throw Exception(latestStatus.error ??
-            'This camera does not expose a listenable audio track.');
+        throw Exception(latestStatus.error ?? '当前摄像头没有可监听的音频轨道。');
       }
       if (!_audioPlayer.isSupported) {
-        throw Exception(_audioPlayer.unsupportedReason ??
-            'Audio playback is unavailable on this platform.');
+        throw Exception(_audioPlayer.unsupportedReason ?? '当前平台不支持音频播放。');
       }
 
       await _audioPlayer.start(sampleRate: latestStatus.sampleRate ?? 8000);
@@ -167,12 +237,12 @@ class CameraProvider extends ChangeNotifier {
       _audioSubscription = _audioChannel!.stream.listen(
         _handleAudioFrame,
         onError: (Object error) {
-          audioNotice = _formatError(error, fallback: 'Audio listen failed');
+          audioNotice = _formatError(error, fallback: '音频监听失败');
           stopAudioListen();
         },
         onDone: () {
           if (audioListening || audioConnecting) {
-            audioNotice = 'Audio listen connection closed.';
+            audioNotice = '音频监听连接已关闭。';
           }
           stopAudioListen();
         },
@@ -182,11 +252,10 @@ class CameraProvider extends ChangeNotifier {
       audioConnecting = false;
       final codec = latestStatus.audioCodec ?? 'PCM';
       final rate = latestStatus.sampleRate ?? 8000;
-      audioNotice = 'Audio listen active: $codec / ${rate}Hz';
+      audioNotice = '音频监听中：$codec / ${rate}Hz';
       notifyListeners();
     } catch (error) {
-      audioNotice =
-          _formatError(error, fallback: 'Failed to start audio listen');
+      audioNotice = _formatError(error, fallback: '音频监听启动失败');
       await stopAudioListen();
       notifyListeners();
     }
@@ -220,14 +289,13 @@ class CameraProvider extends ChangeNotifier {
       _frameSubscription = _frameChannel!.stream.listen(
         _handleFrame,
         onError: (Object error) {
-          errorMessage =
-              _formatError(error, fallback: 'Video connection failed');
+          errorMessage = _formatError(error, fallback: '视频连接失败');
           _scheduleReconnect();
         },
         onDone: _scheduleReconnect,
       );
     } catch (error) {
-      errorMessage = _formatError(error, fallback: 'Video connection failed');
+      errorMessage = _formatError(error, fallback: '视频连接失败');
       _scheduleReconnect();
     }
   }

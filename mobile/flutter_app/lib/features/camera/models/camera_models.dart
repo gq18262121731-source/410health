@@ -33,13 +33,14 @@ class CameraStatus {
   }
 
   String get label {
-    if (!configured) return 'Not configured';
-    return online ? 'Online' : 'Offline';
+    if (!configured) return '未配置';
+    return online ? '在线' : '离线';
   }
 
   String get endpoint {
-    if (ip == null || port == null || path == null)
-      return 'Waiting for backend camera config';
+    if (ip == null || port == null || path == null) {
+      return '等待后端摄像头配置';
+    }
     return '$ip:$port$path';
   }
 }
@@ -107,8 +108,97 @@ class CameraAudioStatus {
   }
 
   String get listenLabel {
-    if (!configured) return 'Not configured';
-    return listenSupported ? 'Listen available' : 'Listen unavailable';
+    if (!configured) return '未配置';
+    return listenSupported ? '可监听' : '不可监听';
+  }
+}
+
+class CameraSetupConfig {
+  final String sourceMode;
+  final int localIndex;
+  final String localBackend;
+  final String ip;
+  final String user;
+  final String password;
+  final int rtspPort;
+  final String rtspPath;
+  final String streamRtspPath;
+  final String audioRtspPath;
+  final int onvifPort;
+
+  const CameraSetupConfig({
+    required this.sourceMode,
+    required this.localIndex,
+    required this.localBackend,
+    required this.ip,
+    required this.user,
+    required this.password,
+    required this.rtspPort,
+    required this.rtspPath,
+    required this.streamRtspPath,
+    required this.audioRtspPath,
+    required this.onvifPort,
+  });
+
+  factory CameraSetupConfig.fromJson(Map<String, dynamic> json) {
+    return CameraSetupConfig(
+      sourceMode: json['camera_source_mode']?.toString() ?? 'local',
+      localIndex: _toInt(json['camera_local_index']) ?? 0,
+      localBackend: json['camera_local_backend']?.toString() ?? 'any',
+      ip: json['camera_ip']?.toString() ?? '',
+      user: json['camera_user']?.toString() ?? 'admin',
+      password: json['camera_password']?.toString() ?? '',
+      rtspPort: _toInt(json['camera_rtsp_port']) ?? 10554,
+      rtspPath: json['camera_rtsp_path']?.toString() ?? '/tcp/av0_0',
+      streamRtspPath:
+          json['camera_stream_rtsp_path']?.toString() ?? '/tcp/av0_1',
+      audioRtspPath: json['camera_audio_rtsp_path']?.toString() ?? '/tcp/av0_1',
+      onvifPort: _toInt(json['camera_onvif_port']) ?? 10080,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'camera_source_mode': sourceMode,
+      'camera_local_index': localIndex,
+      'camera_local_backend': localBackend,
+      'camera_ip': ip,
+      'camera_user': user,
+      'camera_password': password,
+      'camera_rtsp_port': rtspPort,
+      'camera_rtsp_path': rtspPath,
+      'camera_stream_rtsp_path': streamRtspPath,
+      'camera_audio_rtsp_path': audioRtspPath,
+      'camera_onvif_port': onvifPort,
+    };
+  }
+
+  CameraSetupConfig copyWith({
+    String? sourceMode,
+    int? localIndex,
+    String? localBackend,
+    String? ip,
+    String? user,
+    String? password,
+    int? rtspPort,
+    String? rtspPath,
+    String? streamRtspPath,
+    String? audioRtspPath,
+    int? onvifPort,
+  }) {
+    return CameraSetupConfig(
+      sourceMode: sourceMode ?? this.sourceMode,
+      localIndex: localIndex ?? this.localIndex,
+      localBackend: localBackend ?? this.localBackend,
+      ip: ip ?? this.ip,
+      user: user ?? this.user,
+      password: password ?? this.password,
+      rtspPort: rtspPort ?? this.rtspPort,
+      rtspPath: rtspPath ?? this.rtspPath,
+      streamRtspPath: streamRtspPath ?? this.streamRtspPath,
+      audioRtspPath: audioRtspPath ?? this.audioRtspPath,
+      onvifPort: onvifPort ?? this.onvifPort,
+    );
   }
 }
 

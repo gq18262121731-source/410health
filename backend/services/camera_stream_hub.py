@@ -391,6 +391,65 @@ class CameraFrameHub:
             await self._broadcast_frame(frame)
             await asyncio.sleep(delay)
 
+    async def _run_local_video_capture_stream(
+        self,
+        service: CameraService,
+        *,
+        fps: float,
+        delay: float,
+    ) -> None:
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError("OPENCV_NOT_INSTALLED") from exc
+
+        last_error = ""
+        for _name, backend in service._local_camera_backends(cv2):  # noqa: SLF001
+            cap = await asyncio.to_thread(
+                cv2.VideoCapture,
+                self._settings.camera_local_index,
+                backend,
+            )
+            try:
+                opened = await asyncio.to_thread(cap.isOpened)
+                if not opened:
+                    last_error = "Camera not opened"
+                    continue
+                with suppress(Exception):
+                    await asyncio.to_thread(cap.set, cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                while True:
+                    async with self._lock:
+                        if not self._has_consumers():
+                            return
+
+                    ok, frame_data = await asyncio.to_thread(cap.read)
+                    if not ok or frame_data is None:
+                        raise RuntimeError("LOCAL_CAMERA_FRAME_READ_FAILED")
+
+                    frame, _headers = await asyncio.to_thread(
+                        service._encode_frame_to_jpeg,  # noqa: SLF001
+                        frame_data,
+                    )
+                    frame = self._decorate_frame(frame)
+                    self._latest_frame = frame
+                    self._latest_frame_at = time.time()
+                    self._latest_frame_size = len(frame)
+                    self._last_error = None
+                    self._frame_event.set()
+                    self._record_frame()
+                    await self._broadcast_frame(frame)
+                    await asyncio.sleep(delay)
+            except Exception as exc:
+                last_error = f"{exc.__class__.__name__}: {exc}"
+            finally:
+                with suppress(Exception):
+                    await asyncio.to_thread(cap.release)
+
+        raise RuntimeError(
+            f"LOCAL_CAMERA_STREAM_FAILED: {last_error or 'no backend opened'}"
+        )
+
     def _record_frame(self) -> None:
         self._frames_total += 1
         self._fps_window_frames += 1

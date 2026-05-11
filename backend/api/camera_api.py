@@ -14,6 +14,7 @@ from backend.dependencies import (
     get_alarm_service,
     get_camera_detection_frame_hub,
     get_camera_pose_frame_hub,
+    get_camera_setup_config_service,
     get_camera_source_audio_hub,
     get_camera_source_frame_hub,
     get_camera_source_registry,
@@ -25,6 +26,7 @@ from backend.dependencies import (
     get_pose_detection_service,
     get_websocket_manager,
     ingest_fall_detection_event,
+    shutdown_camera_source_hubs,
 )
 from backend.models.alarm_model import AlarmLayer, AlarmPriority, AlarmRecord, AlarmType
 from backend.services.camera_service import CameraService
@@ -36,6 +38,20 @@ router = APIRouter(prefix="/camera", tags=["camera"])
 class CameraPtzRequest(BaseModel):
     direction: str
     mode: str = "pulse"
+
+
+class CameraSetupConfigRequest(BaseModel):
+    camera_source_mode: str | None = None
+    camera_local_index: int | None = None
+    camera_local_backend: str | None = None
+    camera_ip: str | None = None
+    camera_user: str | None = None
+    camera_password: str | None = None
+    camera_rtsp_port: int | None = None
+    camera_rtsp_path: str | None = None
+    camera_stream_rtsp_path: str | None = None
+    camera_audio_rtsp_path: str | None = None
+    camera_onvif_port: int | None = None
 
 
 class PoseDetectionConfigRequest(BaseModel):
@@ -71,6 +87,34 @@ async def camera_status() -> dict[str, object]:
 async def camera_stream_status() -> dict[str, object]:
     active = get_camera_source_registry().active_source()
     return {"camera_id": active.camera_id, **get_camera_source_frame_hub("active").status()}
+
+
+@router.get("/setup/config")
+async def camera_setup_config() -> dict[str, object]:
+    return get_camera_setup_config_service().current()
+
+
+@router.post("/setup/config")
+async def camera_setup_config_update(payload: CameraSetupConfigRequest) -> dict[str, object]:
+    config_service = get_camera_setup_config_service()
+    current = config_service.update(payload.model_dump(exclude_none=True))
+    await shutdown_camera_source_hubs()
+    return {"ok": True, "config": current}
+
+
+@router.post("/setup/test-snapshot")
+async def camera_setup_test_snapshot(payload: CameraSetupConfigRequest) -> Response:
+    config_service = get_camera_setup_config_service()
+    settings = config_service.temporary_settings(payload.model_dump(exclude_none=True))
+    try:
+        image_bytes, headers = await asyncio.to_thread(CameraService(settings).capture_jpeg)
+    except RuntimeError as exc:
+        code = str(exc)
+        status_code = 503
+        if code == "CAMERA_NOT_CONFIGURED":
+            status_code = 400
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    return Response(content=image_bytes, media_type="image/jpeg", headers=headers)
 
 
 @router.get("/audio/status")
