@@ -1,0 +1,2 @@
+mobile/flutter_app/build/app/outputs/flutter-apk/*.apk filter=lfs diff=lfs merge=lfs -text
+摄像头说明书/*.rar filter=lfs diff=lfs merge=lfs -text

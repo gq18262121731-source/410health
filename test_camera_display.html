@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>摄像头视频测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .video-box {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .video-box h2 {
+            margin-top: 0;
+            color: #555;
+            font-size: 18px;
+        }
+        img {
+            width: 100%;
+            height: auto;
+            border-radius: 4px;
+            background: #000;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .status-item {
+            margin: 5px 0;
+        }
+        .status-label {
+            font-weight: bold;
+            color: #666;
+        }
+        .success {
+            color: #28a745;
+        }
+        .error {
+            color: #dc3545;
+        }
+        .info {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎥 摄像头视频流测试</h1>
+    
+    <div class="info">
+        <strong>测试说明：</strong>
+        <ul>
+            <li>左侧：独立摄像头服务 (端口 8001) - 直接访问本地摄像头</li>
+            <li>右侧：主后端服务 (端口 8000) - 通过主系统访问摄像头</li>
+            <li>两个视频流应该都能正常显示</li>
+        </ul>
+    </div>
+
+    <div class="container">
+        <!-- 独立摄像头服务 -->
+        <div class="video-box">
+            <h2>📹 独立摄像头服务 (8001)</h2>
+            <img id="standalone-stream" src="http://localhost:8001/stream.mjpg" alt="独立摄像头流">
+            <div class="status">
+                <div class="status-item">
+                    <span class="status-label">状态:</span>
+                    <span id="standalone-status" class="success">加载中...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">URL:</span>
+                    <span>http://localhost:8001/stream.mjpg</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主后端服务 -->
+        <div class="video-box">
+            <h2>🏥 主后端服务 (8000)</h2>
+            <img id="main-stream" src="http://localhost:8000/api/v1/camera/stream.mjpg" alt="主后端摄像头流">
+            <div class="status">
+                <div class="status-item">
+                    <span class="status-label">状态:</span>
+                    <span id="main-status" class="success">加载中...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">URL:</span>
+                    <span>http://localhost:8000/api/v1/camera/stream.mjpg</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 监控独立服务流状态
+        const standaloneImg = document.getElementById('standalone-stream');
+        const standaloneStatus = document.getElementById('standalone-status');
+        
+        standaloneImg.onload = function() {
+            standaloneStatus.textContent = '✅ 正常运行';
+            standaloneStatus.className = 'success';
+        };
+        
+        standaloneImg.onerror = function() {
+            standaloneStatus.textContent = '❌ 连接失败';
+            standaloneStatus.className = 'error';
+        };
+
+        // 监控主后端流状态
+        const mainImg = document.getElementById('main-stream');
+        const mainStatus = document.getElementById('main-status');
+        
+        mainImg.onload = function() {
+            mainStatus.textContent = '✅ 正常运行';
+            mainStatus.className = 'success';
+        };
+        
+        mainImg.onerror = function() {
+            mainStatus.textContent = '❌ 连接失败';
+            mainStatus.className = 'error';
+        };
+
+        // 定期检查流状态
+        setInterval(async () => {
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/camera/stream-status');
+                const data = await response.json();
+                console.log('Stream status:', data);
+            } catch (error) {
+                console.error('Failed to fetch stream status:', error);
+            }
+        }, 5000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+observation:
+  post_fall_observe_seconds: 180.0
+  min_recovery_watch_seconds: 24.0
+  short_recovery_seconds: 6.0
+  delayed_recovery_seconds: 18.0
+  difficult_recovery_seconds: 45.0
+  emergency_down_seconds: 90.0
+  emergency_immobile_seconds: 60.0
+
+mobility:
+  low_speed: 0.016
+  very_low_speed: 0.007
+  unstable_sway: 0.04
+  severe_sway: 0.07
+  limp_asymmetry: 0.35
+  severe_limp_asymmetry: 0.55
+  limp_min_motion: 0.006
+  abnormal_score_i2: 0.38
+  abnormal_score_i3: 0.58
+  abnormal_score_i4: 0.78
