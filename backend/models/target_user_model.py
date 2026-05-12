@@ -35,5 +35,6 @@ class TargetUserMatchResult(BaseModel):
     display_name: str | None = None
     face_score: float = 0.0
     body_score: float = 0.0
+    body_appearance_score: float = 0.0
     fused_score: float = 0.0
     decision: Literal["target", "non_target", "unknown"] = "unknown"

@@ -46,6 +46,7 @@ from backend.dependencies import (
     get_pose_detection_service,
     get_parser,
     get_settings_dependency,
+    get_target_user_fall_service,
     get_websocket_manager,
     ingest_sample,
     publish_next_demo_overlay_sample,
@@ -92,6 +93,15 @@ async def _start_pose_detection_after_startup() -> None:
     await get_pose_detection_service().start()
 
 
+async def _warmup_target_user_vision_after_startup() -> None:
+    await asyncio.sleep(2.0)
+    try:
+        result = await asyncio.to_thread(get_target_user_fall_service().warmup, speed_mode="low_latency")
+        logger.info("Target-user realtime vision warmup finished: %s", result)
+    except Exception:
+        logger.exception("Target-user realtime vision warmup failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -111,8 +121,12 @@ async def lifespan(app: FastAPI):
     if camera_stream_keep_warm and uses_backend_camera_stream:
         await get_camera_frame_hub().start_keep_warm()
     if uses_backend_camera_stream:
-        tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
-        tasks.append(asyncio.create_task(_start_pose_detection_after_startup()))
+        if bool(getattr(settings, "fall_detection_enabled", False)):
+            tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
+        if bool(getattr(settings, "pose_detection_enabled", False)):
+            tasks.append(asyncio.create_task(_start_pose_detection_after_startup()))
+    if bool(getattr(settings, "target_user_vision_warmup_enabled", False)):
+        tasks.append(asyncio.create_task(_warmup_target_user_vision_after_startup()))
     app.state.background_tasks = tasks
     try:
         yield

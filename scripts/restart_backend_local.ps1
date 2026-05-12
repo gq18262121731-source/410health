@@ -9,11 +9,11 @@ foreach ($process in $processes) {
 
 Start-Sleep -Seconds 2
 
-$python = "C:\Users\13010\anaconda3\envs\helth\python.exe"
+$python = "C:\Users\YANG\.conda\envs\helth\python.exe"
 Start-Process `
     -FilePath $python `
     -ArgumentList @("-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "8000") `
-    -WorkingDirectory "D:\ai_helth-main" `
+    -WorkingDirectory "D:\Program\health(5-12)" `
     -WindowStyle Hidden
 
 Start-Sleep -Seconds 8

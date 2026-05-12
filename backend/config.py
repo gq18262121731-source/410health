@@ -160,6 +160,7 @@ class Settings(BaseSettings):
     camera_stream_width: int = 0
     camera_stream_send_timeout_seconds: float = 0.35
     camera_stream_keep_warm: bool = True
+    target_user_vision_warmup_enabled: bool = False
     camera_ptz_move_seconds: float = 0.35
     camera_ptz_speed: float = 0.45
     camera1_name: str = "camera1"

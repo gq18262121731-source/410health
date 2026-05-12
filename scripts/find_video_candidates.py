@@ -83,9 +83,10 @@ def iter_video_files(root: Path) -> list[VideoCandidate]:
 
 def main() -> int:
     args = parse_args()
+    project_root = Path(__file__).resolve().parents[1]
     roots = [Path(item).expanduser().resolve() for item in args.root] or [
-        Path(r"D:\health1"),
-        Path(r"D:\Program\model\fall_detection"),
+        project_root,
+        project_root / "fall_detection_model_bundle",
         Path.home() / "Videos",
         Path.home() / "Downloads",
         Path.home() / "Desktop",

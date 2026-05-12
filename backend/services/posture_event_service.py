@@ -63,6 +63,7 @@ class PostureEventService:
             level = "warning"
             reasons.append("HAND_NEAR_CHEST_OR_ABDOMEN")
 
+        # slow-fall/slump trend: torso angle grows high over several recent windows
         valid_angles = [float(item["angle"]) for item in recent if item.get("angle") is not None]
         if len(valid_angles) >= 5:
             avg_angle = sum(valid_angles[-5:]) / min(5, len(valid_angles))
@@ -72,6 +73,7 @@ class PostureEventService:
                 confidence = max(confidence, min(0.88, avg_angle / 90.0))
                 reasons.append("SUSTAINED_TORSO_ANGLE")
 
+        # Stillness uses actual target anchor movement, not only repeated labels.
         still_window = list(history)[-14:]
         anchor_points = [
             item

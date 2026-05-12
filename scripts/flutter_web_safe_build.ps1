@@ -1,6 +1,6 @@
 param(
     [string]$FlutterPath = "D:\tools\flutter\bin\flutter.bat",
-    [string]$AppDir = "D:\ai_helth-main\mobile\flutter_app",
+    [string]$AppDir = "D:\Program\health(5-12)\mobile\flutter_app",
     [int]$TimeoutSeconds = 240,
     [switch]$KillExisting,
     [switch]$CleanFlutterLock,
@@ -121,7 +121,7 @@ if ($ServeAfterBuild) {
     Write-Host "Starting static preview on http://127.0.0.1:$ServePort/"
     $serveArgs = @("-m", "http.server", "$ServePort", "--bind", "127.0.0.1")
     Start-Process `
-        -FilePath "C:\Users\13010\anaconda3\envs\helth\python.exe" `
+        -FilePath "C:\Users\YANG\.conda\envs\helth\python.exe" `
         -ArgumentList $serveArgs `
         -WorkingDirectory (Join-Path $AppDir "build\web") `
         -WindowStyle Hidden `

@@ -11,6 +11,7 @@ import DebugPage from "./views/DebugPage.vue";
 import FamilyPage from "./views/FamilyPage.vue";
 import LoginPage from "./views/LoginPage.vue";
 import MemberDevicePage from "./views/MemberDevicePage.vue";
+import ModelFinetunePage from "./views/ModelFinetunePage.vue";
 import TargetUserManagementPage from "./views/TargetUserManagementPage.vue";
 
 const {
@@ -139,6 +140,11 @@ onUnmounted(() => {
     <TargetUserManagementPage
       v-else-if="activePage === 'target-users'"
       :session-user="sessionUser"
+    />
+
+    <ModelFinetunePage
+      v-else-if="activePage === 'model-tuning'"
+      :refresh-key="routeToNonce"
     />
 
     <MemberDevicePage

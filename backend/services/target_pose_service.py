@@ -42,15 +42,14 @@ POSE_POINT_NAMES = [
 class TargetPoseService:
     """Pose estimation on a target-only ROI."""
 
-    def __init__(self, *, model_root: Path, model_path: str | Path | None = None) -> None:
+    def __init__(self, *, model_root: Path) -> None:
         self._lock = RLock()
         self._loaded = False
         self._load_error: str | None = None
         self._model: YOLO | None = None
         self._device: str | int = "cpu"
         self._half = False
-        raw_model_path = Path(model_path) if model_path else model_root / "yolo11n-pose.pt"
-        self._pose_path = raw_model_path if raw_model_path.is_absolute() else model_root / raw_model_path
+        self._pose_path = model_root / "yolo11n-pose.pt"
         self._session_states: dict[str, dict[str, Any]] = {}
         self._max_state_age_ms = 1600
 
@@ -112,10 +111,10 @@ class TargetPoseService:
                 return self._empty_payload("POSE_NOT_FOUND", started)
 
             xy = keypoints.xy.detach().cpu().numpy()[0]
-            kp_conf = keypoints.conf.detach().cpu().numpy()[0] if keypoints.conf is not None else np.zeros((xy.shape[0],), dtype=np.float32)
+            conf = keypoints.conf.detach().cpu().numpy()[0] if keypoints.conf is not None else np.zeros((xy.shape[0],), dtype=np.float32)
 
             points = []
-            for idx, ((x, y), score) in enumerate(zip(xy, kp_conf)):
+            for idx, ((x, y), score) in enumerate(zip(xy, conf)):
                 points.append(
                     {
                         "index": idx,
