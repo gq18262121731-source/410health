@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -70,6 +71,8 @@ class _VideoPanelState extends State<_VideoPanel> {
   String? _localPreviewError;
   LocalCameraPreviewController? _localPreviewController;
   Timer? _analysisTimer;
+  bool _capturingFrame = false;
+  bool _didCaptureInitialFrame = false;
 
   @override
   void dispose() {
@@ -77,27 +80,53 @@ class _VideoPanelState extends State<_VideoPanel> {
     super.dispose();
   }
 
-  void _syncAnalysisTimer(CameraProvider provider, bool useLocalPreview) {
-    final shouldRun = useLocalPreview && provider.autoRefresh && _localPreviewReady;
+  void _syncAnalysisTimer({
+    required bool autoRefresh,
+    required bool useLocalPreview,
+  }) {
+    final shouldRun = useLocalPreview && autoRefresh && _localPreviewReady;
     if (!shouldRun) {
       _analysisTimer?.cancel();
       _analysisTimer = null;
+      _didCaptureInitialFrame = false;
       return;
     }
+    if (!_didCaptureInitialFrame) {
+      _didCaptureInitialFrame = true;
+      _captureFrameForAnalysis();
+    }
     if (_analysisTimer != null) return;
-    _analysisTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+    _analysisTimer = Timer.periodic(
+      const Duration(milliseconds: 900),
+      (_) => _captureFrameForAnalysis(),
+    );
+  }
+
+  Future<void> _captureFrameForAnalysis() async {
+    if (_capturingFrame || !mounted) return;
+    _capturingFrame = true;
+    try {
       final bytes = await _localPreviewController?.captureFrame();
       if (bytes == null || !mounted) return;
       await context.read<CameraProvider>().analyzeBrowserFrame(bytes);
-    });
+    } finally {
+      _capturingFrame = false;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final provider = context.watch<CameraProvider>();
-    final frame = provider.frameBytes;
-    final useLocalPreview = provider.setupConfig.sourceMode == 'local';
-    _syncAnalysisTimer(provider, useLocalPreview);
+    final provider = context.read<CameraProvider>();
+    final useLocalPreview = context.select<CameraProvider, bool>(
+      (provider) => provider.setupConfig.sourceMode == 'local',
+    );
+    final autoRefresh = context.select<CameraProvider, bool>(
+      (provider) => provider.autoRefresh,
+    );
+    final frame = context.select<CameraProvider, Uint8List?>(
+      (provider) => provider.frameBytes,
+    );
+    _syncAnalysisTimer(autoRefresh: autoRefresh, useLocalPreview: useLocalPreview);
 
     return Container(
       decoration: BoxDecoration(
@@ -169,18 +198,7 @@ class _VideoPanelState extends State<_VideoPanel> {
                       isOnline: provider.status?.online == true,
                     ),
                   ),
-                  if (provider.poseLatest?.primaryTrack != null)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: CustomPaint(
-                          painter: _PoseSkeletonPainter(
-                            track: provider.poseLatest!.primaryTrack!,
-                            frameWidth: provider.poseLatest!.frameWidth,
-                            frameHeight: provider.poseLatest!.frameHeight,
-                          ),
-                        ),
-                      ),
-                    ),
+                  const _PoseSkeletonOverlay(),
                   if (provider.audioListening)
                     Positioned(
                       left: 12,
@@ -1186,6 +1204,34 @@ class _PoseSkeletonPainter extends CustomPainter {
     return oldDelegate.track != track ||
         oldDelegate.frameWidth != frameWidth ||
         oldDelegate.frameHeight != frameHeight;
+  }
+}
+
+class _PoseSkeletonOverlay extends StatelessWidget {
+  const _PoseSkeletonOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    final poseLatest = context.select<CameraProvider, PoseDetectionLatest?>(
+      (provider) => provider.poseLatest,
+    );
+    final primaryTrack = poseLatest?.primaryTrack;
+    if (poseLatest == null || primaryTrack == null) {
+      return const SizedBox.shrink();
+    }
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: RepaintBoundary(
+          child: CustomPaint(
+            painter: _PoseSkeletonPainter(
+              track: primaryTrack,
+              frameWidth: poseLatest.frameWidth,
+              frameHeight: poseLatest.frameHeight,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

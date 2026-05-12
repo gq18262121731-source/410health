@@ -406,16 +406,20 @@ class CameraFrameHub:
             raise RuntimeError("OPENCV_NOT_INSTALLED") from exc
 
         last_error = ""
-        for _name, backend in service._local_camera_backends(cv2):  # noqa: SLF001
-            cap = await asyncio.to_thread(
-                cv2.VideoCapture,
-                self._settings.camera_local_index,
-                backend,
-            )
+        for backend_name, backend in service._local_camera_backends(cv2):  # noqa: SLF001
+            try:
+                cap = await asyncio.to_thread(
+                    cv2.VideoCapture,
+                    self._settings.camera_local_index,
+                    backend,
+                )
+            except Exception as exc:
+                last_error = f"{backend_name}: {exc.__class__.__name__}: {exc}"
+                continue
             try:
                 opened = await asyncio.to_thread(cap.isOpened)
                 if not opened:
-                    last_error = "Camera not opened"
+                    last_error = f"{backend_name}: Camera not opened"
                     continue
                 with suppress(Exception):
                     await asyncio.to_thread(cap.set, cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -452,7 +456,7 @@ class CameraFrameHub:
                     await self._broadcast_frame(frame)
                     await asyncio.sleep(delay)
             except Exception as exc:
-                last_error = f"{exc.__class__.__name__}: {exc}"
+                last_error = f"{backend_name}: {exc.__class__.__name__}: {exc}"
             finally:
                 with suppress(Exception):
                     await asyncio.to_thread(cap.release)

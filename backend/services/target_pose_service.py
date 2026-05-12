@@ -42,14 +42,15 @@ POSE_POINT_NAMES = [
 class TargetPoseService:
     """Pose estimation on a target-only ROI."""
 
-    def __init__(self, *, model_root: Path) -> None:
+    def __init__(self, *, model_root: Path, model_path: str | Path | None = None) -> None:
         self._lock = RLock()
         self._loaded = False
         self._load_error: str | None = None
         self._model: YOLO | None = None
         self._device: str | int = "cpu"
         self._half = False
-        self._pose_path = model_root / "yolo11n-pose.pt"
+        raw_model_path = Path(model_path) if model_path else model_root / "yolo11n-pose.pt"
+        self._pose_path = raw_model_path if raw_model_path.is_absolute() else model_root / raw_model_path
         self._session_states: dict[str, dict[str, Any]] = {}
         self._max_state_age_ms = 1600
 

@@ -44,10 +44,15 @@ class CameraProvider extends ChangeNotifier {
   bool setupTesting = false;
   bool setupSaving = false;
   bool aiAnalysisRunning = false;
+  bool singleFramePoseEnabled = true;
+  bool singleFrameFallEnabled = true;
   bool fallDetectionUpdating = false;
   bool poseDetectionUpdating = false;
   DateTime? lastAiAnalysisAt;
   String? lastAiAnalysisError;
+  DateTime? _lastAnalysisStartedAt;
+  DateTime? _lastFallAnalysisStartedAt;
+  DateTime? _lastWorkerStatusRefreshAt;
   int audioLevel = 0;
 
   WebSocketChannel? _frameChannel;
@@ -57,7 +62,8 @@ class CameraProvider extends ChangeNotifier {
   StreamSubscription<double>? _audioLevelSubscription;
   Timer? _statusTimer;
   Timer? _reconnectTimer;
-  bool _analysisInFlight = false;
+  bool _poseAnalysisInFlight = false;
+  bool _fallAnalysisInFlight = false;
   int _fpsFrames = 0;
   DateTime _fpsStartedAt = DateTime.now();
   double clientFps = 0;
@@ -75,7 +81,9 @@ class CameraProvider extends ChangeNotifier {
 
   String get frameAnalysisLabel {
     if (aiAnalysisRunning) return '正在调用接口';
-    if (lastAiAnalysisAt != null) return '已调用 ${_formatClock(lastAiAnalysisAt!)}';
+    if (lastAiAnalysisAt != null) {
+      return '已调用 ${_formatClock(lastAiAnalysisAt!)}';
+    }
     return frameAnalysisStatus?.stateLabel ?? '等待首帧';
   }
 
@@ -144,6 +152,13 @@ class CameraProvider extends ChangeNotifier {
   }
 
   Future<void> testSetupSnapshot() async {
+    if (setupConfig.sourceMode == 'local') {
+      setupSnapshotBytes = null;
+      setupMessage = '本地摄像头由浏览器直接预览和抽帧，不再通过后端 OpenCV 测试快照';
+      notifyListeners();
+      return;
+    }
+
     setupTesting = true;
     setupMessage = null;
     setupSnapshotBytes = null;
@@ -183,6 +198,35 @@ class CameraProvider extends ChangeNotifier {
 
   Future<void> refreshDiagnostics() async {
     try {
+      if (setupConfig.sourceMode == 'local') {
+        final results = await Future.wait<Object>([
+          _repository.getDetectionModelsStatus(),
+          _repository.getFrameAnalysisStatus(),
+        ]);
+        final detectionModels =
+            results[0] as Map<String, CameraDetectionRuntimeStatus>;
+        fallDetectionStatus ??= detectionModels['fall_detection'];
+        poseDetectionStatus ??= detectionModels['pose_detection'];
+        frameAnalysisStatus = results[1] as CameraFrameAnalysisStatus;
+        status ??= const CameraStatus(
+          configured: true,
+          online: true,
+          source: 'browser_local_preview',
+        );
+        streamStatus ??= const CameraStreamStatus(
+          sourceFps: 0,
+          measuredFps: 0,
+          clients: 1,
+        );
+        audioStatus ??= const CameraAudioStatus(
+          configured: false,
+          listenSupported: false,
+          talkSupported: false,
+          source: 'browser_local_preview',
+        );
+        notifyListeners();
+        return;
+      }
       final results = await Future.wait<Object>([
         _repository.getStatus(),
         _repository.getStreamStatus(),
@@ -207,47 +251,24 @@ class CameraProvider extends ChangeNotifier {
   }
 
   Future<void> setFallDetectionEnabled(bool enabled) async {
-    fallDetectionUpdating = true;
-    errorMessage = null;
+    singleFrameFallEnabled = enabled;
+    lastAiAnalysisError = null;
     notifyListeners();
-    try {
-      final detectionModels = await _repository.setDetectionModelsEnabled(
-        fallDetectionEnabled: enabled,
-      );
-      fallDetectionStatus = detectionModels['fall_detection'];
-      poseDetectionStatus = detectionModels['pose_detection'];
-      await refreshDiagnostics();
-    } catch (error) {
-      errorMessage = _formatError(
-        error,
-        fallback: enabled ? '跌倒检测模型开启失败' : '跌倒检测模型关闭失败',
-      );
-    } finally {
-      fallDetectionUpdating = false;
-      notifyListeners();
-    }
   }
 
   Future<void> setPoseDetectionEnabled(bool enabled) async {
-    poseDetectionUpdating = true;
-    errorMessage = null;
-    notifyListeners();
-    try {
-      final detectionModels = await _repository.setDetectionModelsEnabled(
-        poseDetectionEnabled: enabled,
+    singleFramePoseEnabled = enabled;
+    if (!enabled) {
+      poseLatest = const PoseDetectionLatest(
+        backend: 'single_frame_worker',
+        profile: 'browser_preview',
+        frameWidth: 640,
+        frameHeight: 480,
+        tracks: <PoseTrack>[],
       );
-      fallDetectionStatus = detectionModels['fall_detection'];
-      poseDetectionStatus = detectionModels['pose_detection'];
-      await refreshDiagnostics();
-    } catch (error) {
-      errorMessage = _formatError(
-        error,
-        fallback: enabled ? '姿态检测模型开启失败' : '姿态检测模型关闭失败',
-      );
-    } finally {
-      poseDetectionUpdating = false;
-      notifyListeners();
     }
+    lastAiAnalysisError = null;
+    notifyListeners();
   }
 
   void startFrameRefresh() {
@@ -261,14 +282,35 @@ class CameraProvider extends ChangeNotifier {
   }
 
   Future<void> analyzeBrowserFrame(Uint8List imageBytes) async {
-    if (!autoRefresh || _analysisInFlight || imageBytes.isEmpty) return;
-    _analysisInFlight = true;
-    aiAnalysisRunning = true;
+    final now = DateTime.now();
+    if (!autoRefresh ||
+        imageBytes.isEmpty ||
+        (!singleFramePoseEnabled && !singleFrameFallEnabled) ||
+        (_lastAnalysisStartedAt != null &&
+            now.difference(_lastAnalysisStartedAt!).inMilliseconds < 800)) {
+      return;
+    }
+    _lastAnalysisStartedAt = now;
+    final shouldRunPose = singleFramePoseEnabled && !_poseAnalysisInFlight;
+    if (shouldRunPose) {
+      unawaited(_analyzePoseFrame(imageBytes));
+    }
+    final shouldRunFall = singleFrameFallEnabled &&
+        !_fallAnalysisInFlight &&
+        (_lastFallAnalysisStartedAt == null ||
+            now.difference(_lastFallAnalysisStartedAt!).inSeconds >= 6);
+    if (shouldRunFall) {
+      _lastFallAnalysisStartedAt = now;
+      unawaited(_analyzeFallFrame(imageBytes));
+    }
+  }
+
+  Future<void> _analyzePoseFrame(Uint8List imageBytes) async {
+    if (_poseAnalysisInFlight) return;
+    _poseAnalysisInFlight = true;
     lastAiAnalysisError = null;
-    notifyListeners();
     try {
-      final result = await _repository.analyzeFrame(imageBytes);
-      await _refreshFrameAnalysisStatus();
+      final result = await _repository.analyzePoseFrame(imageBytes);
       if (result['ok'] == false && result['error'] != null) {
         lastAiAnalysisError = result['error'].toString();
       }
@@ -278,6 +320,29 @@ class CameraProvider extends ChangeNotifier {
           Map<String, dynamic>.from(latest),
         );
       }
+      poseDetectionStatus = const CameraDetectionRuntimeStatus(
+        enabled: true,
+        running: true,
+        processRunning: false,
+        profile: 'single_frame_pose',
+      );
+      lastAiAnalysisAt = DateTime.now();
+      errorMessage = null;
+    } catch (error) {
+      lastAiAnalysisError = _formatError(error, fallback: '姿态单帧分析失败');
+      errorMessage = lastAiAnalysisError;
+    } finally {
+      _poseAnalysisInFlight = false;
+      await _refreshFrameAnalysisStatusIfNeeded();
+      notifyListeners();
+    }
+  }
+
+  Future<void> _analyzeFallFrame(Uint8List imageBytes) async {
+    if (_fallAnalysisInFlight) return;
+    _fallAnalysisInFlight = true;
+    try {
+      final result = await _repository.analyzeFallFrame(imageBytes);
       final fall = result['fall'];
       if (fall is Map) {
         final fallResult = Map<String, dynamic>.from(fall);
@@ -285,7 +350,7 @@ class CameraProvider extends ChangeNotifier {
           enabled: true,
           running: true,
           processRunning: false,
-          profile: 'single_frame_upload',
+          profile: 'single_frame_fall',
           lastEvent: fallResult['fall_result'] is Map
               ? Map<String, dynamic>.from(fallResult['fall_result'] as Map)
               : fallResult,
@@ -295,25 +360,23 @@ class CameraProvider extends ChangeNotifier {
           lastError: fallResult['error']?.toString(),
         );
       }
-      poseDetectionStatus = const CameraDetectionRuntimeStatus(
-        enabled: true,
-        running: true,
-        processRunning: false,
-        profile: 'single_frame_upload',
-      );
-      lastAiAnalysisAt = DateTime.now();
-      errorMessage = null;
-      notifyListeners();
     } catch (error) {
-      await _refreshFrameAnalysisStatus();
-      lastAiAnalysisError = _formatError(error, fallback: 'AI 单帧分析失败');
-      errorMessage = lastAiAnalysisError;
-      notifyListeners();
+      lastAiAnalysisError = _formatError(error, fallback: '跌倒单帧分析失败');
     } finally {
-      _analysisInFlight = false;
-      aiAnalysisRunning = false;
+      _fallAnalysisInFlight = false;
+      await _refreshFrameAnalysisStatusIfNeeded();
       notifyListeners();
     }
+  }
+
+  Future<void> _refreshFrameAnalysisStatusIfNeeded() async {
+    final now = DateTime.now();
+    final lastRefresh = _lastWorkerStatusRefreshAt;
+    if (lastRefresh != null && now.difference(lastRefresh).inSeconds < 3) {
+      return;
+    }
+    _lastWorkerStatusRefreshAt = now;
+    await _refreshFrameAnalysisStatus();
   }
 
   Future<void> _refreshFrameAnalysisStatus() async {
@@ -415,7 +478,9 @@ class CameraProvider extends ChangeNotifier {
   }
 
   void _startFrameStream() {
-    if (!autoRefresh || _frameChannel != null) {
+    if (!autoRefresh ||
+        setupConfig.sourceMode == 'local' ||
+        _frameChannel != null) {
       return;
     }
     isConnecting = true;
@@ -482,7 +547,7 @@ class CameraProvider extends ChangeNotifier {
 
   void _scheduleReconnect() {
     _closeFrameStream(clearFrame: false);
-    if (!autoRefresh) {
+    if (!autoRefresh || setupConfig.sourceMode == 'local') {
       return;
     }
     isConnecting = true;

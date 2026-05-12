@@ -264,6 +264,20 @@ class CameraFrameAnalysisStatus {
   });
 
   factory CameraFrameAnalysisStatus.fromJson(Map<String, dynamic> json) {
+    final primaryWorker = _toMap(json['pose']) ??
+        _toMap(json['full']) ??
+        _toMap(json['fall']);
+    if (primaryWorker != null) {
+      return CameraFrameAnalysisStatus(
+        enabled: json['enabled'] != false,
+        running: primaryWorker['running'] == true,
+        pid: _toInt(primaryWorker['pid']),
+        lastError: primaryWorker['last_error']?.toString(),
+        lastOkAt: _toDouble(primaryWorker['last_ok_at']),
+        restartCount: _toInt(primaryWorker['restart_count']) ?? 0,
+        timeoutSeconds: _toDouble(primaryWorker['timeout_seconds']) ?? 20,
+      );
+    }
     return CameraFrameAnalysisStatus(
       enabled: json['enabled'] == true,
       running: json['running'] == true,

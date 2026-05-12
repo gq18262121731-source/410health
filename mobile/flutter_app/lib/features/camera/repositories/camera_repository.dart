@@ -100,6 +100,8 @@ class CameraRepository {
   Future<Map<String, dynamic>> analyzeFrame(
     Uint8List imageBytes, {
     String sessionId = 'browser-preview',
+    bool poseEnabled = true,
+    bool fallEnabled = true,
   }) async {
     final formData = FormData.fromMap({
       'file': MultipartFile.fromBytes(
@@ -109,9 +111,47 @@ class CameraRepository {
       ),
     });
     final response = await _apiClient.post(
-      'camera/analyze-frame?session_id=$sessionId',
+      'camera/analyze-frame?session_id=$sessionId&pose_enabled=$poseEnabled&fall_enabled=$fallEnabled',
       data: formData,
       options: Options(receiveTimeout: const Duration(seconds: 20)),
+    );
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> analyzePoseFrame(
+    Uint8List imageBytes, {
+    String sessionId = 'browser-preview',
+  }) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        imageBytes,
+        filename: 'browser_pose_frame.jpg',
+        contentType: DioMediaType('image', 'jpeg'),
+      ),
+    });
+    final response = await _apiClient.post(
+      'camera/analyze-frame/pose?session_id=$sessionId',
+      data: formData,
+      options: Options(receiveTimeout: const Duration(seconds: 8)),
+    );
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> analyzeFallFrame(
+    Uint8List imageBytes, {
+    String sessionId = 'browser-preview',
+  }) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        imageBytes,
+        filename: 'browser_fall_frame.jpg',
+        contentType: DioMediaType('image', 'jpeg'),
+      ),
+    });
+    final response = await _apiClient.post(
+      'camera/analyze-frame/fall?session_id=$sessionId',
+      data: formData,
+      options: Options(receiveTimeout: const Duration(seconds: 9)),
     );
     return Map<String, dynamic>.from(response.data as Map);
   }

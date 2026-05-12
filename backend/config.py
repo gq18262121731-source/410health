@@ -233,6 +233,8 @@ class Settings(BaseSettings):
     pose_detection_min_pose_score: float = 0.20
     pose_detection_bed_roi_rect: str = ""
     pose_detection_floor_roi_rect: str = ""
+    pose_detection_single_frame_model_path: str = ""
+    pose_detection_single_frame_imgsz: int = 320
 
     sos_broadcast_window_seconds: int = 15
     health_score_floor: int = 35

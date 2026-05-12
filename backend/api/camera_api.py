@@ -20,11 +20,13 @@ from backend.dependencies import (
     get_camera_source_registry,
     get_camera_source_settings,
     get_fall_detection_service,
+    get_fall_frame_analysis_worker_service,
     get_fall_multimodal_review_status,
     get_frame_analysis_worker_service,
     get_health_data_repository,
     get_pose_detection_config_service,
     get_pose_detection_service,
+    get_pose_frame_analysis_worker_service,
     get_websocket_manager,
     ingest_fall_detection_event,
     shutdown_camera_source_hubs,
@@ -148,6 +150,14 @@ async def camera_setup_config_update(payload: CameraSetupConfigRequest) -> dict[
 async def camera_setup_test_snapshot(payload: CameraSetupConfigRequest) -> Response:
     config_service = get_camera_setup_config_service()
     settings = config_service.temporary_settings(payload.model_dump(exclude_none=True))
+    if settings.camera_source_mode == "local":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "LOCAL_BROWSER_CAMERA_ONLY: local camera preview is captured "
+                "in the browser; backend OpenCV test snapshots are disabled"
+            ),
+        )
     try:
         image_bytes, headers = await asyncio.to_thread(CameraService(settings).capture_jpeg)
     except RuntimeError as exc:
@@ -276,6 +286,8 @@ async def camera_pose_detection_latest() -> dict[str, object]:
 async def camera_analyze_frame(
     file: UploadFile = File(...),
     session_id: str = "browser-preview",
+    pose_enabled: bool = True,
+    fall_enabled: bool = True,
 ) -> dict[str, object]:
     content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
     if content_type and content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp", "application/octet-stream"}:
@@ -289,7 +301,8 @@ async def camera_analyze_frame(
         return await get_frame_analysis_worker_service().analyze_frame(
             blob,
             session_id=session_id,
-            run_fall=True,
+            run_pose=pose_enabled,
+            run_fall=fall_enabled,
         )
     except RuntimeError as exc:
         return {
@@ -301,9 +314,69 @@ async def camera_analyze_frame(
         }
 
 
+@router.post("/analyze-frame/pose")
+async def camera_analyze_frame_pose(
+    file: UploadFile = File(...),
+    session_id: str = "browser-preview",
+) -> dict[str, object]:
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp", "application/octet-stream"}:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_IMAGE_FORMAT")
+
+    blob = await file.read()
+    if len(blob) < 100:
+        raise HTTPException(status_code=400, detail="FRAME_IMAGE_REQUIRED")
+
+    try:
+        return await get_pose_frame_analysis_worker_service().analyze_pose(
+            blob,
+            session_id=session_id,
+        )
+    except RuntimeError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "pose_latest": {"status": "worker_unavailable", "tracks": []},
+            "worker": get_pose_frame_analysis_worker_service().status(),
+        }
+
+
+@router.post("/analyze-frame/fall")
+async def camera_analyze_frame_fall(
+    file: UploadFile = File(...),
+    session_id: str = "browser-preview",
+) -> dict[str, object]:
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp", "application/octet-stream"}:
+        raise HTTPException(status_code=400, detail="UNSUPPORTED_IMAGE_FORMAT")
+
+    blob = await file.read()
+    if len(blob) < 100:
+        raise HTTPException(status_code=400, detail="FRAME_IMAGE_REQUIRED")
+
+    try:
+        return await get_fall_frame_analysis_worker_service().analyze_fall(
+            blob,
+            session_id=session_id,
+        )
+    except RuntimeError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "fall": {"ok": False, "status": "worker_unavailable"},
+            "multimodal_review": get_fall_multimodal_review_status(),
+            "worker": get_fall_frame_analysis_worker_service().status(),
+        }
+
+
 @router.get("/analyze-frame/status")
 async def camera_analyze_frame_status() -> dict[str, object]:
-    return get_frame_analysis_worker_service().status()
+    return {
+        "enabled": True,
+        "full": get_frame_analysis_worker_service().status(),
+        "pose": get_pose_frame_analysis_worker_service().status(),
+        "fall": get_fall_frame_analysis_worker_service().status(),
+    }
 
 
 @router.get("/pose-detection/config")
@@ -405,8 +478,18 @@ async def camera_fall_detection_simulate() -> AlarmRecord:
 
 @router.get("/snapshot")
 async def camera_snapshot() -> Response:
+    active_settings = get_camera_source_settings("active")
+    if active_settings.camera_source_mode == "local":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "LOCAL_BROWSER_CAMERA_ONLY: use browser preview frames for local "
+                "camera mode; backend OpenCV capture is disabled to avoid device "
+                "contention"
+            ),
+        )
     try:
-        image_bytes, headers = await asyncio.to_thread(CameraService(get_camera_source_settings("active")).capture_jpeg)
+        image_bytes, headers = await asyncio.to_thread(CameraService(active_settings).capture_jpeg)
     except RuntimeError as exc:
         code = str(exc)
         status_code = 503
@@ -419,6 +502,15 @@ async def camera_snapshot() -> Response:
 
 @router.get("/stream.mjpg")
 async def camera_stream() -> StreamingResponse:
+    if get_camera_source_settings("active").camera_source_mode == "local":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "LOCAL_BROWSER_CAMERA_ONLY: use browser preview frames for local "
+                "camera mode; backend MJPEG capture is disabled to avoid device "
+                "contention"
+            ),
+        )
     return StreamingResponse(
         get_camera_source_frame_hub("active").mjpeg_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",

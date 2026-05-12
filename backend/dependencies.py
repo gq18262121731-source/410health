@@ -153,8 +153,23 @@ _target_user_fall_service = TargetUserFallService(
     model_root=_fall_detection_model_root,
     target_user_service=_target_user_service,
 )
-_target_pose_service = TargetPoseService(model_root=_fall_detection_model_root)
+_target_pose_service = TargetPoseService(
+    model_root=_fall_detection_model_root,
+    model_path=_settings.pose_detection_single_frame_model_path or None,
+)
 _frame_analysis_worker_service = FrameAnalysisWorkerService(project_root=Path(__file__).resolve().parents[1])
+_pose_frame_analysis_worker_service = FrameAnalysisWorkerService(
+    project_root=Path(__file__).resolve().parents[1],
+    timeout_seconds=8.0,
+    task="pose",
+    log_name="pose_frame_worker_stderr.log",
+)
+_fall_frame_analysis_worker_service = FrameAnalysisWorkerService(
+    project_root=Path(__file__).resolve().parents[1],
+    timeout_seconds=8.0,
+    task="fall",
+    log_name="fall_frame_worker_stderr.log",
+)
 _posture_event_service = PostureEventService()
 _posture_knowledge_service = PostureKnowledgeService(resources_root=Path(__file__).resolve().parent / "resources")
 _external_camera_bridge_service = ExternalCameraBridgeService(
@@ -1304,6 +1319,14 @@ def get_target_pose_service() -> TargetPoseService:
 
 def get_frame_analysis_worker_service() -> FrameAnalysisWorkerService:
     return _frame_analysis_worker_service
+
+
+def get_pose_frame_analysis_worker_service() -> FrameAnalysisWorkerService:
+    return _pose_frame_analysis_worker_service
+
+
+def get_fall_frame_analysis_worker_service() -> FrameAnalysisWorkerService:
+    return _fall_frame_analysis_worker_service
 
 
 def get_posture_event_service() -> PostureEventService:

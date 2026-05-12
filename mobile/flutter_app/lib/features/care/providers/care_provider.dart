@@ -38,6 +38,15 @@ class CareProvider extends ChangeNotifier {
 
   Future<void> fetchProfile({bool silent = false}) async {
     if (_isFetching) return;
+    if (!_sessionManager.isAuthenticated) {
+      stopAutoRefresh();
+      _profile = null;
+      _familyDirectory = null;
+      _status = CareLoadStatus.initial;
+      _errorMessage = null;
+      notifyListeners();
+      return;
+    }
     _isFetching = true;
 
     final shouldShowLoading = !silent || _profile == null;
@@ -60,10 +69,19 @@ class CareProvider extends ChangeNotifier {
       }
       _errorMessage = null;
       _status = CareLoadStatus.loaded;
-    } catch (_) {
-      _errorMessage = '获取监护数据失败';
-      if (_profile == null || !silent) {
+    } catch (error) {
+      if (_isUnauthorized(error)) {
+        stopAutoRefresh();
+        await _sessionManager.clearSession();
+        _profile = null;
+        _familyDirectory = null;
+        _errorMessage = '登录状态已失效，请重新登录';
         _status = CareLoadStatus.error;
+      } else {
+        _errorMessage = '获取监护数据失败';
+        if (_profile == null || !silent) {
+          _status = CareLoadStatus.error;
+        }
       }
     } finally {
       _isFetching = false;
@@ -116,7 +134,10 @@ class CareProvider extends ChangeNotifier {
     }
   }
 
-  void startAutoRefresh({Duration interval = const Duration(seconds: 1)}) {
+  void startAutoRefresh({Duration interval = const Duration(seconds: 4)}) {
+    if (!_sessionManager.isAuthenticated) {
+      return;
+    }
     stopAutoRefresh();
     Future.microtask(() => fetchProfile(silent: _profile != null));
     _refreshTimer = Timer.periodic(interval, (_) {
@@ -157,6 +178,13 @@ class CareProvider extends ChangeNotifier {
       }
     }
     return fallback;
+  }
+
+  bool _isUnauthorized(Object error) {
+    if (error is DioException) {
+      return error.response?.statusCode == 401;
+    }
+    return error.toString().contains('401');
   }
 
   bool _shouldRefreshFamilyDirectory(List<String> relatedElderIds) {

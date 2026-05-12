@@ -878,6 +878,22 @@ finally:
         return f"local://camera/{self._settings.camera_local_index}?backend={backend}"
 
     def _check_local_camera_status(self, checked_at: datetime, rtsp_error: str | None = None) -> CameraStatus:
+        if self._settings.camera_source_mode == "local" and rtsp_error is None:
+            return CameraStatus(
+                configured=True,
+                online=True,
+                ip="local",
+                port=0,
+                path=f"/camera/{self._settings.camera_local_index}",
+                checked_at=checked_at,
+                latency_ms=0.0,
+                source="local",
+                detail=(
+                    "Browser local camera preview is active; backend OpenCV "
+                    "probing is skipped to avoid device contention"
+                ),
+            )
+
         started = time.perf_counter()
         try:
             frame = self._capture_local_frame()
@@ -929,32 +945,26 @@ finally:
     def _local_camera_backends(self, cv2_module: Any) -> list[tuple[str, int]]:
         preferred = self._settings.camera_local_backend
         candidates: list[tuple[str, int]] = []
-        if preferred == "dshow":
-            candidates.append(("dshow", cv2_module.CAP_DSHOW))
-        elif preferred == "msmf":
-            candidates.append(("msmf", cv2_module.CAP_MSMF))
-        elif preferred == "any":
-            candidates.append(("any", cv2_module.CAP_ANY))
-        else:
-            candidates.extend(
-                [
-                    ("any", cv2_module.CAP_ANY),
-                    ("msmf", cv2_module.CAP_MSMF),
-                ]
-            )
 
-        if preferred in {"any", "msmf", "dshow"}:
-            return candidates
-
-        defaults = [
-            ("any", cv2_module.CAP_ANY),
-            ("msmf", cv2_module.CAP_MSMF),
-        ]
-        if preferred == "dshow":
-            defaults.append(("dshow", cv2_module.CAP_DSHOW))
-        for item in defaults:
+        def add(name: str, backend: int) -> None:
+            item = (name, backend)
             if item not in candidates:
                 candidates.append(item)
+
+        if preferred == "dshow":
+            add("dshow", cv2_module.CAP_DSHOW)
+        elif preferred == "msmf":
+            add("msmf", cv2_module.CAP_MSMF)
+
+        if preferred in {"auto", "any"}:
+            add("dshow", cv2_module.CAP_DSHOW)
+            add("any", cv2_module.CAP_ANY)
+            add("msmf", cv2_module.CAP_MSMF)
+        else:
+            add("dshow", cv2_module.CAP_DSHOW)
+            add("any", cv2_module.CAP_ANY)
+            add("msmf", cv2_module.CAP_MSMF)
+
         return candidates
 
     def _mask_url(self, url: str | None) -> str | None:

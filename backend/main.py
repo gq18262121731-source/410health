@@ -106,10 +106,12 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_serial_stream_loop()))
     if settings.data_mode == "mqtt" and settings.mqtt_enabled:
         tasks.append(asyncio.create_task(_mqtt_stream_loop()))
-    if settings.camera_stream_keep_warm:
+    uses_backend_camera_stream = settings.camera_source_mode != "local"
+    if settings.camera_stream_keep_warm and uses_backend_camera_stream:
         await get_camera_frame_hub().start_keep_warm()
-    tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
-    tasks.append(asyncio.create_task(_start_pose_detection_after_startup()))
+    if uses_backend_camera_stream:
+        tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
+        tasks.append(asyncio.create_task(_start_pose_detection_after_startup()))
     app.state.background_tasks = tasks
     try:
         yield
@@ -118,7 +120,7 @@ async def lifespan(app: FastAPI):
         await get_pose_detection_service().stop()
         await get_camera_audio_hub().shutdown()
         await shutdown_camera_source_hubs()
-        if settings.camera_stream_keep_warm:
+        if settings.camera_stream_keep_warm and uses_backend_camera_stream:
             await get_camera_frame_hub().stop_keep_warm()
         await get_camera_detection_frame_hub().stop_keep_warm()
         await get_camera_pose_frame_hub().stop_keep_warm()
