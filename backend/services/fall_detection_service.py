@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.config import Settings
+from backend.services.camera_source_registry import CameraSourceRegistry
 from backend.services.camera_service import CameraService
 
 
@@ -166,12 +167,16 @@ class FallDetectionService:
                     pass
 
     def _resolve_source_url(self) -> str:
-        service = CameraService(self._settings)
+        source_settings = CameraSourceRegistry(self._settings).active_settings()
+        service = CameraService(source_settings)
         if service.resolved_source_mode() == "rtsp":
             urls = service.stream_rtsp_urls
             if urls:
                 return urls[0]
-        return f"http://127.0.0.1:{self._settings.port}{self._settings.api_v1_prefix}/camera/stream.mjpg"
+        return (
+            f"http://127.0.0.1:{self._settings.port}"
+            f"{self._settings.api_v1_prefix}/camera-sources/active/stream.mjpg"
+        )
 
     def _build_command(self, *, source_url: str, event_log: Path, snapshot_dir: Path) -> list[str]:
         root = Path(self._settings.fall_detection_model_root)

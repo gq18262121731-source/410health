@@ -1,10 +1,12 @@
 $ErrorActionPreference = "Stop"
 
-$processes = Get-CimInstance Win32_Process |
-    Where-Object { $_.CommandLine -match "uvicorn|backend.main:app|frame_analysis_worker" }
+$backendPids = @(
+    Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique
+)
 
-foreach ($process in $processes) {
-    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+foreach ($pid in $backendPids) {
+    Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
 }
 
 Start-Sleep -Seconds 2

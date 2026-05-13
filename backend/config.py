@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     camera_password: str = ""
     camera_source_mode: Literal["auto", "rtsp", "local"] = "auto"
     camera_local_index: int = 0
-    camera_local_http_url: str = ""  # 独立摄像头服务URL，如 http://localhost:8001
+    camera_local_http_url: str = "http://127.0.0.1:8001"  # 独立摄像头服务URL，如 http://localhost:8001
     camera_local_backend: Literal["auto", "dshow", "msmf", "any"] = "dshow"
     camera_rtsp_path: str = "/tcp/av0_0"
     camera_rtsp_port: int = 10554

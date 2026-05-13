@@ -479,15 +479,6 @@ async def camera_fall_detection_simulate() -> AlarmRecord:
 @router.get("/snapshot")
 async def camera_snapshot() -> Response:
     active_settings = get_camera_source_settings("active")
-    if active_settings.camera_source_mode == "local":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "LOCAL_BROWSER_CAMERA_ONLY: use browser preview frames for local "
-                "camera mode; backend OpenCV capture is disabled to avoid device "
-                "contention"
-            ),
-        )
     try:
         image_bytes, headers = await asyncio.to_thread(CameraService(active_settings).capture_jpeg)
     except RuntimeError as exc:
@@ -502,15 +493,6 @@ async def camera_snapshot() -> Response:
 
 @router.get("/stream.mjpg")
 async def camera_stream() -> StreamingResponse:
-    if get_camera_source_settings("active").camera_source_mode == "local":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "LOCAL_BROWSER_CAMERA_ONLY: use browser preview frames for local "
-                "camera mode; backend MJPEG capture is disabled to avoid device "
-                "contention"
-            ),
-        )
     return StreamingResponse(
         get_camera_source_frame_hub("active").mjpeg_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",

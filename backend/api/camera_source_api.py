@@ -99,6 +99,19 @@ async def active_camera_source_status() -> dict[str, object]:
 @router.get("/active/snapshot")
 async def active_camera_source_snapshot() -> Response:
     active = get_camera_source_registry().active_source()
+    if active.source_mode == "local":
+        hub = get_camera_source_frame_hub(active.camera_id)
+        frame = await hub.snapshot_frame(
+            timeout_seconds=6.0,
+            max_age_seconds=2.5,
+        )
+        if frame is not None:
+            return Response(
+                content=frame,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "no-store, max-age=0"},
+            )
+        return await camera_source_snapshot(active.camera_id)
     return await camera_source_snapshot(active.camera_id)
 
 
@@ -111,6 +124,8 @@ async def active_camera_source_stream_status() -> dict[str, object]:
 @router.get("/active/stream.mjpg")
 async def active_camera_source_stream() -> StreamingResponse:
     active = get_camera_source_registry().active_source()
+    if active.source_mode == "local":
+        await get_camera_source_frame_hub(active.camera_id).start_keep_warm()
     return await camera_source_stream(active.camera_id)
 
 

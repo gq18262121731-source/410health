@@ -48,18 +48,58 @@ class CameraFrameHub:
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
-        stale_clients: list[WebSocket] = []
         async with self._lock:
-            stale_clients = [client for client in self._clients if client is not websocket]
-            self._clients = {websocket}
+            self._clients.add(websocket)
             self._ensure_capture_task()
-
-        for stale in stale_clients:
-            with suppress(Exception):
-                await stale.close(code=4000, reason="superseded_by_new_camera_viewer")
 
         if self._latest_frame:
             await self._send_frame(websocket, self._latest_frame)
+
+    async def snapshot_frame(
+        self,
+        *,
+        timeout_seconds: float = 5.0,
+        max_age_seconds: float = 2.0,
+    ) -> bytes | None:
+        latest_frame = self._latest_frame
+        latest_frame_at = self._latest_frame_at
+        if (
+            latest_frame is not None
+            and latest_frame_at is not None
+            and (time.time() - latest_frame_at) <= max_age_seconds
+        ):
+            return latest_frame
+
+        previous_keep_warm = False
+        async with self._lock:
+            previous_keep_warm = self._keep_warm
+            self._keep_warm = True
+            self._ensure_capture_task()
+
+        observed_at = latest_frame_at
+        deadline = time.monotonic() + timeout_seconds
+        try:
+            while time.monotonic() < deadline:
+                remaining = max(0.05, min(0.8, deadline - time.monotonic()))
+                try:
+                    await asyncio.wait_for(self._frame_event.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    pass
+                self._frame_event.clear()
+
+                latest_frame = self._latest_frame
+                latest_frame_at = self._latest_frame_at
+                if latest_frame is None or latest_frame_at is None:
+                    continue
+                if observed_at is None or latest_frame_at != observed_at:
+                    return latest_frame
+                if (time.time() - latest_frame_at) <= max_age_seconds:
+                    return latest_frame
+            return None
+        finally:
+            async with self._lock:
+                self._keep_warm = previous_keep_warm
+                self._stop_capture_task_if_idle()
 
     async def disconnect(self, websocket: WebSocket) -> None:
         async with self._lock:
@@ -359,10 +399,8 @@ class CameraFrameHub:
             await asyncio.sleep(delay)
 
     async def _run_local_snapshot_stream(self, service: CameraService) -> None:
-        fps = max(1.0, min(self._settings.camera_stream_fps, 8.0))
+        fps = max(0.8, min(self._settings.camera_stream_fps, 3.0))
         delay = 1.0 / fps
-        await self._run_local_video_capture_stream(service, fps=fps, delay=delay)
-        return
         self._active_url = service.local_source_label()
         while True:
             async with self._lock:
