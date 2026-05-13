@@ -9,6 +9,85 @@ import '../repositories/alarm_repository.dart';
 
 enum AlarmLoadStatus { initial, loading, loaded, error }
 
+class FallReviewPendingMessage {
+  final String incidentId;
+  final String? trackId;
+  final String title;
+  final String lead;
+  final int? expectedSeconds;
+  final String? catalogCode;
+  final Map<String, dynamic>? event;
+  final Map<String, dynamic>? presentation;
+  final Map<String, dynamic>? familyGuidance;
+
+  const FallReviewPendingMessage({
+    required this.incidentId,
+    this.trackId,
+    required this.title,
+    required this.lead,
+    this.expectedSeconds,
+    this.catalogCode,
+    this.event,
+    this.presentation,
+    this.familyGuidance,
+  });
+
+  factory FallReviewPendingMessage.fromJson(Map<String, dynamic> json) {
+    return FallReviewPendingMessage(
+      incidentId: json['incident_id']?.toString() ?? '',
+      trackId: json['track_id']?.toString(),
+      title: json['title']?.toString() ?? '',
+      lead: json['lead']?.toString() ?? '',
+      expectedSeconds: json['expected_seconds'] is num
+          ? (json['expected_seconds'] as num).toInt()
+          : int.tryParse(json['expected_seconds']?.toString() ?? ''),
+      catalogCode: json['catalog_code']?.toString(),
+      event: _asMap(json['event']),
+      presentation: _asMap(json['presentation']),
+      familyGuidance: _asMap(json['family_guidance']),
+    );
+  }
+}
+
+class FallReviewFinalizedMessage {
+  final String incidentId;
+  final String? trackId;
+  final String? catalogCode;
+  final Map<String, dynamic>? presentation;
+  final Map<String, dynamic>? familyGuidance;
+  final Map<String, dynamic>? event;
+  final Map<String, dynamic>? review;
+
+  const FallReviewFinalizedMessage({
+    required this.incidentId,
+    this.trackId,
+    this.catalogCode,
+    this.presentation,
+    this.familyGuidance,
+    this.event,
+    this.review,
+  });
+
+  factory FallReviewFinalizedMessage.fromJson(Map<String, dynamic> json) {
+    return FallReviewFinalizedMessage(
+      incidentId: json['incident_id']?.toString() ?? '',
+      trackId: json['track_id']?.toString(),
+      catalogCode: json['catalog_code']?.toString(),
+      presentation: _asMap(json['presentation']),
+      familyGuidance: _asMap(json['family_guidance']),
+      event: _asMap(json['event']),
+      review: _asMap(json['review']),
+    );
+  }
+}
+
+Map<String, dynamic>? _asMap(dynamic raw) {
+  if (raw is Map) {
+    return Map<String, dynamic>.from(raw);
+  }
+  return null;
+}
+
 class AlarmProvider extends ChangeNotifier {
   static const Duration _fallbackRefreshInterval = Duration(seconds: 12);
 
@@ -18,6 +97,8 @@ class AlarmProvider extends ChangeNotifier {
   List<AlarmRecord> _alarms = [];
   List<AlarmQueueItem> _queue = [];
   List<MobilePushRecord> _pushes = [];
+  Map<String, FallReviewPendingMessage> _pendingFallReviews =
+      <String, FallReviewPendingMessage>{};
   String? _errorMessage;
 
   WebSocketChannel? _channel;
@@ -34,6 +115,8 @@ class AlarmProvider extends ChangeNotifier {
   List<AlarmRecord> get alarms => _alarms;
   List<AlarmQueueItem> get queue => _queue;
   List<MobilePushRecord> get pushes => _pushes;
+  Map<String, FallReviewPendingMessage> get pendingFallReviews =>
+      Map<String, FallReviewPendingMessage>.unmodifiable(_pendingFallReviews);
   String? get errorMessage => _errorMessage;
 
   Future<void> ensureStarted() async {
@@ -47,6 +130,7 @@ class AlarmProvider extends ChangeNotifier {
     _started = true;
     _status = AlarmLoadStatus.loading;
     _errorMessage = null;
+    _pendingFallReviews = <String, FallReviewPendingMessage>{};
     notifyListeners();
 
     try {
@@ -124,8 +208,32 @@ class AlarmProvider extends ChangeNotifier {
         return;
       }
 
+      if (msgType == 'fall_alarm_pending_review') {
+        final review = FallReviewPendingMessage.fromJson(data);
+        if (review.incidentId.isNotEmpty) {
+          _pendingFallReviews[review.incidentId] = review;
+          notifyListeners();
+        }
+        return;
+      }
+
+      if (msgType == 'fall_alarm_finalized') {
+        final review = FallReviewFinalizedMessage.fromJson(data);
+        if (review.incidentId.isNotEmpty) {
+          _pendingFallReviews.remove(review.incidentId);
+          _mergeFallReviewFinalized(review);
+          notifyListeners();
+        }
+        return;
+      }
+
       if (data.containsKey('id') && data.containsKey('alarm_type')) {
         final newAlarm = AlarmRecord.fromJson(data);
+        if (newAlarm.isFall && newAlarm.incidentId != null) {
+          _replaceExistingIncidentAlarm(newAlarm);
+          notifyListeners();
+          return;
+        }
         final index = _alarms.indexWhere((a) => a.id == newAlarm.id);
         if (index != -1) {
           _alarms[index] = newAlarm;
@@ -172,6 +280,10 @@ class AlarmProvider extends ChangeNotifier {
     }).toList();
 
     for (final queued in queueAlarmById.values) {
+      if (queued.isFall && queued.incidentId != null) {
+        _replaceExistingIncidentAlarm(queued);
+        continue;
+      }
       final index = _alarms.indexWhere((alarm) => alarm.id == queued.id);
       if (index != -1) {
         _alarms[index] = queued;
@@ -189,6 +301,71 @@ class AlarmProvider extends ChangeNotifier {
       final bTime = b.createdAtDateTime ?? DateTime.fromMillisecondsSinceEpoch(0);
       return bTime.compareTo(aTime);
     });
+  }
+
+  void _replaceExistingIncidentAlarm(AlarmRecord incoming) {
+    final incidentId = incoming.incidentId;
+    if (incidentId == null || incidentId.isEmpty) {
+      final index = _alarms.indexWhere((alarm) => alarm.id == incoming.id);
+      if (index != -1) {
+        _alarms[index] = incoming;
+      } else {
+        _alarms.insert(0, incoming);
+      }
+      _sortAlarms();
+      return;
+    }
+
+    final existingIndex = _alarms.indexWhere(
+      (alarm) => alarm.isFall && alarm.incidentId == incidentId,
+    );
+    if (existingIndex != -1) {
+      _alarms[existingIndex] = incoming;
+    } else {
+      _alarms.insert(0, incoming);
+    }
+    _sortAlarms();
+  }
+
+  void _mergeFallReviewFinalized(FallReviewFinalizedMessage message) {
+    if (message.incidentId.isEmpty) return;
+    for (var index = 0; index < _alarms.length; index += 1) {
+      final alarm = _alarms[index];
+      if (!alarm.isFall || alarm.incidentId != message.incidentId) {
+        continue;
+      }
+      final nextMetadata = Map<String, dynamic>.from(alarm.metadata);
+      if (message.presentation != null) {
+        nextMetadata['presentation'] = message.presentation;
+      }
+      if (message.familyGuidance != null) {
+        nextMetadata['family_guidance'] = message.familyGuidance;
+      }
+      if (message.event != null) {
+        final existingEvent =
+            _asMap(nextMetadata['event']) ?? <String, dynamic>{};
+        final mergedEvent = Map<String, dynamic>.from(existingEvent)
+          ..addAll(message.event!);
+        if (message.review != null) {
+          mergedEvent['multimodal_review'] = message.review;
+        }
+        nextMetadata['event'] = mergedEvent;
+      }
+      _alarms[index] = AlarmRecord(
+        id: alarm.id,
+        deviceMac: alarm.deviceMac,
+        alarmType: alarm.alarmType,
+        alarmLevel: alarm.alarmLevel,
+        alarmPriority: alarm.alarmPriority,
+        message: alarm.message,
+        createdAt: alarm.createdAt,
+        acknowledged: alarm.acknowledged,
+        anomalyProbability: alarm.anomalyProbability,
+        metadata: nextMetadata,
+      );
+      break;
+    }
+    _sortAlarms();
   }
 
   Future<void> acknowledge(String alarmId) async {
@@ -215,6 +392,7 @@ class AlarmProvider extends ChangeNotifier {
     _alarms = [];
     _queue = [];
     _pushes = [];
+    _pendingFallReviews = <String, FallReviewPendingMessage>{};
     _errorMessage = null;
     _reconnectTimer?.cancel();
     _stopFallbackRefresh();

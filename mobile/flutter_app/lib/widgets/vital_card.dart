@@ -19,7 +19,7 @@ class VitalCard extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
         color: const Color(0xFF122A31),
-        border: Border.all(color: accent.withOpacity(0.24)),
+        border: Border.all(color: accent.withValues(alpha: 0.24)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

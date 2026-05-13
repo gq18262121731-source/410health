@@ -687,6 +687,23 @@ class CameraDetectionFrameHub(CameraFrameHub):
 class CameraPoseFrameHub(CameraFrameHub):
     """Camera hub that paints the latest pose tracks onto frames."""
 
+    _COCO_BONES = (
+        (5, 6),
+        (5, 7),
+        (7, 9),
+        (6, 8),
+        (8, 10),
+        (5, 11),
+        (6, 12),
+        (11, 12),
+        (11, 13),
+        (13, 15),
+        (12, 14),
+        (14, 16),
+        (0, 5),
+        (0, 6),
+    )
+
     def __init__(
         self,
         settings: Settings,
@@ -747,16 +764,16 @@ class CameraPoseFrameHub(CameraFrameHub):
             label = str(item.get("posture_label") or "unknown").strip() or "unknown"
             score = self._coerce_positive(item.get("posture_score"))
             track_id = str(item.get("track_id") or "?")
-            if label == "lying_floor":
-                color = (0, 80, 255)
-            elif label == "bending":
-                color = (0, 190, 255)
-            elif label == "sitting":
-                color = (255, 170, 0)
-            else:
-                color = (70, 220, 70)
+            risk_like = label in {
+                "lying_floor",
+                "floor_risk",
+                "fall_like",
+                "suspected_fall",
+                "confirmed_fall",
+            }
+            color = (0, 0, 255) if risk_like else (0, 80, 255)
 
-            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 3)
             text = f"id={track_id} {label} {score:.2f}"
             text_size, baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
             text_w, text_h = text_size
@@ -782,19 +799,45 @@ class CameraPoseFrameHub(CameraFrameHub):
 
             keypoints = item.get("keypoints")
             if isinstance(keypoints, list):
+                scaled_points: list[tuple[int, int, float] | None] = []
                 for point in keypoints:
                     if not isinstance(point, (list, tuple)) or len(point) < 2:
+                        scaled_points.append(None)
                         continue
                     try:
                         px = float(point[0])
                         py = float(point[1])
                         pconf = float(point[2]) if len(point) >= 3 else 1.0
                     except (TypeError, ValueError):
-                        continue
-                    if pconf < 0.15:
+                        scaled_points.append(None)
                         continue
                     tx = max(0, min(width - 1, int(round((px / frame_width) * width))))
                     ty = max(0, min(height - 1, int(round((py / frame_height) * height))))
+                    scaled_points.append((tx, ty, pconf))
+
+                for bone_a, bone_b in self._COCO_BONES:
+                    if bone_a >= len(scaled_points) or bone_b >= len(scaled_points):
+                        continue
+                    point_a = scaled_points[bone_a]
+                    point_b = scaled_points[bone_b]
+                    if point_a is None or point_b is None:
+                        continue
+                    if point_a[2] < 0.18 or point_b[2] < 0.18:
+                        continue
+                    cv2.line(
+                        image,
+                        (point_a[0], point_a[1]),
+                        (point_b[0], point_b[1]),
+                        color,
+                        3,
+                        cv2.LINE_AA,
+                    )
+
+                for point in scaled_points:
+                    if point is None or point[2] < 0.15:
+                        continue
+                    tx, ty, _confidence = point
+                    cv2.circle(image, (tx, ty), 5, (255, 255, 255), -1)
                     cv2.circle(image, (tx, ty), 2, color, -1)
 
         ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 88])

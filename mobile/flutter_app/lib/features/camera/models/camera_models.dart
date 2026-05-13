@@ -1,3 +1,24 @@
+enum CameraVideoMode {
+  processed,
+  raw,
+}
+
+extension CameraVideoModeLabels on CameraVideoMode {
+  String get label {
+    return switch (this) {
+      CameraVideoMode.processed => '处理后视频',
+      CameraVideoMode.raw => '原视频',
+    };
+  }
+
+  String get shortLabel {
+    return switch (this) {
+      CameraVideoMode.processed => '处理后',
+      CameraVideoMode.raw => '原视频',
+    };
+  }
+}
+
 class CameraStatus {
   final bool configured;
   final bool online;
@@ -264,9 +285,8 @@ class CameraFrameAnalysisStatus {
   });
 
   factory CameraFrameAnalysisStatus.fromJson(Map<String, dynamic> json) {
-    final primaryWorker = _toMap(json['pose']) ??
-        _toMap(json['full']) ??
-        _toMap(json['fall']);
+    final primaryWorker =
+        _toMap(json['pose']) ?? _toMap(json['full']) ?? _toMap(json['fall']);
     if (primaryWorker != null) {
       return CameraFrameAnalysisStatus(
         enabled: json['enabled'] != false,

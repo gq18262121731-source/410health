@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
-import '../models/register_models.dart';
 import '../providers/auth_provider.dart';
 
 class RegisterScreen extends StatefulWidget {
@@ -139,9 +138,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.1),
+                color: AppColors.primary.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
               ),
               child: Text(
                 '登录账号：$loginAccount',
@@ -246,14 +245,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
         margin: const EdgeInsets.only(bottom: 16),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: isSelected ? AppColors.primary.withOpacity(0.08) : AppColors.surface,
+          color: isSelected ? AppColors.primary.withValues(alpha: 0.08) : AppColors.surface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: isSelected ? AppColors.primary : AppColors.border,
             width: isSelected ? 2 : 1,
           ),
           boxShadow: isSelected 
-            ? [BoxShadow(color: AppColors.primary.withOpacity(0.1), blurRadius: 8, offset: const Offset(0, 4))]
+            ? [BoxShadow(color: AppColors.primary.withValues(alpha: 0.1), blurRadius: 8, offset: const Offset(0, 4))]
             : [const BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))],
         ),
         child: Row(
@@ -261,7 +260,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             Container(
               width: 56, height: 56,
               decoration: BoxDecoration(
-                color: isSelected ? AppColors.primary.withOpacity(0.1) : AppColors.background,
+                color: isSelected ? AppColors.primary.withValues(alpha: 0.1) : AppColors.background,
                 shape: BoxShape.circle,
               ),
               child: Icon(_roleIcon(role), color: isSelected ? AppColors.primary : AppColors.textMuted, size: 28),
@@ -304,9 +303,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.1),
+              color: AppColors.primary.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+              border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -362,9 +361,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: AppColors.error.withOpacity(0.1),
+                color: AppColors.error.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.error.withOpacity(0.3)),
+                border: Border.all(color: AppColors.error.withValues(alpha: 0.3)),
               ),
               child: Row(
                 children: [
@@ -384,7 +383,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               padding: const EdgeInsets.symmetric(vertical: 16),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               elevation: 4,
-              shadowColor: AppColors.primary.withOpacity(0.4),
+              shadowColor: AppColors.primary.withValues(alpha: 0.4),
             ),
             child: isSubmitting
                 ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white))

@@ -100,7 +100,7 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
             color: provider.isWsConnected ? AppColors.success : AppColors.error,
             boxShadow: [
               if (provider.isWsConnected)
-                BoxShadow(color: AppColors.success.withOpacity(0.4), blurRadius: 8, spreadRadius: 1),
+                BoxShadow(color: AppColors.success.withValues(alpha: 0.4), blurRadius: 8, spreadRadius: 1),
             ],
           ),
         ),
@@ -153,9 +153,9 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               child: Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: AppColors.error.withOpacity(0.05),
+                  color: AppColors.error.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.error.withOpacity(0.3)),
+                  border: Border.all(color: AppColors.error.withValues(alpha: 0.3)),
                 ),
                 child: const Row(
                   children: [
@@ -181,14 +181,14 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [AppColors.primary, AppColors.primary.withOpacity(0.8)],
+          colors: [AppColors.primary, AppColors.primary.withValues(alpha: 0.8)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: AppColors.primary.withOpacity(0.2),
+            color: AppColors.primary.withValues(alpha: 0.2),
             blurRadius: 10,
             offset: const Offset(0, 4),
           )

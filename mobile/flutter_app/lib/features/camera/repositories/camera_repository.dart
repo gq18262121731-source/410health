@@ -40,8 +40,7 @@ class CameraRepository {
     return _parseDetectionModelsStatus(response.data);
   }
 
-  Future<Map<String, CameraDetectionRuntimeStatus>>
-      setDetectionModelsEnabled({
+  Future<Map<String, CameraDetectionRuntimeStatus>> setDetectionModelsEnabled({
     bool? fallDetectionEnabled,
     bool? poseDetectionEnabled,
   }) async {
@@ -198,9 +197,15 @@ class CameraRepository {
     );
   }
 
-  WebSocketChannel connectFrameStream() {
+  WebSocketChannel connectFrameStream({
+    CameraVideoMode mode = CameraVideoMode.raw,
+  }) {
+    final path = switch (mode) {
+      CameraVideoMode.processed => '/ws/camera/processed',
+      CameraVideoMode.raw => '/ws/camera',
+    };
     return WebSocketChannel.connect(
-        Uri.parse('${_endpointConfig.wsBaseUrl}/ws/camera'));
+        Uri.parse('${_endpointConfig.wsBaseUrl}$path'));
   }
 
   WebSocketChannel connectAudioListenStream() {

@@ -55,6 +55,11 @@ class AlarmRecord {
 
   bool get isSos => alarmType.toLowerCase() == 'sos';
 
+  bool get isFall {
+    final normalized = alarmType.toLowerCase();
+    return normalized == 'fall_detected' || normalized == 'fall_injury_risk';
+  }
+
   bool get isCritical =>
       alarmLevel == 'sos' ||
       alarmLevel == 'critical' ||
@@ -88,6 +93,79 @@ class AlarmRecord {
   String? get apartment => _readNonEmptyString(metadata['apartment']);
 
   String? get sosTrigger => _readNonEmptyString(metadata['sos_trigger']);
+
+  String? get incidentId => _readNonEmptyString(
+        metadata['incident_id'] ??
+            (_fallEvent != null
+                ? _fallEvent!['incident_id']
+                : null),
+      );
+
+  Map<String, dynamic>? get fallPresentation => _asMap(metadata['presentation']);
+
+  Map<String, dynamic>? get familyGuidance => _asMap(metadata['family_guidance']);
+
+  Map<String, dynamic>? get _fallEvent => _asMap(metadata['event']);
+
+  String get fallSeverityLabel {
+    final guidance = familyGuidance;
+    final presentation = fallPresentation;
+    final fromGuidance = _readNonEmptyString(guidance?['severity_label']);
+    if (fromGuidance != null) return fromGuidance;
+    final state = _readNonEmptyString(presentation?['event_state']) ??
+        _readNonEmptyString(_fallEvent?['state']) ??
+        '';
+    final injury = _readNonEmptyString(metadata['injury_level']) ??
+        _readNonEmptyString(_asMap(_fallEvent?['injury'])?['level']) ??
+        '';
+    if (state == 'abnormal_recovery' ||
+        state == 'emergency' ||
+        state == 'needs_assistance' ||
+        injury == 'I3' ||
+        injury == 'I4' ||
+        injury == 'I5' ||
+        alarmLevel == 'critical') {
+      return '高危跌倒';
+    }
+    if (state == 'confirmed_fall') return '已确认跌倒';
+    if (state == 'post_fall_monitoring' || state == 'injury_watch') {
+      return '跌倒后持续观察';
+    }
+    if (state == 'suspected_fall' || state == 'possible_fall') {
+      return '疑似跌倒';
+    }
+    return '跌倒风险提醒';
+  }
+
+  String get fallTitle {
+    final presentation = fallPresentation;
+    return _readNonEmptyString(presentation?['title']) ??
+        (isFall ? fallSeverityLabel : headlineDisplay);
+  }
+
+  String? get fallLead => _readNonEmptyString(fallPresentation?['lead']);
+
+  String? get familyMessage =>
+      _readNonEmptyString(familyGuidance?['family_message']);
+
+  bool get shouldCallEmergency => familyGuidance?['call_emergency'] == true;
+
+  List<String> get recommendedActions {
+    final guidanceActions = _asStringList(familyGuidance?['immediate_actions']);
+    if (guidanceActions.isNotEmpty) return guidanceActions;
+    final presentationActions =
+        _asStringList(fallPresentation?['recommended_actions']);
+    return presentationActions;
+  }
+
+  List<String> get contraindications =>
+      _asStringList(familyGuidance?['contraindications']);
+
+  String get reviewStatus =>
+      _readNonEmptyString(fallPresentation?['review_status']) ??
+      'not_required';
+
+  bool get showImmediatePopup => fallPresentation?['show_immediate_popup'] == true;
 
   String get sosTriggerLabel {
     switch (sosTrigger) {
@@ -137,6 +215,23 @@ class AlarmRecord {
       return Map<String, dynamic>.from(rawMetadata);
     }
     return const {};
+  }
+
+  static Map<String, dynamic>? _asMap(dynamic raw) {
+    if (raw is Map) {
+      return Map<String, dynamic>.from(raw);
+    }
+    return null;
+  }
+
+  static List<String> _asStringList(dynamic raw) {
+    if (raw is! List) {
+      return const <String>[];
+    }
+    return raw
+        .map((item) => item?.toString().trim() ?? '')
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
   }
 
   static String? _readNonEmptyString(dynamic rawValue) {

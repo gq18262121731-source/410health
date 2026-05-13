@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import socket
 import subprocess
 import threading
 import time
@@ -130,6 +131,11 @@ class CameraRuntime:
 
     def _capture_with_opencv(self) -> None:
         logger.info("Using OpenCV capture path")
+        reachable, reachability_error = self._rtsp_endpoint_reachable()
+        if not reachable:
+            self.frame_store.set_error(reachability_error or "RTSP endpoint is not reachable")
+            time.sleep(2.0)
+            return
         cap = cv2.VideoCapture(self.camera_config.rtsp_url, cv2.CAP_FFMPEG)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not cap.isOpened():
@@ -139,19 +145,20 @@ class CameraRuntime:
         self.frame_store.mark_opened(self.camera_config.stream)
         logger.info("Opened RTSP stream via OpenCV: %s", self.camera_config.masked_rtsp_url)
         try:
+            empty_reads = 0
             while not self._stop_event.is_set():
                 ok, frame = cap.read()
                 if not ok or frame is None:
-                    recovered = False
-                    for _ in range(3):
-                        time.sleep(0.15)
-                        ok, frame = cap.read()
-                        if ok and frame is not None:
-                            recovered = True
-                            break
-                    if not recovered:
-                        self.frame_store.set_error("Failed to read frame")
-                        break
+                    empty_reads += 1
+                    if empty_reads < 20:
+                        time.sleep(0.1)
+                        continue
+                    if self.frame_store.snapshot().latest_jpeg is not None:
+                        logger.info("RTSP stream read stalled; reconnecting")
+                    else:
+                        self.frame_store.set_error("Failed to read frame; reconnecting")
+                    break
+                empty_reads = 0
                 encoded_ok, encoded = cv2.imencode(
                     ".jpg",
                     frame,
@@ -162,3 +169,15 @@ class CameraRuntime:
                 time.sleep(self.frame_interval_seconds)
         finally:
             cap.release()
+
+    def _rtsp_endpoint_reachable(self) -> tuple[bool, str | None]:
+        endpoint = (self.camera_config.host, int(self.camera_config.rtsp_port))
+        try:
+            with socket.create_connection(endpoint, timeout=3.0):
+                return True, None
+        except OSError as exc:
+            return (
+                False,
+                f"Configured RTSP endpoint {endpoint[0]}:{endpoint[1]} is not reachable from this computer: "
+                f"{exc.__class__.__name__}: {exc}",
+            )

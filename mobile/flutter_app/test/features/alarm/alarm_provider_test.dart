@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -121,6 +122,49 @@ AlarmRecord _buildAlarm({required String id}) {
   );
 }
 
+AlarmRecord _buildFallAlarm({
+  required String id,
+  required String incidentId,
+  String title = '检测到老人跌倒，请立即处理',
+  String lead = '系统已识别到高风险跌倒事件，请立刻查看现场。',
+  List<String> actions = const <String>['立即查看现场', '联系护理人员'],
+}) {
+  return AlarmRecord(
+    id: id,
+    deviceMac: 'CAMERA-192.168.8.253',
+    alarmType: 'fall_injury_risk',
+    alarmLevel: 'critical',
+    alarmPriority: 2,
+    message: '$title: $lead',
+    createdAt: '2026-05-13T03:12:30Z',
+    acknowledged: false,
+    anomalyProbability: 0.91,
+    metadata: <String, dynamic>{
+      'incident_id': incidentId,
+      'elder_name': '王阿姨',
+      'apartment': '2-302',
+      'presentation': <String, dynamic>{
+        'title': title,
+        'lead': lead,
+        'show_immediate_popup': true,
+        'recommended_actions': actions,
+        'review_status': 'pending',
+      },
+      'family_guidance': const <String, dynamic>{
+        'severity_label': '高危跌倒',
+        'immediate_actions': <String>['先确认意识和呼吸', '不要强行扶起'],
+        'contraindications': <String>['不要拖拽老人'],
+        'call_emergency': true,
+        'family_message': '如老人无反应或呼吸异常，请立刻呼叫急救。',
+      },
+      'event': <String, dynamic>{
+        'incident_id': incidentId,
+        'state': 'confirmed_fall',
+      },
+    },
+  );
+}
+
 AlarmQueueItem _buildQueueItem({required String id}) {
   return AlarmQueueItem(
     score: 1.0,
@@ -192,5 +236,97 @@ void main() {
     expect(provider.status, AlarmLoadStatus.loaded);
     expect(provider.alarms, hasLength(1));
     expect(provider.pushes, isEmpty);
+  });
+
+  test('fall alarm websocket refresh replaces previous alarm by incident id', () async {
+    final channel = _FakeWebSocketChannel();
+    final repository = await _buildRepository(
+      alarmsResult: () async => <AlarmRecord>[
+        _buildFallAlarm(id: 'fall-1', incidentId: 'incident-1'),
+      ],
+      queueResult: () async => <AlarmQueueItem>[],
+      pushesResult: () async => <MobilePushRecord>[],
+      channel: channel,
+    );
+    final provider = AlarmProvider(repository);
+
+    await provider.init();
+    expect(provider.alarms, hasLength(1));
+    expect(provider.alarms.first.id, 'fall-1');
+
+    channel._controller.add(
+      jsonEncode(
+        _buildFallAlarm(
+          id: 'fall-2',
+          incidentId: 'incident-1',
+          lead: '系统复核后确认风险上升，请立即联系护理人员。',
+        ).toJson(),
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(provider.alarms, hasLength(1));
+    expect(provider.alarms.first.id, 'fall-2');
+    expect(provider.alarms.first.incidentId, 'incident-1');
+  });
+
+  test('fall review finalized merges presentation and guidance into existing incident', () async {
+    final channel = _FakeWebSocketChannel();
+    final repository = await _buildRepository(
+      alarmsResult: () async => <AlarmRecord>[
+        _buildFallAlarm(id: 'fall-3', incidentId: 'incident-2'),
+      ],
+      queueResult: () async => <AlarmQueueItem>[],
+      pushesResult: () async => <MobilePushRecord>[],
+      channel: channel,
+    );
+    final provider = AlarmProvider(repository);
+
+    await provider.init();
+
+    channel._controller.add(
+      jsonEncode(<String, dynamic>{
+        'type': 'fall_alarm_pending_review',
+        'incident_id': 'incident-2',
+        'title': '系统正在复核现场，请稍等',
+        'lead': '已检测到异常姿态，系统正在进一步复核。',
+      }),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(provider.pendingFallReviews.containsKey('incident-2'), isTrue);
+
+    channel._controller.add(
+      jsonEncode(<String, dynamic>{
+        'type': 'fall_alarm_finalized',
+        'incident_id': 'incident-2',
+        'presentation': <String, dynamic>{
+          'title': '系统复核后倾向于误报',
+          'lead': '系统已完成二次复核，当前更像误报，但仍建议人工确认。',
+          'show_immediate_popup': true,
+          'recommended_actions': <String>['继续观察现场'],
+          'review_status': 'completed',
+        },
+        'family_guidance': <String, dynamic>{
+          'severity_label': '疑似误报待确认',
+          'immediate_actions': <String>['继续观察现场'],
+          'contraindications': <String>[],
+          'call_emergency': false,
+          'family_message': '当前更像误报，但仍建议人工确认。',
+        },
+        'event': <String, dynamic>{
+          'incident_id': 'incident-2',
+          'state': 'suspected_fall',
+        },
+        'review': <String, dynamic>{
+          'judgement': 'false_positive',
+        },
+      }),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(provider.pendingFallReviews.containsKey('incident-2'), isFalse);
+    expect(provider.alarms.first.fallTitle, '系统复核后倾向于误报');
+    expect(provider.alarms.first.fallSeverityLabel, '疑似误报待确认');
+    expect(provider.alarms.first.recommendedActions, contains('继续观察现场'));
   });
 }

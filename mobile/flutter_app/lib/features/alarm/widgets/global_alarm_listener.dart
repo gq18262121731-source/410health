@@ -7,6 +7,9 @@ import 'package:provider/provider.dart';
 import '../../../core/services/app_notification_service.dart';
 import '../../../core/services/audio_service.dart';
 import '../../auth/providers/auth_provider.dart';
+import '../../camera/providers/camera_provider.dart';
+import '../../camera/repositories/camera_repository.dart';
+import '../../camera/screens/family_camera_screen.dart';
 import '../models/alarm_model.dart';
 import '../providers/alarm_provider.dart';
 
@@ -22,16 +25,20 @@ class GlobalAlarmListener extends StatefulWidget {
   State<GlobalAlarmListener> createState() => _GlobalAlarmListenerState();
 }
 
-class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsBindingObserver {
+class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
+    with WidgetsBindingObserver {
+  static const Duration _fallbackToneInterval =
+      Duration(milliseconds: 1200);
   static const Duration _freshAlarmWindow = Duration(minutes: 2);
-  static const Duration _fallbackToneInterval = Duration(milliseconds: 1200);
 
   final Set<String> _shownAlarmIds = <String>{};
+  final Set<String> _shownFallIncidentIds = <String>{};
   final List<AlarmRecord> _pendingAlarms = <AlarmRecord>[];
 
   AlarmProvider? _alarmProvider;
   AudioService? _audioService;
   AppNotificationService? _notificationService;
+
   bool _initializedSnapshot = false;
   bool _dialogVisible = false;
   bool _appInForeground = true;
@@ -93,6 +100,7 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
 
     if (provider.status == AlarmLoadStatus.initial) {
       _shownAlarmIds.clear();
+      _shownFallIncidentIds.clear();
       _pendingAlarms.clear();
       _initializedSnapshot = false;
       _dialogVisible = false;
@@ -113,11 +121,11 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
     if (!_initializedSnapshot) {
       for (final alarm in provider.alarms) {
         if (_shouldPresentInitialAlarm(alarm)) {
-          _shownAlarmIds.add(alarm.id);
+          _markAlarmPresented(alarm);
           _enqueueAlarm(alarm);
           continue;
         }
-        _shownAlarmIds.add(alarm.id);
+        _markAlarmSeen(alarm);
       }
       _initializedSnapshot = true;
       return;
@@ -125,23 +133,56 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
 
     for (final alarm in provider.alarms) {
       if (_shouldPresentRealtimeAlarm(alarm)) {
-        _shownAlarmIds.add(alarm.id);
+        _markAlarmPresented(alarm);
         _enqueueAlarm(alarm);
       }
     }
   }
 
   bool _shouldPresentInitialAlarm(AlarmRecord alarm) {
-    return !_shownAlarmIds.contains(alarm.id) &&
-        !alarm.acknowledged &&
-        alarm.isSos &&
-        _isFreshAlarm(alarm);
+    if (alarm.acknowledged) {
+      return false;
+    }
+    if (alarm.isSos) {
+      return !_shownAlarmIds.contains(alarm.id) && _isFreshAlarm(alarm);
+    }
+    if (alarm.isFall) {
+      final incidentId = alarm.incidentId;
+      return incidentId != null &&
+          incidentId.isNotEmpty &&
+          !_shownFallIncidentIds.contains(incidentId) &&
+          alarm.showImmediatePopup;
+    }
+    return false;
   }
 
   bool _shouldPresentRealtimeAlarm(AlarmRecord alarm) {
-    return !_shownAlarmIds.contains(alarm.id) &&
-        !alarm.acknowledged &&
-        alarm.isSos;
+    if (alarm.acknowledged) {
+      return false;
+    }
+    if (alarm.isSos) {
+      return !_shownAlarmIds.contains(alarm.id);
+    }
+    if (alarm.isFall) {
+      final incidentId = alarm.incidentId;
+      return incidentId != null &&
+          incidentId.isNotEmpty &&
+          !_shownFallIncidentIds.contains(incidentId) &&
+          alarm.showImmediatePopup;
+    }
+    return false;
+  }
+
+  void _markAlarmPresented(AlarmRecord alarm) {
+    _shownAlarmIds.add(alarm.id);
+    final incidentId = alarm.incidentId;
+    if (alarm.isFall && incidentId != null && incidentId.isNotEmpty) {
+      _shownFallIncidentIds.add(incidentId);
+    }
+  }
+
+  void _markAlarmSeen(AlarmRecord alarm) {
+    _shownAlarmIds.add(alarm.id);
   }
 
   bool _isFreshAlarm(AlarmRecord alarm) {
@@ -154,8 +195,16 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
   }
 
   void _syncAlarmToneState(AlarmProvider provider) {
-    final hasActiveSos = provider.alarms.any((alarm) => alarm.isSos && !alarm.acknowledged);
-    if (hasActiveSos) {
+    final hasAudibleAlarm = provider.alarms.any(
+      (alarm) =>
+          !alarm.acknowledged &&
+          (alarm.isSos ||
+              (alarm.isFall &&
+                  alarm.showImmediatePopup &&
+                  (alarm.alarmLevel == 'critical' ||
+                      alarm.alarmLevel == 'warning'))),
+    );
+    if (hasAudibleAlarm) {
       _startAlarmToneLoop();
       return;
     }
@@ -185,7 +234,8 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
   }
 
   Future<void> _startAlarmToneLoopAsync() async {
-    final started = await (_audioService?.startAlarmLoop() ?? Future.value(false));
+    final started =
+        await (_audioService?.startAlarmLoop() ?? Future.value(false));
     if (started) {
       _stopFallbackToneLoop();
       return;
@@ -222,10 +272,17 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
     if (elderName != null) {
       return elderName;
     }
-    return 'SOS 紧急求助';
+    return alarm.isFall ? '跌倒风险提醒' : 'SOS 紧急求助';
   }
 
   String _resolveAlarmBody(AlarmRecord alarm) {
+    if (alarm.isFall) {
+      final lead = alarm.fallLead;
+      if (lead != null && lead.isNotEmpty) {
+        return lead;
+      }
+      return alarm.message;
+    }
     final parts = <String>[];
     if (alarm.deviceName != null) {
       parts.add('设备 ${alarm.deviceName}');
@@ -253,11 +310,15 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
               color: Colors.transparent,
               child: Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                 decoration: BoxDecoration(
                   color: const Color(0xFF7F1D1D),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFFFCA5A5), width: 1.2),
+                  border: Border.all(
+                    color: const Color(0xFFFCA5A5),
+                    width: 1.2,
+                  ),
                   boxShadow: const [
                     BoxShadow(
                       color: Color(0x33000000),
@@ -268,16 +329,22 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.warning_amber_rounded, color: Color(0xFFFECACA), size: 22),
+                    const Icon(
+                      Icons.warning_amber_rounded,
+                      color: Color(0xFFFECACA),
+                      size: 22,
+                    ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Text(
-                            'SOS 紧急告警',
-                            style: TextStyle(
+                          Text(
+                            alarm.isFall
+                                ? alarm.fallSeverityLabel
+                                : 'SOS 紧急告警',
+                            style: const TextStyle(
                               color: Color(0xFFFFF1F2),
                               fontWeight: FontWeight.w700,
                               fontSize: 14,
@@ -317,7 +384,8 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
     );
 
     overlay.insert(_floatingWarningEntry!);
-    _floatingWarningTimer = Timer(const Duration(seconds: 4), _hideFloatingWarning);
+    _floatingWarningTimer =
+        Timer(const Duration(seconds: 4), _hideFloatingWarning);
   }
 
   void _hideFloatingWarning() {
@@ -330,7 +398,14 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
   void _enqueueAlarm(AlarmRecord alarm) {
     _showFloatingWarning(alarm);
     if (_dialogVisible) {
-      final alreadyQueued = _pendingAlarms.any((item) => item.id == alarm.id);
+      final alreadyQueued = _pendingAlarms.any(
+        (item) =>
+            item.id == alarm.id ||
+            (item.isFall &&
+                alarm.isFall &&
+                item.incidentId != null &&
+                item.incidentId == alarm.incidentId),
+      );
       if (!alreadyQueued) {
         _pendingAlarms.add(alarm);
       }
@@ -347,7 +422,7 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
     });
   }
 
-  Future<void> _showAlarmDialog(AlarmRecord alarm) async {
+  Future<void> _showAlarmDialog(AlarmRecord initialAlarm) async {
     if (!mounted) {
       _dialogVisible = false;
       return;
@@ -358,88 +433,241 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
       context: context,
       useRootNavigator: true,
       barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: const Color(0xFF1A0A0A),
-        shape: RoundedRectangleBorder(
-          side: const BorderSide(color: Colors.redAccent, width: 2),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        title: const Row(
-          children: [
-            Icon(Icons.warning, color: Colors.redAccent, size: 28),
-            SizedBox(width: 12),
-            Text(
-              '紧急求助报警',
-              style: TextStyle(
-                color: Colors.redAccent,
-                fontWeight: FontWeight.bold,
+      builder: (dialogContext) => Consumer<AlarmProvider>(
+        builder: (context, provider, _) {
+          final alarm = _resolveDialogAlarm(provider, initialAlarm);
+          final isFall = alarm.isFall;
+          final recommendedActions =
+              isFall ? alarm.recommendedActions : const <String>[];
+          final contraindications =
+              isFall ? alarm.contraindications : const <String>[];
+          final pendingReview = isFall && alarm.incidentId != null
+              ? provider.pendingFallReviews[alarm.incidentId!]
+              : null;
+          final headline = isFall ? alarm.fallTitle : 'SOS 紧急求助告警';
+          final description = pendingReview != null
+              ? pendingReview.lead
+              : _resolveAlarmBody(alarm);
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1A0A0A),
+            shape: RoundedRectangleBorder(
+              side: const BorderSide(color: Colors.redAccent, width: 2),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: Row(
+              children: [
+                const Icon(Icons.warning, color: Colors.redAccent, size: 28),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    headline,
+                    style: const TextStyle(
+                      color: Colors.redAccent,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _resolveAlarmLead(alarm),
+                    style: const TextStyle(
+                      color: Color(0xFFF8FAFC),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (isFall)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF7F1D1D),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: const Color(0xFFFCA5A5)),
+                      ),
+                      child: Text(
+                        alarm.fallSeverityLabel,
+                        style: const TextStyle(
+                          color: Color(0xFFFFE4E6),
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  if (!isFall && alarm.deviceName != null) ...[
+                    Text(
+                      '设备: ${alarm.deviceName}',
+                      style: const TextStyle(
+                        color: Color(0xFFE2E8F0),
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                  ],
+                  if (alarm.deviceMac.isNotEmpty) ...[
+                    Text(
+                      '设备 MAC: ${alarm.deviceMac}',
+                      style: const TextStyle(
+                        color: Color(0xFFF8FAFC),
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  Text(
+                    '时间: ${alarm.createdAtDisplay}',
+                    style: const TextStyle(color: Color(0xFFCBD5E1)),
+                  ),
+                  if (!isFall) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '触发方式: ${alarm.sosTriggerLabel}',
+                      style: const TextStyle(color: Color(0xFFCBD5E1)),
+                    ),
+                  ],
+                  if (pendingReview != null) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF3F1D1D),
+                        borderRadius: BorderRadius.circular(12),
+                        border:
+                            Border.all(color: const Color(0xFFFCA5A5), width: 1),
+                      ),
+                      child: Text(
+                        pendingReview.expectedSeconds != null
+                            ? '系统复核中，预计 ${pendingReview.expectedSeconds} 秒内返回结果。'
+                            : '系统正在复核当前跌倒事件，请先按风险处理并人工确认现场。',
+                        style: const TextStyle(
+                          color: Color(0xFFFEE2E2),
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    description,
+                    style: const TextStyle(
+                      color: Color(0xFFE2E8F0),
+                      height: 1.4,
+                    ),
+                  ),
+                  if (isFall && recommendedActions.isNotEmpty) ...[
+                    const SizedBox(height: 14),
+                    const Text(
+                      '应对措施',
+                      style: TextStyle(
+                        color: Color(0xFFFFF1F2),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    for (final item in recommendedActions)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          '• $item',
+                          style: const TextStyle(
+                            color: Color(0xFFE2E8F0),
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                  ],
+                  if (isFall && contraindications.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      '注意事项',
+                      style: TextStyle(
+                        color: Color(0xFFFFF1F2),
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    for (final item in contraindications)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          '• $item',
+                          style: const TextStyle(
+                            color: Color(0xFFFECACA),
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                  ],
+                  if (isFall && alarm.familyMessage != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      alarm.familyMessage!,
+                      style: const TextStyle(
+                        color: Color(0xFFE2E8F0),
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                  if (isFall && alarm.shouldCallEmergency) ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      '建议立即准备急救或医疗支援',
+                      style: TextStyle(
+                        color: Color(0xFFFCA5A5),
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              _resolveAlarmLead(alarm),
-              style: const TextStyle(
-                color: Color(0xFFF8FAFC),
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
+            actions: [
+              if (isFall)
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                    _stopAlarmToneLoop();
+                    _hideFloatingWarning();
+                    _openCameraScreen();
+                  },
+                  child: const Text(
+                    '查看监控',
+                    style: TextStyle(
+                      color: Color(0xFFFECACA),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              TextButton(
+                onPressed: () {
+                  _stopAlarmToneLoop();
+                  _hideFloatingWarning();
+                  _alarmProvider?.acknowledge(alarm.id);
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text(
+                  '我已知晓',
+                  style: TextStyle(
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-            if (alarm.deviceName != null) ...[
-              Text(
-                '设备: ${alarm.deviceName}',
-                style: const TextStyle(color: Color(0xFFE2E8F0), fontSize: 15),
-              ),
-              const SizedBox(height: 6),
             ],
-            if (alarm.deviceMac.isNotEmpty) ...[
-              Text(
-                '设备 MAC: ${alarm.deviceMac}',
-                style: const TextStyle(color: Color(0xFFF8FAFC), fontSize: 16),
-              ),
-              const SizedBox(height: 8),
-            ],
-            Text(
-              '时间: ${alarm.createdAtDisplay}',
-              style: const TextStyle(color: Color(0xFFCBD5E1)),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '触发方式: ${alarm.sosTriggerLabel}',
-              style: const TextStyle(color: Color(0xFFCBD5E1)),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              alarm.message.isNotEmpty
-                  ? alarm.message
-                  : '已检测到紧急求助，请立即联系老人或通知社区值守人员。',
-              style: const TextStyle(color: Color(0xFFE2E8F0)),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              _stopAlarmToneLoop();
-              _hideFloatingWarning();
-              _alarmProvider?.acknowledge(alarm.id);
-              Navigator.pop(dialogContext);
-            },
-            child: const Text(
-              '我知道了',
-              style: TextStyle(
-                color: Colors.redAccent,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-          ),
-        ],
+          );
+        },
       ),
     );
 
@@ -451,6 +679,36 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener> with WidgetsB
     final nextAlarm = _pendingAlarms.removeAt(0);
     _showFloatingWarning(nextAlarm);
     unawaited(_showAlarmDialog(nextAlarm));
+  }
+
+  AlarmRecord _resolveDialogAlarm(
+    AlarmProvider provider,
+    AlarmRecord initialAlarm,
+  ) {
+    final incidentId = initialAlarm.incidentId;
+    if (incidentId == null || incidentId.isEmpty) {
+      return initialAlarm;
+    }
+    for (final alarm in provider.alarms) {
+      if (alarm.isFall && alarm.incidentId == incidentId) {
+        return alarm;
+      }
+    }
+    return initialAlarm;
+  }
+
+  void _openCameraScreen() {
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) => ChangeNotifierProvider(
+          create: (BuildContext context) => CameraProvider(
+            context.read<CameraRepository>(),
+          )..start(),
+          child: const FamilyCameraScreen(),
+        ),
+      ),
+    );
   }
 
   @override

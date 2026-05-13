@@ -83,8 +83,12 @@ class _VideoPanelState extends State<_VideoPanel> {
   void _syncAnalysisTimer({
     required bool autoRefresh,
     required bool useLocalPreview,
+    required bool showingProcessedVideo,
   }) {
-    final shouldRun = useLocalPreview && autoRefresh && _localPreviewReady;
+    final shouldRun = useLocalPreview &&
+        showingProcessedVideo &&
+        autoRefresh &&
+        _localPreviewReady;
     if (!shouldRun) {
       _analysisTimer?.cancel();
       _analysisTimer = null;
@@ -123,10 +127,18 @@ class _VideoPanelState extends State<_VideoPanel> {
     final autoRefresh = context.select<CameraProvider, bool>(
       (provider) => provider.autoRefresh,
     );
+    final videoMode = context.select<CameraProvider, CameraVideoMode>(
+      (provider) => provider.videoMode,
+    );
     final frame = context.select<CameraProvider, Uint8List?>(
       (provider) => provider.frameBytes,
     );
-    _syncAnalysisTimer(autoRefresh: autoRefresh, useLocalPreview: useLocalPreview);
+    final showingProcessedVideo = videoMode == CameraVideoMode.processed;
+    _syncAnalysisTimer(
+      autoRefresh: autoRefresh,
+      useLocalPreview: useLocalPreview,
+      showingProcessedVideo: showingProcessedVideo,
+    );
 
     return Container(
       decoration: BoxDecoration(
@@ -169,12 +181,13 @@ class _VideoPanelState extends State<_VideoPanel> {
                             },
                           )
                         : frame == null
-                        ? _VideoPlaceholder(isConnecting: provider.isConnecting)
-                        : Image.memory(
-                            frame,
-                            gaplessPlayback: true,
-                            fit: BoxFit.contain,
-                          ),
+                            ? _VideoPlaceholder(
+                                isConnecting: provider.isConnecting)
+                            : Image.memory(
+                                frame,
+                                gaplessPlayback: true,
+                                fit: BoxFit.contain,
+                              ),
                   ),
                   Positioned(
                     left: 12,
@@ -198,7 +211,7 @@ class _VideoPanelState extends State<_VideoPanel> {
                       isOnline: provider.status?.online == true,
                     ),
                   ),
-                  const _PoseSkeletonOverlay(),
+                  if (showingProcessedVideo) const _PoseSkeletonOverlay(),
                   if (provider.audioListening)
                     Positioned(
                       left: 12,
@@ -213,52 +226,114 @@ class _VideoPanelState extends State<_VideoPanel> {
             ),
             Padding(
               padding: const EdgeInsets.all(16),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Icon(
-                      Icons.videocam_outlined,
+                  Row(
+                    children: <Widget>[
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: const Icon(
+                          Icons.videocam_outlined,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            const Text(
+                              '家庭实时画面',
+                              style: TextStyle(
+                                color: AppColors.textMain,
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              useLocalPreview
+                                  ? (showingProcessedVideo
+                                      ? '本地预览叠加后端姿态检测骨架'
+                                      : '本地摄像头原始预览')
+                                  : provider.endpointLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: AppColors.textSub,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  _VideoModeSwitch(
+                    selected: videoMode,
+                    onChanged: (mode) => unawaited(provider.setVideoMode(mode)),
+                  ),
+                  if (showingProcessedVideo) ...<Widget>[
+                    const SizedBox(height: 10),
+                    const _InlineNotice(
+                      icon: Icons.auto_awesome_motion_outlined,
                       color: AppColors.primary,
+                      text: '处理后视频会显示后端模型绘制的红框和姿态骨架',
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        const Text(
-                          '家庭实时画面',
-                          style: TextStyle(
-                            color: AppColors.textMain,
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          useLocalPreview
-                              ? '浏览器直接调用本机摄像头预览，后端低频做状态/算法分析'
-                              : provider.endpointLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: AppColors.textSub,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  ],
                 ],
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoModeSwitch extends StatelessWidget {
+  final CameraVideoMode selected;
+  final ValueChanged<CameraVideoMode> onChanged;
+
+  const _VideoModeSwitch({
+    required this.selected,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<CameraVideoMode>(
+      segments: const <ButtonSegment<CameraVideoMode>>[
+        ButtonSegment<CameraVideoMode>(
+          value: CameraVideoMode.processed,
+          icon: Icon(Icons.person_search_outlined),
+          label: Text('处理后视频'),
+        ),
+        ButtonSegment<CameraVideoMode>(
+          value: CameraVideoMode.raw,
+          icon: Icon(Icons.videocam_outlined),
+          label: Text('原视频'),
+        ),
+      ],
+      selected: <CameraVideoMode>{selected},
+      onSelectionChanged: (Set<CameraVideoMode> value) {
+        if (value.isEmpty) return;
+        onChanged(value.first);
+      },
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        textStyle: WidgetStateProperty.all(
+          const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w800,
+          ),
         ),
       ),
     );
@@ -992,9 +1067,7 @@ class _AiAnalysisPanel extends StatelessWidget {
           ),
           _AnalysisRow(
             label: 'multimodal review',
-            value: reviewEnabled
-                ? '已启用，当前通道：$reviewProvider'
-                : '未启用或未配置复核通道',
+            value: reviewEnabled ? '已启用，当前通道：$reviewProvider' : '未启用或未配置复核通道',
             color: reviewEnabled ? AppColors.primary : AppColors.textSub,
           ),
           if (fallStatus?.lastError != null)
@@ -1161,12 +1234,14 @@ class _PoseSkeletonPainter extends CustomPainter {
       return;
     }
 
-    final scale = (size.width / frameWidth).clamp(0.0, size.height / frameHeight);
+    final scale =
+        (size.width / frameWidth).clamp(0.0, size.height / frameHeight);
     final drawWidth = frameWidth * scale;
     final drawHeight = frameHeight * scale;
     final dx = (size.width - drawWidth) / 2;
     final dy = (size.height - drawHeight) / 2;
-    Offset point(PoseKeypoint kp) => Offset(dx + kp.x * scale, dy + kp.y * scale);
+    Offset point(PoseKeypoint kp) =>
+        Offset(dx + kp.x * scale, dy + kp.y * scale);
 
     final bonePaint = Paint()
       ..color = track.isRisk

@@ -1,6 +1,6 @@
 param(
     [string]$Config = "camera_live_config.json",
-    [string]$CameraIp = "192.168.8.248",
+    [string]$CameraIp = "192.168.8.253",
     [string]$Username = "admin",
     [string]$Password = "admin",
     [ValidateSet("av0_1", "av0_0")]
@@ -81,4 +81,3 @@ Write-Host "Started camera runtime."
 Write-Host ("PID: " + $proc.Id)
 Write-Host ("Viewer: http://127.0.0.1:" + $ListenPort + "/viewer")
 Write-Host ("Health: http://127.0.0.1:" + $ListenPort + "/api/v1/camera/health")
-

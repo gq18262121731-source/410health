@@ -75,7 +75,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isConfigured ? AppColors.success.withOpacity(0.5) : AppColors.error.withOpacity(0.5),
+          color: isConfigured ? AppColors.success.withValues(alpha: 0.5) : AppColors.error.withValues(alpha: 0.5),
         ),
         boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(0, 2))],
       ),
@@ -132,7 +132,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
                             height: 80 * value,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
-                              color: const Color(0xFF2563EB).withOpacity(0.2 * (1.6 - value)),
+                              color: const Color(0xFF2563EB).withValues(alpha: 0.2 * (1.6 - value)),
                             ),
                           );
                         },
@@ -175,9 +175,9 @@ class _VoiceScreenState extends State<VoiceScreen> {
             padding: const EdgeInsets.all(16),
             width: double.infinity,
             decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.05),
+              color: AppColors.primary.withValues(alpha: 0.05),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.primary.withOpacity(0.1)),
+              border: Border.all(color: AppColors.primary.withValues(alpha: 0.1)),
             ),
             child: Text(
               '识别结果: ${provider.lastAsrText}',
@@ -240,7 +240,7 @@ class _VoiceScreenState extends State<VoiceScreen> {
       child: Column(
         children: [
           const SizedBox(height: 40),
-          Icon(Icons.voice_over_off, size: 64, color: AppColors.textMuted.withOpacity(0.2)),
+          Icon(Icons.voice_over_off, size: 64, color: AppColors.textMuted.withValues(alpha: 0.2)),
           const SizedBox(height: 24),
           const Text(
             '语音服务当前不可用',

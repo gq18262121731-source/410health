@@ -17,6 +17,7 @@ class CameraProvider extends ChangeNotifier {
   CameraDetectionRuntimeStatus? poseDetectionStatus;
   CameraFrameAnalysisStatus? frameAnalysisStatus;
   PoseDetectionLatest? poseLatest;
+  CameraVideoMode videoMode = CameraVideoMode.processed;
   CameraSetupConfig setupConfig = const CameraSetupConfig(
     sourceMode: 'local',
     localIndex: 0,
@@ -79,6 +80,8 @@ class CameraProvider extends ChangeNotifier {
 
   bool get hasFrame => frameBytes != null;
 
+  bool get showingProcessedVideo => videoMode == CameraVideoMode.processed;
+
   String get frameAnalysisLabel {
     if (aiAnalysisRunning) return '正在调用接口';
     if (lastAiAnalysisAt != null) {
@@ -89,10 +92,12 @@ class CameraProvider extends ChangeNotifier {
 
   String get streamLabel {
     if (autoRefresh && setupConfig.sourceMode == 'local') {
-      return '浏览器本地预览';
+      return showingProcessedVideo ? '本地处理预览' : '本地原始预览';
     }
     if (!autoRefresh) return '已暂停';
-    if (hasFrame) return '实时 ${clientFps.toStringAsFixed(1)} fps';
+    if (hasFrame) {
+      return '${videoMode.shortLabel} ${clientFps.toStringAsFixed(1)} fps';
+    }
     if (isConnecting) return '连接中';
     return '暂无画面';
   }
@@ -185,6 +190,9 @@ class CameraProvider extends ChangeNotifier {
       if (autoRefresh) {
         _closeFrameStream(clearFrame: true);
         if (setupConfig.sourceMode != 'local') {
+          if (showingProcessedVideo) {
+            unawaited(_ensureProcessedVideoModels());
+          }
           _startFrameStream();
         }
       }
@@ -251,12 +259,33 @@ class CameraProvider extends ChangeNotifier {
   }
 
   Future<void> setFallDetectionEnabled(bool enabled) async {
+    fallDetectionUpdating = true;
     singleFrameFallEnabled = enabled;
     lastAiAnalysisError = null;
     notifyListeners();
+    try {
+      if (setupConfig.sourceMode != 'local') {
+        fallDetectionStatus =
+            await _repository.setFallDetectionEnabled(enabled);
+      } else {
+        fallDetectionStatus = CameraDetectionRuntimeStatus(
+          enabled: enabled,
+          running: enabled,
+          processRunning: false,
+          profile: 'single_frame_fall',
+        );
+      }
+      errorMessage = null;
+    } catch (error) {
+      errorMessage = _formatError(error, fallback: '跌倒检测模型切换失败');
+    } finally {
+      fallDetectionUpdating = false;
+      notifyListeners();
+    }
   }
 
   Future<void> setPoseDetectionEnabled(bool enabled) async {
+    poseDetectionUpdating = true;
     singleFramePoseEnabled = enabled;
     if (!enabled) {
       poseLatest = const PoseDetectionLatest(
@@ -269,21 +298,77 @@ class CameraProvider extends ChangeNotifier {
     }
     lastAiAnalysisError = null;
     notifyListeners();
+    try {
+      if (setupConfig.sourceMode != 'local') {
+        poseDetectionStatus =
+            await _repository.setPoseDetectionEnabled(enabled);
+      } else {
+        poseDetectionStatus = CameraDetectionRuntimeStatus(
+          enabled: enabled,
+          running: enabled,
+          processRunning: false,
+          profile: 'single_frame_pose',
+        );
+      }
+      errorMessage = null;
+    } catch (error) {
+      errorMessage = _formatError(error, fallback: '姿态检测模型切换失败');
+    } finally {
+      poseDetectionUpdating = false;
+      notifyListeners();
+    }
   }
 
   void startFrameRefresh() {
     if (autoRefresh) return;
     autoRefresh = true;
     if (setupConfig.sourceMode != 'local') {
+      if (showingProcessedVideo) {
+        unawaited(_ensureProcessedVideoModels());
+      }
       _startFrameStream();
     }
     refreshDiagnostics();
     notifyListeners();
   }
 
+  Future<void> setVideoMode(CameraVideoMode mode) async {
+    if (videoMode == mode) return;
+    videoMode = mode;
+    lastAiAnalysisError = null;
+    if (!showingProcessedVideo && setupConfig.sourceMode == 'local') {
+      poseLatest = null;
+    }
+    if (autoRefresh && setupConfig.sourceMode != 'local') {
+      _closeFrameStream(clearFrame: true);
+      if (showingProcessedVideo) {
+        unawaited(_ensureProcessedVideoModels());
+      }
+      _startFrameStream();
+    }
+    notifyListeners();
+  }
+
+  Future<void> _ensureProcessedVideoModels() async {
+    try {
+      final statuses = await _repository.setDetectionModelsEnabled(
+        poseDetectionEnabled: true,
+        fallDetectionEnabled: true,
+      );
+      poseDetectionStatus = statuses['pose_detection'];
+      fallDetectionStatus = statuses['fall_detection'];
+      errorMessage = null;
+      notifyListeners();
+    } catch (error) {
+      errorMessage = _formatError(error, fallback: '处理后视频模型启动失败');
+      notifyListeners();
+    }
+  }
+
   Future<void> analyzeBrowserFrame(Uint8List imageBytes) async {
     final now = DateTime.now();
     if (!autoRefresh ||
+        !showingProcessedVideo ||
         imageBytes.isEmpty ||
         (!singleFramePoseEnabled && !singleFrameFallEnabled) ||
         (_lastAnalysisStartedAt != null &&
@@ -488,7 +573,7 @@ class CameraProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _frameChannel = _repository.connectFrameStream();
+      _frameChannel = _repository.connectFrameStream(mode: videoMode);
       _frameSubscription = _frameChannel!.stream.listen(
         _handleFrame,
         onError: (Object error) {

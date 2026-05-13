@@ -339,6 +339,37 @@ async def camera_frame_stream(websocket: WebSocket) -> None:
         await hub.disconnect(websocket)
 
 
+@app.websocket("/ws/camera/processed")
+async def camera_processed_frame_stream(websocket: WebSocket) -> None:
+    hub = get_camera_pose_frame_hub()
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
+
+
+@app.websocket("/ws/camera/pose")
+async def camera_pose_frame_stream(websocket: WebSocket) -> None:
+    await camera_processed_frame_stream(websocket)
+
+
+@app.websocket("/ws/camera/detection")
+async def camera_detection_frame_stream(websocket: WebSocket) -> None:
+    hub = get_camera_detection_frame_hub()
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
+
+
 @app.websocket("/ws/camera/audio/listen")
 async def camera_audio_stream(websocket: WebSocket) -> None:
     hub = get_camera_source_audio_hub("active")

@@ -61,6 +61,7 @@ from backend.services.posture_knowledge_service import PostureKnowledgeService
 from backend.services.relation_service import RelationService
 from backend.services.stream_service import StreamService
 from backend.services.external_camera_bridge_service import ExternalCameraBridgeService
+from backend.services.fall_response_knowledge_service import FallResponseKnowledgeService
 from backend.services.frame_analysis_worker_service import FrameAnalysisWorkerService
 from backend.services.target_pose_service import TargetPoseService
 from backend.services.target_user_service import TargetUserService
@@ -115,6 +116,14 @@ _camera_detection_frame_hub = CameraDetectionFrameHub(
 )
 _pose_state_service = PoseStateService()
 _pose_detection_config_service = PoseDetectionConfigService(_settings)
+def _latest_pose_overlay_payload() -> dict[str, object] | None:
+    payload = _pose_detection_service.latest()
+    if payload is not None:
+        _pose_state_service.update(payload)
+        return payload
+    return _pose_state_service.latest()
+
+
 _camera_pose_frame_hub = CameraPoseFrameHub(
     _settings.model_copy(
         update={
@@ -128,11 +137,7 @@ _camera_pose_frame_hub = CameraPoseFrameHub(
             "camera_stream_keep_warm": False,
         }
     ),
-    payload_provider=lambda: (
-        _pose_state_service.latest()
-        if "_pose_state_service" in globals()
-        else None
-    ),
+    payload_provider=_latest_pose_overlay_payload,
 )
 _camera_audio_hub = CameraAudioHub(_settings)
 _camera_source_registry = CameraSourceRegistry(_settings)
@@ -153,6 +158,9 @@ _target_pose_service = TargetPoseService(
 )
 _posture_event_service = PostureEventService()
 _posture_knowledge_service = PostureKnowledgeService(resources_root=Path(__file__).resolve().parent / "resources")
+_fall_response_knowledge_service = FallResponseKnowledgeService(
+    resources_root=Path(__file__).resolve().parent / "resources"
+)
 _target_user_fall_service = TargetUserFallService(
     data_root=_settings.data_dir,
     model_root=_fall_detection_model_root,
@@ -339,6 +347,7 @@ def _fall_alert_presentation(
         "catalog_name": str((catalog_match or {}).get("name") or "").strip() or "未分类跌倒事件",
         "title": title or "检测到异常事件",
         "lead": lead or "系统已检测到异常姿态，请尽快查看现场。",
+        "alert_level": str((catalog_match or {}).get("alert_level") or "").strip().upper() or "NOTICE",
         "show_immediate_popup": bool((catalog_match or {}).get("show_immediate_popup")),
         "requires_multimodal_review": bool((catalog_match or {}).get("requires_multimodal_review")),
         "recommended_actions": list(actions) if isinstance(actions, list) else [],
@@ -347,12 +356,35 @@ def _fall_alert_presentation(
     }
 
 
+def _fall_family_guidance(
+    *,
+    catalog_match: dict[str, object] | None,
+    event: dict[str, object],
+    severity: str,
+    injury_level: str,
+    presentation: dict[str, object],
+) -> dict[str, object]:
+    return _fall_response_knowledge_service.get(
+        catalog_code=str((catalog_match or {}).get("code") or "").strip() or str(presentation.get("catalog_code") or ""),
+        event_state=str(event.get("state") or ""),
+        severity=severity,
+        injury_level=injury_level,
+        alert_level=str(presentation.get("alert_level") or ""),
+        recommended_actions=[
+            str(item).strip()
+            for item in (presentation.get("recommended_actions") or [])
+            if str(item).strip()
+        ],
+    )
+
+
 async def _broadcast_fall_review_pending(
     *,
     incident_id: str,
     track_id: str,
     event: dict[str, object],
     presentation: dict[str, object],
+    family_guidance: dict[str, object],
 ) -> None:
     await _websocket_manager.broadcast_alarm(
         {
@@ -364,6 +396,8 @@ async def _broadcast_fall_review_pending(
             "lead": "已检测到异常姿态，系统正在结合快照分析老人当前状态。",
             "expected_seconds": max(3, int(_settings.fall_detection_multimodal_timeout_seconds or 8)),
             "catalog_code": presentation.get("catalog_code"),
+            "presentation": presentation,
+            "family_guidance": family_guidance,
             "event": event,
         }
     )
@@ -375,6 +409,7 @@ async def _broadcast_fall_review_finalized(
     track_id: str,
     event: dict[str, object],
     presentation: dict[str, object],
+    family_guidance: dict[str, object],
     review: dict[str, object] | None,
 ) -> None:
     await _websocket_manager.broadcast_alarm(
@@ -385,6 +420,7 @@ async def _broadcast_fall_review_finalized(
             "track_id": track_id,
             "catalog_code": presentation.get("catalog_code"),
             "presentation": presentation,
+            "family_guidance": family_guidance,
             "event": event,
             "review": review or {},
         }
@@ -480,6 +516,13 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
         or state in {"injury_watch", "abnormal_recovery", "needs_assistance", "emergency"}
         else AlarmType.FALL_DETECTED
     )
+    family_guidance = _fall_family_guidance(
+        catalog_match=catalog_match,
+        event=event,
+        severity=severity,
+        injury_level=injury_level,
+        presentation=presentation,
+    )
     title = str(presentation.get("title") or "跌倒告警").strip()
     lead = str(presentation.get("lead") or "").strip()
     alarm = AlarmRecord(
@@ -497,6 +540,7 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
             "track_id": track_id,
             "incident_id": incident_id,
             "presentation": presentation,
+            "family_guidance": family_guidance,
         },
     )
     alarms = _alarm_service.evaluate_alarm_records([enrich_alarm_context(alarm)])
@@ -528,6 +572,7 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
             track_id=track_id,
             event=event,
             presentation=presentation,
+            family_guidance=family_guidance,
         )
 
     multimodal_review: dict[str, object] | None = None
@@ -551,11 +596,19 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
             presentation["review_status"] = "fallback"
             presentation["title"] = "系统复核暂未完成"
             presentation["lead"] = "系统未能及时给出明确复核结论，请先按跌倒风险处理并人工确认现场。"
+        family_guidance = _fall_family_guidance(
+            catalog_match=catalog_match,
+            event=event,
+            severity=severity,
+            injury_level=injury_level,
+            presentation=presentation,
+        )
         await _broadcast_fall_review_finalized(
             incident_id=incident_id,
             track_id=track_id,
             event=event,
             presentation=presentation,
+            family_guidance=family_guidance,
             review=multimodal_review,
         )
 

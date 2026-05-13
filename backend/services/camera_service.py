@@ -291,6 +291,19 @@ class CameraService:
                 return self.capture_local_jpeg()
             raise RuntimeError("CAMERA_NOT_CONFIGURED")
 
+        if source_mode == "rtsp":
+            try:
+                return self._capture_jpeg_with_opencv()
+            except RuntimeError as rtsp_error:
+                image_bytes = self._capture_jpeg_with_ffmpeg()
+                if image_bytes:
+                    return image_bytes, {"Cache-Control": "no-store, max-age=0"}
+                try:
+                    return self._capture_jpeg_via_http()
+                except RuntimeError:
+                    pass
+                raise rtsp_error
+
         # 优化：先尝试HTTP快照（P2P摄像头的最佳方式）
         try:
             return self._capture_jpeg_via_http()
