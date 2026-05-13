@@ -64,6 +64,12 @@ class CameraSourceRegistry:
                 return self.get_source(active_camera_id)
             except KeyError:
                 pass
+        try:
+            preferred_preview = self.get_source("camera2")
+            if preferred_preview.enabled and preferred_preview.ip:
+                return preferred_preview
+        except KeyError:
+            pass
         for source in self.list_sources():
             if source.camera_id != "local":
                 return source
@@ -219,6 +225,7 @@ class CameraSourceRegistry:
     def _camera1(self) -> CameraSourceConfig:
         settings = self._settings
         ip = settings.camera1_ip.strip() or settings.camera_ip.strip()
+        default_rtsp_path = settings.camera_stream_rtsp_path or settings.camera_rtsp_path
         return CameraSourceConfig(
             camera_id="camera1",
             name=settings.camera1_name.strip() or "camera1",
@@ -227,7 +234,7 @@ class CameraSourceRegistry:
             password=settings.camera1_password or settings.camera_password,
             rtsp_port=settings.camera1_rtsp_port or settings.camera_rtsp_port,
             onvif_port=settings.camera1_onvif_port or settings.camera_onvif_port,
-            rtsp_path=self._path_or_default(settings.camera1_rtsp_path, settings.camera_rtsp_path),
+            rtsp_path=self._path_or_default(settings.camera1_rtsp_path, default_rtsp_path),
             stream_rtsp_path=self._path_or_default(settings.camera1_stream_rtsp_path, settings.camera_stream_rtsp_path),
             audio_rtsp_path=self._path_or_default(settings.camera1_audio_rtsp_path, settings.camera_audio_rtsp_path),
             source="legacy-env" if not settings.camera1_ip.strip() else "camera1-env",

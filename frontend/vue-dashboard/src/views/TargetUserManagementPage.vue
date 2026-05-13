@@ -9,8 +9,6 @@ import type {
   TargetUserRecord,
 } from "../api/client";
 import { ApiError, api } from "../api/client";
-import TargetPoseOverlaySvg from "../components/TargetPoseOverlaySvg.vue";
-import TargetPoseSkeletonView from "../components/TargetPoseSkeletonView.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 
 defineProps<{
@@ -29,21 +27,21 @@ const externalHealthError = ref("");
 const analyzeBusy = ref(false);
 const analyzeResult = ref<ExternalCameraFallDetectResponse | null>(null);
 const analyzeSource = ref<"external" | "local">("external");
-const snapshotNaturalSize = ref<{ width: number; height: number } | null>(null);
 const fallStatus = ref<CameraFallDetectionStatusResponse | null>(null);
 const poseConfig = ref<CameraPoseDetectionConfigResponse | null>(null);
 const poseToggleBusy = ref(false);
-const showPoseOverlay = ref(true);
-const labelMode = ref<"index" | "name">("index");
-const selectedPointIndex = ref<number | null>(null);
-const selectedTrendTimestamp = ref<number | null>(null);
-const trendItems = ref<Array<{
-  ts: number;
-  posture: string;
-  event: string;
-  confidence: number;
-  postureRaw: typeof analyzeResult.value;
-}>>([]);
+const livePreviewError = ref("");
+const livePreviewVersion = ref(0);
+const livePreviewMode = ref<"stream" | "snapshot">("stream");
+const trendItems = ref<
+  Array<{
+    ts: number;
+    posture: string;
+    event: string;
+    confidence: number;
+    postureRaw: typeof analyzeResult.value;
+  }>
+>([]);
 
 const form = ref({
   displayName: "",
@@ -54,8 +52,18 @@ const form = ref({
 
 const pageMeta = computed(() => [
   `已注册 ${users.value.length}`,
-  `摄像头 ${analyzeSource.value === "local" ? "本地电脑摄像头" : (externalHealth.value?.running ? "已接通" : "待联通")}`,
-  `流 ${analyzeSource.value === "local" ? "local-camera" : (externalHealth.value?.stream ?? "unknown")}`,
+  `摄像头 ${
+    analyzeSource.value === "local"
+      ? "本地电脑摄像头"
+      : externalHealth.value?.running
+        ? "已接通"
+        : "待连接"
+  }`,
+  `流 ${
+    analyzeSource.value === "local"
+      ? "local-camera"
+      : externalHealth.value?.stream ?? "unknown"
+  }`,
 ]);
 
 const selectedFileSummary = computed(() => {
@@ -64,15 +72,48 @@ const selectedFileSummary = computed(() => {
   return `${form.value.files.length} 张照片已选择`;
 });
 
-const targetPose = computed(() => analyzeResult.value?.target_pose?.pose ?? null);
-const posePoints = computed(() => targetPose.value?.points ?? []);
-const poseConnections = computed(() => targetPose.value?.connections ?? []);
-const posePosture = computed(() => targetPose.value?.posture ?? null);
-const poseQuality = computed(() => targetPose.value?.quality ?? null);
-const postureEvent = computed(() => analyzeResult.value?.posture_event ?? null);
-const postureGuidance = computed(() => analyzeResult.value?.posture_guidance ?? null);
-const roiBbox = computed(() => analyzeResult.value?.tracking?.roi?.bbox ?? null);
-const multimodalReview = computed(() => fallStatus.value?.multimodal_review ?? null);
+const posePosture = computed(
+  () => analyzeResult.value?.target_pose?.pose?.posture ?? null,
+);
+const postureEvent = computed(
+  () => analyzeResult.value?.posture_event ?? null,
+);
+const postureGuidance = computed(
+  () => analyzeResult.value?.posture_guidance ?? null,
+);
+const multimodalReview = computed(
+  () => fallStatus.value?.multimodal_review ?? null,
+);
+
+const snapshotUrl = computed(() => {
+  const localSnapshot =
+    analyzeSource.value === "local" ? api.getLocalCameraSnapshotUrl() : "";
+  const base =
+    analyzeResult.value?.camera_source?.snapshot_url ||
+    localSnapshot ||
+    externalHealth.value?.snapshot_url;
+  if (!base) return "";
+  return `${base}${base.includes("?") ? "&" : "?"}t=${Date.now()}`;
+});
+
+const rawPreviewUrl = computed(() => {
+  const base =
+    analyzeSource.value === "local"
+      ? api.getCameraStreamUrl()
+      : api.getActiveCameraStreamUrl();
+  return `${base}${base.includes("?") ? "&" : "?"}raw=${livePreviewVersion.value}`;
+});
+
+const processedPreviewUrl = computed(() => {
+  const base = api.getCameraDetectionStreamUrl();
+  return `${base}${base.includes("?") ? "&" : "?"}fall=${livePreviewVersion.value}`;
+});
+
+const skeletonPreviewUrl = computed(() => {
+  const base = api.getCameraPoseStreamUrl();
+  return `${base}${base.includes("?") ? "&" : "?"}pose=${livePreviewVersion.value}`;
+});
+
 const eventTone = computed(() => {
   const level = postureEvent.value?.level ?? postureGuidance.value?.level ?? "";
   if (level === "critical" || level === "danger") return "tone-critical";
@@ -80,86 +121,17 @@ const eventTone = computed(() => {
   if (level === "attention") return "tone-info";
   return "tone-neutral";
 });
+
 const multimodalTone = computed(() => {
   if (!multimodalReview.value?.enabled) return "tone-neutral";
-  if (multimodalReview.value?.dashscope_configured || multimodalReview.value?.siliconflow_configured) {
+  if (
+    multimodalReview.value?.dashscope_configured ||
+    multimodalReview.value?.siliconflow_configured
+  ) {
     return "tone-stable";
   }
   return "tone-warning";
 });
-const snapshotUrl = computed(() => {
-  const localSnapshot = analyzeSource.value === "local" ? api.getLocalCameraSnapshotUrl() : "";
-  const base = analyzeResult.value?.camera_source?.snapshot_url || localSnapshot || externalHealth.value?.snapshot_url;
-  if (!base) return "";
-  return `${base}${base.includes("?") ? "&" : "?"}t=${Date.now()}`;
-});
-const roiOverlayStyle = computed(() => {
-  const bbox = roiBbox.value;
-  const imageSize = snapshotNaturalSize.value;
-  if (!bbox || bbox.length !== 4 || !imageSize) return null;
-  const [x1, y1, x2, y2] = bbox;
-  return {
-    left: `${(x1 / imageSize.width) * 100}%`,
-    top: `${(y1 / imageSize.height) * 100}%`,
-    width: `${((x2 - x1) / imageSize.width) * 100}%`,
-    height: `${((y2 - y1) / imageSize.height) * 100}%`,
-  };
-});
-const roiPreviewStyle = computed(() => {
-  const bbox = roiBbox.value;
-  const imageSize = snapshotNaturalSize.value;
-  if (!bbox || bbox.length !== 4 || !imageSize) return null;
-  const [x1, y1, x2, y2] = bbox;
-  const width = Math.max(1, x2 - x1);
-  const height = Math.max(1, y2 - y1);
-  return {
-    backgroundImage: `url(${snapshotUrl.value})`,
-    backgroundSize: `${imageSize.width}px ${imageSize.height}px`,
-    backgroundPosition: `-${x1}px -${y1}px`,
-    width: `${Math.min(100, width)}%`,
-    maxWidth: `${Math.max(180, Math.min(360, width))}px`,
-    aspectRatio: `${width} / ${height}`,
-  };
-});
-const highlightParts = computed(() => {
-  const parts = new Set<string>();
-  const postureLabel = posePosture.value?.label ?? "";
-  const eventType = postureEvent.value?.type ?? "";
-  if (postureLabel === "hand_to_chest_or_abdomen" || eventType === "hand_to_chest_or_abdomen") {
-    parts.add("left_arm");
-    parts.add("right_arm");
-    parts.add("torso");
-  }
-  if (postureLabel === "leaning" || eventType === "abnormal_lean" || eventType === "fall_slow") {
-    parts.add("torso");
-    parts.add("left_leg");
-    parts.add("right_leg");
-  }
-  if (postureLabel === "fall_like" || eventType === "fall_fast") {
-    parts.add("torso");
-    parts.add("left_leg");
-    parts.add("right_leg");
-    parts.add("left_arm");
-    parts.add("right_arm");
-  }
-  return Array.from(parts);
-});
-const highlightPointIndices = computed(() => {
-  const indices = new Set<number>();
-  const postureLabel = posePosture.value?.label ?? "";
-  const eventType = postureEvent.value?.type ?? "";
-  if (postureLabel === "hand_to_chest_or_abdomen" || eventType === "hand_to_chest_or_abdomen") {
-    [5, 6, 9, 10, 11, 12].forEach((index) => indices.add(index));
-  }
-  if (postureLabel === "leaning" || eventType === "abnormal_lean" || eventType === "fall_slow") {
-    [5, 6, 11, 12, 13, 14, 15, 16].forEach((index) => indices.add(index));
-  }
-  if (postureLabel === "fall_like" || eventType === "fall_fast") {
-    [5, 6, 7, 8, 11, 12, 13, 14, 15, 16].forEach((index) => indices.add(index));
-  }
-  return Array.from(indices);
-});
-const selectedPoint = computed(() => posePoints.value.find((point) => point.index === selectedPointIndex.value) ?? null);
 
 function formatError(error: unknown, fallback: string) {
   if (error instanceof ApiError && error.detail) return error.detail;
@@ -172,13 +144,19 @@ function onFileChange(event: Event) {
   form.value.files = Array.from(input.files ?? []);
 }
 
-function onSnapshotLoaded(event: Event) {
-  const image = event.target as HTMLImageElement;
-  if (!image?.naturalWidth || !image?.naturalHeight) return;
-  snapshotNaturalSize.value = {
-    width: image.naturalWidth,
-    height: image.naturalHeight,
-  };
+function handleLivePreviewLoaded() {
+  livePreviewError.value = "";
+}
+
+function handleLivePreviewError() {
+  livePreviewMode.value = "snapshot";
+  livePreviewError.value = "实时预览暂时不可用，页面已自动降级到快照模式。";
+}
+
+function retryLivePreview() {
+  livePreviewMode.value = "stream";
+  livePreviewVersion.value += 1;
+  livePreviewError.value = "";
 }
 
 async function refreshFallStatus() {
@@ -248,7 +226,7 @@ async function submitCreate() {
       files: [],
     };
     createMessage.value = created.warnings.length
-      ? `创建完成，但有提示：${created.warnings.join("、")}`
+      ? `创建完成，但有提示：${created.warnings.join("；")}`
       : "目标用户创建完成。";
     await refreshUsers();
   } catch (error) {
@@ -273,29 +251,36 @@ async function removeUser(userId: string) {
 async function runPoseAnalysis() {
   analyzeBusy.value = true;
   try {
-    analyzeResult.value = analyzeSource.value === "local"
-      ? await api.runLocalCameraPoseDetect({
-          target_only: true,
-          session_id: "target-pose-demo-page-local",
-          mode: "metadata",
-        })
-      : await api.runExternalCameraFallDetect({
-          target_only: true,
-          session_id: "target-pose-demo-page",
-          mode: "metadata",
-        });
-    selectedPointIndex.value = null;
-    selectedTrendTimestamp.value = null;
+    analyzeResult.value =
+      analyzeSource.value === "local"
+        ? await api.runLocalCameraPoseDetect({
+            target_only: true,
+            session_id: "target-pose-demo-page-local",
+            mode: "metadata",
+          })
+        : await api.runExternalCameraFallDetect({
+            target_only: true,
+            session_id: "target-pose-demo-page",
+            mode: "metadata",
+          });
     trendItems.value = [
       ...trendItems.value.slice(-7),
       {
         ts: Date.now(),
-        posture: analyzeResult.value?.target_pose?.pose?.posture?.label ?? "unknown",
+        posture:
+          analyzeResult.value?.target_pose?.pose?.posture?.label ?? "unknown",
         event: analyzeResult.value?.posture_event?.type ?? "normal",
-        confidence: Number(analyzeResult.value?.posture_event?.confidence ?? analyzeResult.value?.target_pose?.pose?.posture?.confidence ?? 0),
+        confidence: Number(
+          analyzeResult.value?.posture_event?.confidence ??
+            analyzeResult.value?.target_pose?.pose?.posture?.confidence ??
+            0,
+        ),
         postureRaw: analyzeResult.value,
       },
     ];
+    livePreviewMode.value = "stream";
+    livePreviewVersion.value += 1;
+    livePreviewError.value = "";
     if (analyzeSource.value === "external") {
       await refreshExternalHealth();
     }
@@ -304,7 +289,9 @@ async function runPoseAnalysis() {
   } catch (error) {
     externalHealthError.value = formatError(
       error,
-      analyzeSource.value === "local" ? "本地摄像头姿态分析执行失败。" : "目标姿态分析执行失败。",
+      analyzeSource.value === "local"
+        ? "本地摄像头姿态分析执行失败。"
+        : "目标姿态分析执行失败。",
     );
   } finally {
     analyzeBusy.value = false;
@@ -332,26 +319,14 @@ onMounted(() => {
   void refreshFallStatus();
   void refreshPoseConfig();
 });
-
-function selectPoint(index: number | null) {
-  selectedPointIndex.value = index;
-}
-
-function applyTrendItem(ts: number) {
-  const item = trendItems.value.find((entry) => entry.ts === ts);
-  if (!item) return;
-  analyzeResult.value = item.postureRaw;
-  selectedTrendTimestamp.value = ts;
-  selectedPointIndex.value = null;
-}
 </script>
 
 <template>
   <section class="page-stack">
     <PageHeader
       eyebrow="Target Pose Demo"
-      title="单目标姿态分析演示"
-      description="聚焦目标人物 ROI 内的骨架估计、轻量姿态判断和异常行为提示。"
+      title="跌倒检测与骨架展示"
+      description="基于社区摄像头统一展示原始视频、跌倒检测处理后画面与多点位姿态骨架流，作为现场演示与模型核验入口。"
       :meta="pageMeta"
     >
       <template #actions>
@@ -493,29 +468,6 @@ function applyTrendItem(ts: number) {
             <strong>{{ analyzeResult?.bridge_latency_ms ?? "--" }} ms</strong>
           </article>
         </div>
-
-        <div class="target-pose-metrics">
-          <div class="target-pose-metrics__item">
-            <span>quality</span>
-            <strong>{{ poseQuality?.mean_score ?? "--" }}</strong>
-            <small>可见点 {{ poseQuality?.visible_points ?? 0 }} / 估计点 {{ poseQuality?.estimated_points ?? 0 }}</small>
-          </div>
-          <div class="target-pose-metrics__item">
-            <span>angle</span>
-            <strong>{{ posePosture?.torso_angle_deg ?? "--" }}</strong>
-            <small>躯干角度（度）</small>
-          </div>
-          <div class="target-pose-metrics__item">
-            <span>confidence</span>
-            <strong>{{ postureEvent?.confidence ?? posePosture?.confidence ?? "--" }}</strong>
-            <small>姿态/事件置信度</small>
-          </div>
-          <div class="target-pose-metrics__item">
-            <span>track</span>
-            <strong>{{ analyzeResult?.tracking?.track_id ?? "--" }}</strong>
-            <small>候选 {{ analyzeResult?.tracking?.candidate_count ?? 0 }}</small>
-          </div>
-        </div>
       </article>
 
       <article class="panel target-pose-mm-panel">
@@ -558,8 +510,7 @@ function applyTrendItem(ts: number) {
         </div>
 
         <p class="helper-copy">
-          这部分是系统已有的全局跌倒检测能力：在跌倒主链触发快照后，可交给多模态模型进行图像复核。
-          当前页面展示的是能力状态，不代表本次单目标姿态分析已经触发了多模态复核。
+          这部分是系统已有的全局跌倒检测能力：在跌倒主链触发快照后，可交给多模态模型进行图像复核。当前页面展示的是能力状态，不代表本次单目标姿态分析已经触发了多模态复核。
         </p>
       </article>
 
@@ -567,56 +518,60 @@ function applyTrendItem(ts: number) {
         <div class="panel-head">
           <div>
             <p class="section-eyebrow">Preview</p>
-            <h2>原始画面与目标 ROI</h2>
+            <h2>原始画面与处理后画面</h2>
           </div>
-          <span class="status-tag tone-neutral">{{ snapshotUrl ? "快照已接入" : "等待快照" }}</span>
+          <div class="target-pose-preview-panel__status">
+            <span class="status-tag" :class="livePreviewMode === 'stream' ? 'tone-stable' : 'tone-warning'">
+              {{ livePreviewMode === "stream" ? "实时预览" : "快照模式" }}
+            </span>
+            <span class="status-tag tone-neutral">原始 / 处理后并排</span>
+          </div>
         </div>
+
+        <p v-if="livePreviewError" class="feedback-banner feedback-error">{{ livePreviewError }}</p>
 
         <div class="target-pose-preview-grid">
           <figure class="target-pose-preview-card">
-            <figcaption>原始画面 + ROI / 骨架</figcaption>
+            <figcaption>
+              <span>原始画面</span>
+              <button type="button" class="ghost-btn mini-switch" @click="retryLivePreview">
+                重试实时预览
+              </button>
+            </figcaption>
             <div class="target-pose-preview-card__frame">
               <img
-                v-if="snapshotUrl"
+                v-if="livePreviewMode === 'stream'"
+                class="target-pose-preview-card__image"
+                :src="rawPreviewUrl"
+                alt="实时原始画面"
+                @load="handleLivePreviewLoaded"
+                @error="handleLivePreviewError"
+              />
+              <img
+                v-else-if="snapshotUrl"
                 class="target-pose-preview-card__image"
                 :src="snapshotUrl"
                 alt="外部摄像头原始画面"
-                @load="onSnapshotLoaded"
-              />
-              <div
-                v-if="roiOverlayStyle"
-                class="target-pose-preview-card__roi-overlay"
-                :style="roiOverlayStyle"
-              />
-              <TargetPoseOverlaySvg
-                v-if="showPoseOverlay && snapshotNaturalSize && posePoints.length"
-                :points="posePoints"
-                :connections="poseConnections"
-                :bbox="roiBbox"
-                :image-width="snapshotNaturalSize.width"
-                :image-height="snapshotNaturalSize.height"
-                :label-mode="labelMode"
-                :highlight-parts="highlightParts"
-                :highlight-point-indices="highlightPointIndices"
               />
               <div v-else class="target-pose-preview-card__empty">
-                <strong>暂无快照</strong>
-                <p>执行目标姿态分析后，这里会展示外部摄像头最新画面。</p>
+                <strong>暂无原始画面</strong>
+                <p>实时流或快照接通后，这里会显示原始视频画面。</p>
               </div>
             </div>
           </figure>
 
           <figure class="target-pose-preview-card">
-            <figcaption>目标 ROI</figcaption>
+            <figcaption>跌倒模型处理后画面</figcaption>
             <div class="target-pose-preview-card__frame">
-              <div
-                v-if="roiPreviewStyle"
-                class="target-pose-preview-card__roi"
-                :style="roiPreviewStyle"
+              <img
+                v-if="livePreviewMode === 'stream'"
+                class="target-pose-preview-card__image"
+                :src="processedPreviewUrl"
+                alt="跌倒模型处理后画面"
               />
               <div v-else class="target-pose-preview-card__empty">
-                <strong>暂无 ROI</strong>
-                <p>目标匹配成功后，这里会裁剪展示目标人物 ROI。</p>
+                <strong>暂无处理后画面</strong>
+                <p>这里展示跌倒模型处理后的实时视频流，正常情况下应出现红色置信框与事件标签。</p>
               </div>
             </div>
           </figure>
@@ -627,81 +582,18 @@ function applyTrendItem(ts: number) {
         <div class="panel-head">
           <div>
             <p class="section-eyebrow">Skeleton</p>
-            <h2>火柴人骨架渲染</h2>
+            <h2>多点位骨架处理画面</h2>
           </div>
           <div class="target-pose-visual-panel__controls">
-            <span class="status-tag tone-neutral">ROI {{ roiBbox ? "已锁定" : "未锁定" }}</span>
-            <button type="button" class="ghost-btn mini-switch" @click="showPoseOverlay = !showPoseOverlay">
-              {{ showPoseOverlay ? "隐藏原图骨架" : "显示原图骨架" }}
-            </button>
-            <button type="button" class="ghost-btn mini-switch" @click="labelMode = labelMode === 'index' ? 'name' : 'index'">
-              {{ labelMode === "index" ? "显示关键点名称" : "显示关键点编号" }}
-            </button>
+            <span class="status-tag tone-neutral">姿态骨架流</span>
           </div>
         </div>
 
-        <TargetPoseSkeletonView
-          :points="posePoints"
-          :connections="poseConnections"
-          :bbox="roiBbox"
-          title="目标人物骨架"
-          :label-mode="labelMode"
-          :highlight-parts="highlightParts"
-          :highlight-point-indices="highlightPointIndices"
-          :selected-point-index="selectedPointIndex"
-          @select-point="selectPoint($event.index)"
+        <img
+          class="target-pose-skeleton-stream"
+          :src="skeletonPreviewUrl"
+          alt="姿态骨架处理后画面"
         />
-
-        <div v-if="selectedPoint" class="target-pose-selected-point">
-          <strong>关键点详情</strong>
-          <div class="target-pose-selected-point__grid">
-            <span>名称 {{ selectedPoint.name }}</span>
-            <span>编号 {{ selectedPoint.index }}</span>
-            <span>X {{ selectedPoint.x }}</span>
-            <span>Y {{ selectedPoint.y }}</span>
-            <span>Score {{ selectedPoint.score }}</span>
-            <span>Tracked {{ selectedPoint.tracked ? "yes" : "no" }}</span>
-            <span>Estimated {{ selectedPoint.estimated ? "yes" : "no" }}</span>
-          </div>
-        </div>
-      </article>
-
-      <article class="panel target-pose-points-panel">
-        <h2>关键点与骨架</h2>
-        <div class="target-pose-points-panel__meta">
-          <span class="meta-pill">Points {{ posePoints.length }}</span>
-          <span class="meta-pill">Links {{ poseConnections.length }}</span>
-          <span class="meta-pill">Source Pose {{ postureEvent?.source_pose ?? posePosture?.label ?? "-" }}</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Index</th>
-                <th>Name</th>
-                <th>X</th>
-                <th>Y</th>
-                <th>Score</th>
-                <th>Tracked</th>
-                <th>Estimated</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="point in posePoints" :key="`${point.index}-${point.name}`">
-                <td>{{ point.index }}</td>
-                <td>{{ point.name }}</td>
-                <td>{{ point.x }}</td>
-                <td>{{ point.y }}</td>
-                <td>{{ point.score }}</td>
-                <td>{{ point.tracked ? "yes" : "no" }}</td>
-                <td>{{ point.estimated ? "yes" : "no" }}</td>
-              </tr>
-              <tr v-if="!posePoints.length">
-                <td colspan="7">执行分析后会在这里展示 17 个关键点坐标。</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
       </article>
 
       <article class="panel target-pose-guidance-panel">
@@ -714,7 +606,7 @@ function applyTrendItem(ts: number) {
             </span>
           </div>
           <p class="helper-copy">
-            {{ postureEvent?.reasons?.length ? postureEvent.reasons.join("、") : "当前未触发额外事件原因。" }}
+            {{ postureEvent?.reasons?.length ? postureEvent.reasons.join("；") : "当前未触发额外事件原因。" }}
           </p>
           <div class="target-pose-guidance__lists">
             <article>
@@ -740,41 +632,6 @@ function applyTrendItem(ts: number) {
         <div v-else class="state-block state-empty">
           <strong>等待姿态事件结果</strong>
           <p>执行目标姿态分析后，这里会展示 posture event 的说明和建议动作。</p>
-        </div>
-      </article>
-
-      <article class="panel target-pose-trend-panel">
-        <div class="panel-head">
-          <div>
-            <p class="section-eyebrow">Timeline</p>
-            <h2>动作趋势时间条</h2>
-          </div>
-          <span class="status-tag tone-neutral">最近 {{ trendItems.length }} 次</span>
-        </div>
-
-        <div v-if="trendItems.length" class="target-pose-trend-list">
-          <article
-            v-for="item in [...trendItems].reverse()"
-            :key="item.ts"
-            class="target-pose-trend-item"
-            :class="{ 'is-selected': selectedTrendTimestamp === item.ts }"
-            @click="applyTrendItem(item.ts)"
-          >
-            <div class="target-pose-trend-item__time">
-              {{ new Date(item.ts).toLocaleTimeString("zh-CN", { hour12: false }) }}
-            </div>
-            <div class="target-pose-trend-item__body">
-              <strong>{{ item.posture }}</strong>
-              <span>{{ item.event }}</span>
-            </div>
-            <div class="target-pose-trend-item__confidence" :class="item.event === 'fall_fast' ? 'is-critical' : (item.event === 'abnormal_lean' || item.event === 'fall_slow' || item.event === 'hand_to_chest_or_abdomen' ? 'is-warning' : '')">
-              {{ item.confidence.toFixed(2) }}
-            </div>
-          </article>
-        </div>
-        <div v-else class="state-block state-empty">
-          <strong>还没有趋势数据</strong>
-          <p>连续执行几次目标姿态分析后，这里会显示 posture / posture_event 的变化。</p>
         </div>
       </article>
     </section>
@@ -807,7 +664,7 @@ function applyTrendItem(ts: number) {
 .target-user-actions,
 .target-user-card__meta,
 .dashboard-chip-row,
-.target-pose-points-panel__meta {
+.target-pose-preview-panel__status {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -864,7 +721,6 @@ function applyTrendItem(ts: number) {
 }
 
 .target-user-check-grid,
-.target-pose-metrics,
 .target-pose-guidance__lists {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -880,7 +736,7 @@ function applyTrendItem(ts: number) {
 .target-pose-preview-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 16px;
 }
 
 .target-pose-preview-card {
@@ -890,46 +746,51 @@ function applyTrendItem(ts: number) {
 }
 
 .target-pose-preview-card figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   font-size: 0.88rem;
   color: var(--text-sub);
   font-weight: 700;
 }
 
-.target-pose-preview-card__frame {
-  min-height: 280px;
-  border-radius: 20px;
+.target-pose-preview-card__frame,
+.target-pose-skeleton-stream {
+  width: 100%;
+  min-height: 360px;
+  border-radius: 22px;
   overflow: hidden;
   border: 1px solid rgba(37, 99, 235, 0.12);
-  background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-  display: grid;
-  place-items: center;
+  background:
+    radial-gradient(circle at top, rgba(96, 165, 250, 0.12), transparent 30%),
+    linear-gradient(180deg, #0f172a 0%, #111827 100%);
+}
+
+.target-pose-preview-card__frame {
   position: relative;
+}
+
+.target-pose-preview-card__image,
+.target-pose-skeleton-stream {
+  display: block;
+  object-fit: cover;
 }
 
 .target-pose-preview-card__image {
   width: 100%;
   height: 100%;
-  object-fit: contain;
-  display: block;
 }
 
-.target-pose-preview-card__roi {
-  background-repeat: no-repeat;
-  border-radius: 18px;
-  border: 1px solid rgba(96, 165, 250, 0.55);
-  box-shadow: 0 14px 24px rgba(15, 23, 42, 0.22);
-}
-
-.target-pose-preview-card__roi-overlay {
-  position: absolute;
-  border: 2px solid rgba(244, 63, 94, 0.92);
-  border-radius: 14px;
-  box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.08), 0 0 0 4px rgba(244, 63, 94, 0.15);
-  pointer-events: none;
+.target-pose-skeleton-stream {
+  height: 360px;
 }
 
 .target-pose-preview-card__empty {
+  min-height: 360px;
   display: grid;
+  place-items: center;
+  align-content: center;
   gap: 8px;
   text-align: center;
   padding: 20px;
@@ -953,37 +814,7 @@ function applyTrendItem(ts: number) {
   align-items: center;
 }
 
-.target-pose-selected-point {
-  display: grid;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  border: 1px solid var(--line-medium);
-  background: #f8fafc;
-}
-
-.target-pose-selected-point strong {
-  color: var(--text-main);
-}
-
-.target-pose-selected-point__grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.target-pose-selected-point__grid span {
-  border-radius: 999px;
-  padding: 6px 10px;
-  background: #ffffff;
-  border: 1px solid var(--line-medium);
-  color: var(--text-sub);
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
 .target-user-check-grid article,
-.target-pose-metrics__item,
 .target-pose-guidance__lists article {
   display: grid;
   gap: 8px;
@@ -994,7 +825,6 @@ function applyTrendItem(ts: number) {
 }
 
 .target-user-check-grid span,
-.target-pose-metrics__item span,
 .target-pose-guidance__lists article span {
   color: var(--text-sub);
   font-size: 0.78rem;
@@ -1003,16 +833,10 @@ function applyTrendItem(ts: number) {
   letter-spacing: 0.08em;
 }
 
-.target-user-check-grid strong,
-.target-pose-metrics__item strong {
+.target-user-check-grid strong {
   color: var(--text-main);
   font-size: 1.2rem;
   line-height: 1.15;
-}
-
-.target-pose-metrics__item small {
-  color: var(--text-muted);
-  line-height: 1.6;
 }
 
 .target-pose-guidance__hero {
@@ -1034,77 +858,12 @@ function applyTrendItem(ts: number) {
   line-height: 1.7;
 }
 
-.target-pose-trend-list {
-  display: grid;
-  gap: 10px;
-}
-
-.target-pose-trend-item {
-  display: grid;
-  grid-template-columns: 140px minmax(0, 1fr) 72px;
-  gap: 12px;
-  align-items: center;
-  padding: 14px 16px;
-  border-radius: 16px;
-  border: 1px solid var(--line-medium);
-  background: #f8fafc;
-  cursor: pointer;
-  transition: all 180ms ease;
-}
-
-.target-pose-trend-item:hover {
-  border-color: rgba(59, 130, 246, 0.28);
-  transform: translateY(-1px);
-}
-
-.target-pose-trend-item.is-selected {
-  border-color: rgba(59, 130, 246, 0.42);
-  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.12);
-}
-
-.target-pose-trend-item__time {
-  color: var(--text-sub);
-  font-size: 0.84rem;
-  font-weight: 700;
-}
-
-.target-pose-trend-item__body {
-  display: grid;
-  gap: 4px;
-}
-
-.target-pose-trend-item__body strong {
-  color: var(--text-main);
-  font-size: 0.95rem;
-}
-
-.target-pose-trend-item__body span,
-.target-pose-trend-item__confidence {
-  color: var(--text-sub);
-  font-size: 0.84rem;
-  font-weight: 600;
-}
-
-.target-pose-trend-item__confidence.is-critical {
-  color: #dc2626;
-}
-
-.target-pose-trend-item__confidence.is-warning {
-  color: #d97706;
-}
-
 @media (max-width: 960px) {
   .target-pose-hero__main,
   .target-user-form,
   .target-user-check-grid,
   .target-pose-preview-grid,
-  .target-pose-metrics,
   .target-pose-guidance__lists {
-    grid-template-columns: 1fr;
-  }
-
-  .target-pose-trend-item {
     grid-template-columns: 1fr;
   }
 

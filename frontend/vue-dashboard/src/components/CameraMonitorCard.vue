@@ -67,6 +67,7 @@ const externalCameraBusy = ref(false);
 const poseBusy = ref(false);
 const acknowledgingFall = ref(false);
 const lastStatusErrorAt = ref(0);
+const streamFailureCount = ref(0);
 let statusTimer: number | undefined;
 let streamStatusTimer: number | undefined;
 let frameSocket: WebSocket | undefined;
@@ -310,6 +311,9 @@ function clearStaleCameraError() {
 
 function formatCameraError(rawMessage: string) {
   if (!rawMessage) return "";
+  if (rawMessage.includes("Invalid data found when processing input")) {
+    return "当前主码流不稳定，系统已自动切换到更稳的预览流或快照中继方式。";
+  }
   if (rawMessage.includes("TimeoutExpired") || rawMessage.includes("timed out after")) {
     return "RTSP 中继在探测摄像头流时超时，后端会继续重试。";
   }
@@ -326,8 +330,11 @@ async function refreshStatus() {
     if (!status.value.online && status.value.error) {
       errorMessage.value = formatCameraError(status.value.error);
       lastStatusErrorAt.value = Date.now();
+      streamFailureCount.value += 1;
     } else if (status.value.online) {
-      errorMessage.value = "";
+      if (streamFailureCount.value <= 1) {
+        errorMessage.value = "";
+      }
       lastStatusErrorAt.value = 0;
     }
     emitDiagnosticsLog("refreshStatus");
@@ -601,7 +608,10 @@ function connectAudioSocket() {
 }
 
 function handleFrameError() {
-  errorMessage.value = "实时摄像头画面暂时不可用。";
+  streamFailureCount.value += 1;
+  if (streamFailureCount.value >= 2) {
+    errorMessage.value = "实时画面暂时不可用，系统正在自动切换到更稳的中继方式。";
+  }
   lastStatusErrorAt.value = Date.now();
 }
 
@@ -653,6 +663,7 @@ async function renderQueuedFrame() {
 
 function recordClientFrame() {
   clientFpsFrames += 1;
+  streamFailureCount.value = 0;
   const now = performance.now();
   const elapsed = (now - clientFpsStartedAt) / 1000;
   if (elapsed >= 2) {
@@ -717,11 +728,10 @@ function startPrimaryVideoTransport() {
     startMjpegFallback();
     return;
   }
-  if (primaryStreamTransport === "websocket") {
-    startCameraSocket();
-    return;
-  }
   startMjpegFallback();
+  if (primaryStreamTransport === "websocket") {
+    window.setTimeout(startCameraSocket, 1200);
+  }
 }
 
 function buildMjpegStreamUrl() {
