@@ -46,23 +46,44 @@ class CameraStatus {
 }
 
 class CameraStreamStatus {
+  final double captureFps;
   final double sourceFps;
   final double measuredFps;
+  final double broadcastFps;
+  final double mjpegFps;
   final int clients;
+  final int mjpegClients;
+  final int mjpegTotal;
+  final int mjpegBytesTotal;
+  final String? activeUrl;
   final String? lastError;
 
   const CameraStreamStatus({
+    required this.captureFps,
     required this.sourceFps,
     required this.measuredFps,
+    required this.broadcastFps,
+    required this.mjpegFps,
     required this.clients,
+    required this.mjpegClients,
+    required this.mjpegTotal,
+    required this.mjpegBytesTotal,
+    this.activeUrl,
     this.lastError,
   });
 
   factory CameraStreamStatus.fromJson(Map<String, dynamic> json) {
     return CameraStreamStatus(
+      captureFps: _toDouble(json['capture_fps']) ?? 0,
       sourceFps: _toDouble(json['source_fps']) ?? 0,
       measuredFps: _toDouble(json['measured_fps']) ?? 0,
+      broadcastFps: _toDouble(json['broadcast_fps']) ?? 0,
+      mjpegFps: _toDouble(json['mjpeg_fps']) ?? 0,
       clients: _toInt(json['clients']) ?? 0,
+      mjpegClients: _toInt(json['mjpeg_clients']) ?? 0,
+      mjpegTotal: _toInt(json['mjpeg_total']) ?? 0,
+      mjpegBytesTotal: _toInt(json['mjpeg_bytes_total']) ?? 0,
+      activeUrl: json['active_url']?.toString(),
       lastError: json['last_error']?.toString(),
     );
   }

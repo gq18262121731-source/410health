@@ -6,6 +6,7 @@ import subprocess
 import struct
 import sys
 import time
+import logging
 import xml.etree.ElementTree as ET
 from contextlib import suppress
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from urllib.parse import quote
 import requests
 
 from backend.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -156,28 +159,23 @@ class CameraService:
 
     @property
     def stream_rtsp_urls(self) -> list[str]:
-        configured_path = self._normalize_path(self._settings.camera_stream_rtsp_path)
-        smooth_path = self._normalize_path(self._settings.camera_stream_smooth_path)
-        quality_path = self._normalize_path(self._settings.camera_stream_quality_path)
-
-        if self._settings.camera_stream_profile == "quality":
-            preferred_paths = [quality_path, configured_path, smooth_path]
-        elif self._settings.camera_stream_profile == "smooth":
-            preferred_paths = [smooth_path, configured_path, quality_path]
-        else:
-            preferred_paths = [configured_path, smooth_path, quality_path]
-
-        candidates = [(path, self._settings.camera_rtsp_port) for path in preferred_paths] + [
-            ("/udp/av0_0", 10554),
-            ("/udp/av0_1", 10554),
-            ("/tcp/av0_1", 10554),
-            ("/tcp/av0_0", 10554),
+        # For the current field hardware, tcp/av0_1 is the verified stable
+        # real-time stream. Keep this deterministic for the formal pipeline.
+        candidates = [
+            ("/tcp/av0_1", self._settings.camera_rtsp_port or 10554),
+            (self._normalize_path(self._settings.camera_stream_rtsp_path), self._settings.camera_rtsp_port),
+            ("/tcp/av0_0", self._settings.camera_rtsp_port or 10554),
+            (self._normalize_path(self._settings.camera_stream_smooth_path), self._settings.camera_rtsp_port),
+            (self._normalize_path(self._settings.camera_stream_quality_path), self._settings.camera_rtsp_port),
+            ("/udp/av0_1", self._settings.camera_rtsp_port or 10554),
+            ("/udp/av0_0", self._settings.camera_rtsp_port or 10554),
         ]
         urls: list[str] = []
         for path, port in candidates:
             url = self._build_rtsp_url(path, port)
             if url not in urls:
                 urls.append(url)
+        logger.info("CameraService stream_rtsp_urls=%s", [self._mask_url(url) for url in urls])
         return urls
 
     def _build_rtsp_url(self, path: str, port: int) -> str:

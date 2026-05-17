@@ -1,5 +1,6 @@
 // ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:typed_data';
@@ -15,9 +16,11 @@ class _WebLocalCameraPreviewController implements LocalCameraPreviewController {
   final String _viewType =
       'local-camera-preview-${DateTime.now().microsecondsSinceEpoch}';
   late final html.VideoElement _video;
+  late final html.CanvasElement _canvas;
   html.MediaStream? _stream;
   bool _registered = false;
   bool _disposed = false;
+  int? _renderHandle;
 
   _WebLocalCameraPreviewController({
     this.onReadyChanged,
@@ -27,9 +30,25 @@ class _WebLocalCameraPreviewController implements LocalCameraPreviewController {
       ..autoplay = true
       ..muted = true
       ..setAttribute('playsinline', 'true')
+      ..setAttribute('webkit-playsinline', 'true')
+      ..style.display = 'block'
       ..style.width = '100%'
       ..style.height = '100%'
       ..style.objectFit = 'cover'
+      ..style.position = 'absolute'
+      ..style.left = '0'
+      ..style.top = '0'
+      ..style.zIndex = '1'
+      ..style.pointerEvents = 'auto'
+      ..style.backgroundColor = '#0F172A';
+    _canvas = html.CanvasElement()
+      ..style.width = '100%'
+      ..style.height = '100%'
+      ..style.display = 'none'
+      ..style.position = 'absolute'
+      ..style.left = '0'
+      ..style.top = '0'
+      ..style.zIndex = '0'
       ..style.backgroundColor = '#0F172A';
   }
 
@@ -41,6 +60,8 @@ class _WebLocalCameraPreviewController implements LocalCameraPreviewController {
   @override
   Future<void> start() async {
     if (_disposed) return;
+    // ignore: avoid_print
+    print('[LocalCameraPreviewWeb] start supported=$isSupported registered=$_registered');
 
     if (!isSupported) {
       _notifyReady(false);
@@ -48,7 +69,18 @@ class _WebLocalCameraPreviewController implements LocalCameraPreviewController {
       return;
     }
     if (!_registered) {
-      ui_web.platformViewRegistry.registerViewFactory(_viewType, (_) => _video);
+      ui_web.platformViewRegistry.registerViewFactory(_viewType, (_) {
+        final wrapper = html.DivElement()
+          ..style.width = '100%'
+          ..style.height = '100%'
+          ..style.position = 'relative'
+          ..style.overflow = 'hidden'
+          ..style.backgroundColor = '#0F172A';
+        wrapper.children.clear();
+        wrapper.children.add(_canvas);
+        wrapper.children.add(_video);
+        return wrapper;
+      });
       _registered = true;
     }
 
@@ -63,6 +95,8 @@ class _WebLocalCameraPreviewController implements LocalCameraPreviewController {
             },
             'audio': false,
           });
+      // ignore: avoid_print
+      print('[LocalCameraPreviewWeb] getUserMedia ok tracks=${stream.getTracks().length}');
 
       if (_disposed) {
         if (existingStream == null) {
@@ -74,9 +108,13 @@ class _WebLocalCameraPreviewController implements LocalCameraPreviewController {
       _stream = stream;
       _video.srcObject = stream;
       await _video.play();
+      // ignore: avoid_print
+      print('[LocalCameraPreviewWeb] play ok display=${_video.style.display} size=${_video.videoWidth}x${_video.videoHeight}');
       _notifyReady(true);
       _notifyError(null);
     } catch (error) {
+      // ignore: avoid_print
+      print('[LocalCameraPreviewWeb] start failed error=$error');
       _notifyReady(false);
       _notifyError(_humanizeOpenError(error));
     }
@@ -122,15 +160,52 @@ class _WebLocalCameraPreviewController implements LocalCameraPreviewController {
         _analysisWidth,
         _analysisHeight,
       );
-      final dataUrl = canvas.toDataUrl('image/jpeg', 0.72);
-      final commaIndex = dataUrl.indexOf(',');
-      if (commaIndex > 0) {
+      final bytes = await _encodeCanvasToBytes(canvas);
+      if (bytes != null && bytes.isNotEmpty) {
         _notifyError(null);
-        return base64Decode(dataUrl.substring(commaIndex + 1));
+        return bytes;
       }
       _notifyError('本地视频抽帧失败：浏览器没有返回图像数据');
     } catch (error) {
       _notifyError('本地视频抽帧失败：$error');
+    }
+    return null;
+  }
+
+  Future<Uint8List?> _encodeCanvasToBytes(html.CanvasElement canvas) async {
+    try {
+      final blob = await canvas.toBlob('image/jpeg');
+      if (blob != null) {
+        final completer = Completer<Uint8List?>();
+        final reader = html.FileReader();
+        reader.onLoadEnd.listen((_) {
+          final result = reader.result;
+          if (result is ByteBuffer) {
+            completer.complete(result.asUint8List());
+          } else if (result is Uint8List) {
+            completer.complete(result);
+          } else {
+            completer.complete(null);
+          }
+        });
+        reader.onError.listen((_) => completer.complete(null));
+        reader.readAsArrayBuffer(blob);
+        final bytes = await completer.future.timeout(
+          const Duration(milliseconds: 800),
+          onTimeout: () => null,
+        );
+        if (bytes != null && bytes.isNotEmpty) {
+          return bytes;
+        }
+      }
+    } catch (_) {
+      // ignore and use the data-url fallback
+    }
+
+    final dataUrl = canvas.toDataUrl('image/jpeg', 0.72);
+    final commaIndex = dataUrl.indexOf(',');
+    if (commaIndex > 0) {
+      return base64Decode(dataUrl.substring(commaIndex + 1));
     }
     return null;
   }

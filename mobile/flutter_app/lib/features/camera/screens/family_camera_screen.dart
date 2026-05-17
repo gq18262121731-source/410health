@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -9,12 +10,19 @@ import '../models/camera_models.dart';
 import '../providers/camera_provider.dart';
 import '../widgets/local_camera_preview.dart';
 import '../widgets/local_camera_preview_controller.dart';
+import '../widgets/remote_video_iframe.dart';
+const bool kCameraExperimentPurePreviewPage = false;
+const bool kCameraExperimentDisableSkeletonOverlay = true;
+const bool kCameraExperimentDisableAnalysisLoop = true;
 
 class FamilyCameraScreen extends StatelessWidget {
   const FamilyCameraScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    if (kCameraExperimentPurePreviewPage) {
+      return const _PureLocalPreviewExperimentScreen();
+    }
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -71,8 +79,8 @@ class _VideoPanelState extends State<_VideoPanel> {
   String? _localPreviewError;
   LocalCameraPreviewController? _localPreviewController;
   Timer? _analysisTimer;
-  bool _capturingFrame = false;
-  bool _didCaptureInitialFrame = false;
+  bool _capturePending = false;
+  bool _capturedFirstFrame = false;
 
   @override
   void dispose() {
@@ -81,37 +89,64 @@ class _VideoPanelState extends State<_VideoPanel> {
   }
 
   void _syncAnalysisTimer({
-    required bool autoRefresh,
     required bool useLocalPreview,
+    required bool autoRefresh,
   }) {
     final shouldRun = useLocalPreview && autoRefresh && _localPreviewReady;
     if (!shouldRun) {
       _analysisTimer?.cancel();
       _analysisTimer = null;
-      _didCaptureInitialFrame = false;
+      _capturedFirstFrame = false;
       return;
     }
-    if (!_didCaptureInitialFrame) {
-      _didCaptureInitialFrame = true;
+    if (!_capturedFirstFrame) {
+      _capturedFirstFrame = true;
       _captureFrameForAnalysis();
     }
-    if (_analysisTimer != null) return;
-    _analysisTimer = Timer.periodic(
+    _analysisTimer ??= Timer.periodic(
       const Duration(milliseconds: 900),
       (_) => _captureFrameForAnalysis(),
     );
   }
 
   Future<void> _captureFrameForAnalysis() async {
-    if (_capturingFrame || !mounted) return;
-    _capturingFrame = true;
+    if (kCameraExperimentDisableAnalysisLoop) return;
+    if (_capturePending || !mounted) return;
+    _capturePending = true;
     try {
       final bytes = await _localPreviewController?.captureFrame();
       if (bytes == null || !mounted) return;
       await context.read<CameraProvider>().analyzeBrowserFrame(bytes);
     } finally {
-      _capturingFrame = false;
+      _capturePending = false;
     }
+  }
+
+  void _setLocalPreviewReady(bool ready) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() => _localPreviewReady = ready);
+    });
+  }
+
+  void _setLocalPreviewError(String? error) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() => _localPreviewError = error);
+    });
+  }
+
+  void _scheduleAnalysisTimerSync({
+    required bool useLocalPreview,
+    required bool autoRefresh,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _syncAnalysisTimer(
+        useLocalPreview: useLocalPreview,
+        autoRefresh: autoRefresh,
+      );
+    });
   }
 
   @override
@@ -126,7 +161,10 @@ class _VideoPanelState extends State<_VideoPanel> {
     final frame = context.select<CameraProvider, Uint8List?>(
       (provider) => provider.frameBytes,
     );
-    _syncAnalysisTimer(autoRefresh: autoRefresh, useLocalPreview: useLocalPreview);
+    _scheduleAnalysisTimerSync(
+      useLocalPreview: useLocalPreview,
+      autoRefresh: autoRefresh,
+    );
 
     return Container(
       decoration: BoxDecoration(
@@ -151,37 +189,25 @@ class _VideoPanelState extends State<_VideoPanel> {
               child: Stack(
                 fit: StackFit.expand,
                 children: <Widget>[
-                  ColoredBox(
-                    color: const Color(0xFF0F172A),
-                    child: useLocalPreview
-                        ? LocalCameraPreview(
-                            active: provider.autoRefresh,
-                            onReadyChanged: (ready) {
-                              if (!mounted) return;
-                              setState(() => _localPreviewReady = ready);
-                            },
-                            onErrorChanged: (error) {
-                              if (!mounted) return;
-                              setState(() => _localPreviewError = error);
-                            },
-                            onControllerChanged: (controller) {
-                              _localPreviewController = controller;
-                            },
-                          )
-                        : frame == null
-                        ? _VideoPlaceholder(isConnecting: provider.isConnecting)
-                        : Image.memory(
-                            frame,
-                            gaplessPlayback: true,
-                            fit: BoxFit.contain,
-                          ),
+                  _VideoSurface(
+                    useLocalPreview: useLocalPreview,
+                    autoRefresh: autoRefresh,
+                    frame: frame,
+                    isConnecting: provider.isConnecting,
+                    remotePreviewUrl:
+                        'http://127.0.0.1:8000/api/v1/camera-sources/active/video-preview',
+                    onReadyChanged: _setLocalPreviewReady,
+                    onErrorChanged: _setLocalPreviewError,
+                    onControllerChanged: (controller) {
+                      _localPreviewController = controller;
+                    },
                   ),
                   Positioned(
                     left: 12,
                     top: 12,
                     child: useLocalPreview
                         ? LocalPreviewBadge(
-                            active: provider.autoRefresh,
+                            active: autoRefresh,
                             ready: _localPreviewReady,
                             error: _localPreviewError,
                           )
@@ -198,7 +224,30 @@ class _VideoPanelState extends State<_VideoPanel> {
                       isOnline: provider.status?.online == true,
                     ),
                   ),
-                  const _PoseSkeletonOverlay(),
+                  if (useLocalPreview && _localPreviewError != null)
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: 12,
+                      child: _InlineNotice(
+                        icon: Icons.videocam_off_outlined,
+                        color: AppColors.error,
+                        text: _localPreviewError!,
+                      ),
+                    ),
+                  if (!useLocalPreview && provider.errorMessage != null)
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: 12,
+                      child: _InlineNotice(
+                        icon: Icons.videocam_off_outlined,
+                        color: AppColors.error,
+                        text: provider.errorMessage!,
+                      ),
+                    ),
+                  if (!kCameraExperimentDisableSkeletonOverlay)
+                    const _PoseSkeletonOverlay(),
                   if (provider.audioListening)
                     Positioned(
                       left: 12,
@@ -242,7 +291,7 @@ class _VideoPanelState extends State<_VideoPanel> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          useLocalPreview
+                          true
                               ? '浏览器直接调用本机摄像头预览，后端低频做状态/算法分析'
                               : provider.endpointLabel,
                           maxLines: 1,
@@ -257,6 +306,36 @@ class _VideoPanelState extends State<_VideoPanel> {
                   ),
                 ],
               ),
+            ),
+            Builder(
+              builder: (context) {
+                if (!useLocalPreview) {
+                  return const SizedBox.shrink();
+                }
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Column(
+                    children: <Widget>[
+                      _LocalPreviewProbe(
+                        active: autoRefresh,
+                        ready: _localPreviewReady,
+                        error: _localPreviewError,
+                      ),
+                      if (kCameraExperimentDisableSkeletonOverlay ||
+                          kCameraExperimentDisableAnalysisLoop)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: _InlineNotice(
+                            icon: Icons.science_outlined,
+                            color: AppColors.warning,
+                            text:
+                                '实验开关：骨架=${kCameraExperimentDisableSkeletonOverlay ? '关闭' : '开启'}，分析=${kCameraExperimentDisableAnalysisLoop ? '关闭' : '开启'}',
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
             ),
           ],
         ),
@@ -298,6 +377,122 @@ class _VideoPlaceholder extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PureLocalPreviewExperimentScreen extends StatefulWidget {
+  const _PureLocalPreviewExperimentScreen();
+
+  @override
+  State<_PureLocalPreviewExperimentScreen> createState() =>
+      _PureLocalPreviewExperimentScreenState();
+}
+
+class _PureLocalPreviewExperimentScreenState
+    extends State<_PureLocalPreviewExperimentScreen> {
+  bool _ready = false;
+  String? _error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      appBar: AppBar(
+        title: const Text('极简本地预览实验'),
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Container(
+              width: 800,
+              height: 450,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white24),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: LocalCameraPreview(
+                active: true,
+                onReadyChanged: (ready) {
+                  if (!mounted) return;
+                  setState(() => _ready = ready);
+                },
+                onErrorChanged: (error) {
+                  if (!mounted) return;
+                  setState(() => _error = error);
+                },
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _error ?? (_ready ? '预览已就绪' : '等待摄像头预览就绪'),
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VideoSurface extends StatelessWidget {
+  final bool useLocalPreview;
+  final bool autoRefresh;
+  final Uint8List? frame;
+  final bool isConnecting;
+  final String remotePreviewUrl;
+  final ValueChanged<bool> onReadyChanged;
+  final ValueChanged<String?> onErrorChanged;
+  final ValueChanged<LocalCameraPreviewController?> onControllerChanged;
+
+  const _VideoSurface({
+    required this.useLocalPreview,
+    required this.autoRefresh,
+    required this.frame,
+    required this.isConnecting,
+    required this.remotePreviewUrl,
+    required this.onReadyChanged,
+    required this.onErrorChanged,
+    required this.onControllerChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: const Color(0xFF0F172A),
+      child: RepaintBoundary(
+        child: useLocalPreview
+            ? Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  LocalCameraPreview(
+                    active: autoRefresh,
+                    onReadyChanged: onReadyChanged,
+                    onErrorChanged: onErrorChanged,
+                    onControllerChanged: onControllerChanged,
+                  ),
+                ],
+              )
+            : kIsWeb
+                ? RemoteVideoIframeWeb(previewUrl: remotePreviewUrl)
+                : frame == null
+                    ? _VideoPlaceholder(isConnecting: isConnecting)
+                    : Image.memory(
+                        frame!,
+                        gaplessPlayback: true,
+                        fit: BoxFit.contain,
+                      ),
       ),
     );
   }
@@ -1204,6 +1399,72 @@ class _PoseSkeletonPainter extends CustomPainter {
     return oldDelegate.track != track ||
         oldDelegate.frameWidth != frameWidth ||
         oldDelegate.frameHeight != frameHeight;
+  }
+}
+
+class _LocalPreviewProbe extends StatelessWidget {
+  final bool active;
+  final bool ready;
+  final String? error;
+
+  const _LocalPreviewProbe({
+    required this.active,
+    required this.ready,
+    required this.error,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Text(
+            '本地预览最小验证',
+            style: TextStyle(
+              color: AppColors.textMain,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _InlineNotice(
+            icon: Icons.info_outline,
+            color: AppColors.primary,
+            text: '这块只验证浏览器摄像头 video 是否能单独显示，不叠骨架、不叠分析层。',
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: AspectRatio(
+              aspectRatio: 16 / 9,
+              child: ColoredBox(
+                color: const Color(0xFF0F172A),
+                child: LocalCameraPreview(
+                  active: active,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              _MetricChip(label: active ? 'active=true' : 'active=false'),
+              _MetricChip(label: ready ? '主预览 ready=true' : '主预览 ready=false'),
+              _MetricChip(label: error == null ? '主预览 error=null' : '主预览有错误'),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 

@@ -154,6 +154,7 @@ class Settings(BaseSettings):
     camera_snapshot_timeout_seconds: float = 8.0
     camera_stream_fps: float = 24.0
     camera_stream_profile: Literal["smooth", "balanced", "quality"] = "balanced"
+    camera_stream_experiment_mode: Literal["normal", "pure_opencv"] = "normal"
     camera_stream_quality_path: str = "/tcp/av0_0"
     camera_stream_smooth_path: str = "/tcp/av0_1"
     camera_stream_jpeg_quality: int = 4

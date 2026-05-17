@@ -25,6 +25,7 @@ class LocalCameraPreview extends StatefulWidget {
 
 class _LocalCameraPreviewState extends State<LocalCameraPreview> {
   late final LocalCameraPreviewController _controller;
+  bool _controllerStarted = false;
 
   @override
   void initState() {
@@ -34,9 +35,6 @@ class _LocalCameraPreviewState extends State<LocalCameraPreview> {
       onErrorChanged: widget.onErrorChanged,
     );
     widget.onControllerChanged?.call(_controller);
-    if (widget.active) {
-      _controller.start();
-    }
   }
 
   @override
@@ -44,10 +42,18 @@ class _LocalCameraPreviewState extends State<LocalCameraPreview> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.active == widget.active) return;
     if (widget.active) {
-      _controller.start();
+      _controllerStarted = false;
+      _ensureStartedIfNeeded();
     } else {
+      _controllerStarted = false;
       _controller.stop();
     }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _ensureStartedIfNeeded();
   }
 
   @override
@@ -65,7 +71,22 @@ class _LocalCameraPreviewState extends State<LocalCameraPreview> {
     if (!_controller.isSupported) {
       return const _UnsupportedPreview();
     }
+    _ensureStartedIfNeeded();
     return _controller.build(context);
+  }
+
+  void _ensureStartedIfNeeded() {
+    if (!widget.active || _controllerStarted) {
+      return;
+    }
+    _controllerStarted = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.active) {
+        _controllerStarted = false;
+        return;
+      }
+      _controller.start();
+    });
   }
 }
 

@@ -1,0 +1,249 @@
+Camera Frontend Bottleneck Analysis
+Date: 2026-05-14
+Project: D:\ai_helth-main
+
+1. Executive Conclusion
+
+The current local-browser camera lag is not primarily caused by:
+- the pose model
+- the fall model
+- the local USB camera itself
+- the external RTSP camera path
+
+The main bottleneck is the frontend display architecture for local preview.
+In local mode, the app is still doing simulated video rendering instead of true native video output.
+
+Current strongest conclusion:
+The dominant problem is the local preview display chain:
+
+camera stream
+-> hidden video
+-> requestAnimationFrame
+-> canvas.drawImage
+-> HtmlElementView
+-> Flutter widget tree
+-> skeleton overlay
+
+This is expensive on Flutter Web and matches the observed symptoms:
+- controls remain responsive
+- permissions are granted
+- model outputs still work
+- preview FPS can drop to ~0.2
+
+
+2. What Has Already Been Proven
+
+2.1 Model side is working
+
+Verified with GPU environment:
+- torch 2.5.1+cu124
+- torchvision 0.20.1+cu124
+- torchaudio 2.5.1+cu124
+- torch.cuda.is_available() == True
+- GPU: NVIDIA GeForce RTX 4060 Laptop GPU
+
+Verified pose inference:
+- .pt model path is active
+- device = 0
+- half = true
+- typical pose inference after warmup is tens of milliseconds
+
+Conclusion:
+The AI model is not the main reason for 0.2 FPS local preview.
+
+
+2.2 RTSP camera path is working
+
+Verified camera:
+- IP: 192.168.8.254
+- RTSP port: 10554
+- best route: tcp/av0_1
+
+camera_direct_probe.py result:
+- tcp/av0_1 opened=True
+- frames > 0
+- FPS around 20+
+
+Conclusion:
+External camera connectivity is not the bottleneck.
+
+
+2.3 Frame -> pose -> fall minimum pipeline is working
+
+Script:
+- scripts/debug_camera_pose_fall_pipeline.py
+
+Output artifacts:
+- D:\ai_helth-main\tmp_debug_camera_pipeline\frame.jpg
+- D:\ai_helth-main\tmp_debug_camera_pipeline\pose_result.jpg
+
+Example successful result:
+- pose_ok = true
+- pose_visible_points = 17
+- pose_label = hand_to_chest_or_abdomen
+- fall_ok = true
+- fall_detected = true / false depending on sample
+
+Conclusion:
+The middle pipeline is functional when fed a valid frame.
+
+
+3. Key Code Evidence
+
+3.1 Local preview is not native video direct output
+
+File:
+- mobile/flutter_app/lib/features/camera/widgets/local_camera_preview_web.dart
+
+Important facts observed:
+- a hidden html.VideoElement is used as source
+- a CanvasElement is used for visible rendering
+- requestAnimationFrame is used to redraw the canvas
+
+This means the preview is not:
+- native browser video presentation
+
+It is:
+- software-ish redraw via JS main thread and canvas
+
+
+3.2 Analysis frame extraction is still expensive
+
+File:
+- mobile/flutter_app/lib/features/camera/widgets/local_camera_preview_web.dart
+
+Observed implementation:
+- captureFrame() creates a temporary canvas
+- drawImageScaled(video, ...)
+- encode image bytes for analysis
+
+The earlier worst path:
+- toDataUrl('image/jpeg', 0.72)
+- base64Decode(...)
+
+This was partially optimized:
+- try toBlob() first
+- fallback to toDataUrl only if needed
+
+Conclusion:
+This chain is still expensive, but likely not the first-order cause of 0.2 FPS once preview itself is already canvas-based.
+
+
+3.3 The previous duplicate Image.memory overlay was removed
+
+File:
+- mobile/flutter_app/lib/features/camera/screens/family_camera_screen.dart
+
+Status:
+- local mode no longer overlays frameBytes as a 6 percent opacity Image.memory on top of preview
+
+Conclusion:
+This was a real bug, but removing it did not solve the main bottleneck, so it was not the final root cause.
+
+
+3.4 Provider/UI rebuild pressure still exists
+
+File:
+- mobile/flutter_app/lib/features/camera/screens/family_camera_screen.dart
+
+Still using broad watch/consumer patterns in several areas:
+- CameraSetupPanel
+- ActionStrip
+- PtzPanel
+- DiagnosticsPanel
+- AiAnalysisPanel
+- ErrorPanel
+
+File:
+- mobile/flutter_app/lib/features/camera/providers/camera_provider.dart
+
+Still calls notifyListeners() from multiple flows:
+- audio level updates
+- pose result updates
+- fall result updates
+- diagnostics refresh
+- analysis frame updates
+
+Conclusion:
+This is a real secondary bottleneck and can amplify lag, but it does not best explain the extreme 0.2 FPS local preview by itself.
+
+
+4. Most Likely Root Cause Ranking
+
+P0:
+The local preview is still rendered through requestAnimationFrame + canvas.drawImage instead of native visible video.
+
+P1:
+The analysis path still captures and encodes frames in the browser, then updates provider/UI state.
+
+P2:
+CameraProvider notifies too broadly, causing too many widget rebuilds.
+
+P3:
+Platform-view / HtmlElementView compositing overhead in Flutter Web.
+
+Lower probability:
+The pose/fall model itself is the main problem.
+
+
+5. Why 0.2 FPS Points to Display Architecture, Not Model
+
+0.2 FPS means roughly:
+- 1 visible update every ~5 seconds
+
+Given the current code:
+- analysis timer about every 900ms
+- provider gate about every 800ms
+- GPU model latency is much lower than multi-second scale
+
+Therefore:
+- if the model were the main bottleneck, we would expect low single-digit FPS
+- but 0.2 FPS strongly suggests the UI/display chain is the real choke point
+
+
+6. Recommended High-Value Experiment
+
+Experiment 1:
+Remove the simulated canvas preview path entirely and restore true visible native video.
+
+Specifically:
+- do not hide the video element
+- do not use requestAnimationFrame for preview
+- do not use canvas.drawImage for the visible main preview
+- keep captureFrame only for background analysis
+
+Expected interpretation:
+
+Case A:
+If preview becomes smooth immediately
+-> canvas simulated video was the root cause
+
+Case B:
+If preview is still near 0.2 FPS
+-> platform-view compositing or broader Flutter Web rebuild issues are deeper than the canvas loop alone
+
+
+7. Recommended Next Actions
+
+Immediate:
+1. Finish the pure native-video local preview experiment.
+2. Measure whether preview smoothness changes before touching model code again.
+
+After that:
+3. Narrow CameraProvider rebuild scope:
+   - convert broad watch() panels to select()/smaller consumers
+4. Reduce visible UI update frequency:
+   - diagnostics lower frequency
+   - analysis panel lower frequency
+5. Keep captureFrame as a background-only analysis input, not as a display path.
+
+
+8. Summary in One Sentence
+
+The system can already:
+- capture frames
+- run pose
+- run fall detection
+- draw skeletons
+
+But the local browser preview is still architected as a simulated video pipeline on the JS main thread, and that display design is the most likely reason the page collapses to about 0.2 FPS.

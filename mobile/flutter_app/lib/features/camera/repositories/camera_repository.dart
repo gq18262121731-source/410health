@@ -16,20 +16,37 @@ class CameraRepository {
     required ServerEndpointConfig endpointConfig,
   }) : _endpointConfig = endpointConfig;
 
+  String get mjpegStreamUrl =>
+      '${_endpointConfig.apiBaseUrl}camera-sources/active/stream.mjpg';
+
+  String get latestSnapshotUrl =>
+      '${_endpointConfig.apiBaseUrl}camera-sources/active/snapshot';
+
   Future<CameraStatus> getStatus() async {
-    final response = await _apiClient.get('camera/status');
+    final response = await _apiClient.get('camera-sources/active/status');
     return CameraStatus.fromJson(
         Map<String, dynamic>.from(response.data as Map));
   }
 
+  Future<Uint8List> fetchLatestSnapshot({int? ts}) async {
+    final response = await _apiClient.get(
+      'camera-sources/active/snapshot',
+      queryParameters: ts == null ? null : <String, dynamic>{'ts': ts},
+    );
+    final data = response.data;
+    if (data is Uint8List) return data;
+    if (data is List<int>) return Uint8List.fromList(data);
+    throw Exception('snapshot bytes invalid');
+  }
+
   Future<CameraStreamStatus> getStreamStatus() async {
-    final response = await _apiClient.get('camera/stream-status');
+    final response = await _apiClient.get('camera-sources/active/stream-status');
     return CameraStreamStatus.fromJson(
         Map<String, dynamic>.from(response.data as Map));
   }
 
   Future<CameraAudioStatus> getAudioStatus() async {
-    final response = await _apiClient.get('camera/audio/status');
+    final response = await _apiClient.get('camera-sources/active/audio/status');
     return CameraAudioStatus.fromJson(
         Map<String, dynamic>.from(response.data as Map));
   }
@@ -190,7 +207,7 @@ class CameraRepository {
   Future<void> moveCamera(String direction,
       {String mode = 'continuous'}) async {
     await _apiClient.post(
-      'camera/ptz',
+      'camera-sources/active/ptz',
       data: <String, dynamic>{
         'direction': direction,
         'mode': mode,
@@ -200,12 +217,13 @@ class CameraRepository {
 
   WebSocketChannel connectFrameStream() {
     return WebSocketChannel.connect(
-        Uri.parse('${_endpointConfig.wsBaseUrl}/ws/camera'));
+        Uri.parse('${_endpointConfig.wsBaseUrl}/ws/camera-sources/active'));
   }
 
   WebSocketChannel connectAudioListenStream() {
     return WebSocketChannel.connect(
-        Uri.parse('${_endpointConfig.wsBaseUrl}/ws/camera/audio/listen'));
+        Uri.parse(
+            '${_endpointConfig.wsBaseUrl}/ws/camera-sources/active/audio/listen'));
   }
 
   Map<String, CameraDetectionRuntimeStatus> _parseDetectionModelsStatus(

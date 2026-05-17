@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,6 +64,50 @@ from backend.serial_runtime_lock import SerialRuntimeLock, SerialRuntimeLockErro
 
 settings = get_settings()
 
+logger.info(
+    "Backend startup settings: cwd=%s python=%s env_file=%s camera_source_mode=%s "
+    "camera_ip=%s camera_rtsp_port=%s camera_rtsp_path=%s camera_stream_rtsp_path=%s "
+    "camera_stream_fps=%s camera_stream_profile=%s",
+    os.getcwd(),
+    sys.executable,
+    str((Path(__file__).resolve().parents[1] / ".env")),
+    settings.camera_source_mode,
+    settings.camera_ip,
+    settings.camera_rtsp_port,
+    settings.camera_rtsp_path,
+    settings.camera_stream_rtsp_path,
+    settings.camera_stream_fps,
+    settings.camera_stream_profile,
+)
+
+
+def _prepare_onnxruntime_gpu_environment() -> None:
+    site_packages = Path(getattr(os, "__file__", "")).resolve().parents[1] / "site-packages"
+    dll_dirs = [
+        site_packages / "nvidia" / "cublas" / "bin",
+        site_packages / "nvidia" / "cuda_nvrtc" / "bin",
+        site_packages / "nvidia" / "cudnn" / "bin",
+    ]
+    existing_path_entries = os.environ.get("PATH", "").split(os.pathsep)
+    prepend: list[str] = []
+    for dll_dir in dll_dirs:
+        if dll_dir.exists():
+            text = str(dll_dir)
+            if text not in existing_path_entries and text not in prepend:
+                prepend.append(text)
+    if prepend:
+        os.environ["PATH"] = os.pathsep.join(prepend + existing_path_entries)
+    try:
+        import onnxruntime as ort
+
+        if hasattr(ort, "preload_dlls"):
+            ort.preload_dlls()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ONNXRuntime GPU preload skipped: %s", exc)
+
+
+_prepare_onnxruntime_gpu_environment()
+
 _active_mock_watchers: dict[str, int] = defaultdict(int)
 _active_mock_lock = asyncio.Lock()
 
@@ -106,7 +153,7 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_serial_stream_loop()))
     if settings.data_mode == "mqtt" and settings.mqtt_enabled:
         tasks.append(asyncio.create_task(_mqtt_stream_loop()))
-    uses_backend_camera_stream = settings.camera_source_mode != "local"
+    uses_backend_camera_stream = get_camera_source_registry().active_source().source_mode != "local"
     if settings.camera_stream_keep_warm and uses_backend_camera_stream:
         await get_camera_frame_hub().start_keep_warm()
     if uses_backend_camera_stream:

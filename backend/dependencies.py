@@ -157,16 +157,22 @@ _target_pose_service = TargetPoseService(
     model_root=_fall_detection_model_root,
     model_path=_settings.pose_detection_single_frame_model_path or None,
 )
-_frame_analysis_worker_service = FrameAnalysisWorkerService(project_root=Path(__file__).resolve().parents[1])
+_frame_analysis_worker_service = FrameAnalysisWorkerService(
+    project_root=Path(__file__).resolve().parents[1],
+    timeout_seconds=20.0,
+    cold_start_timeout_seconds=45.0,
+)
 _pose_frame_analysis_worker_service = FrameAnalysisWorkerService(
     project_root=Path(__file__).resolve().parents[1],
     timeout_seconds=8.0,
+    cold_start_timeout_seconds=30.0,
     task="pose",
     log_name="pose_frame_worker_stderr.log",
 )
 _fall_frame_analysis_worker_service = FrameAnalysisWorkerService(
     project_root=Path(__file__).resolve().parents[1],
     timeout_seconds=8.0,
+    cold_start_timeout_seconds=20.0,
     task="fall",
     log_name="fall_frame_worker_stderr.log",
 )
@@ -1346,17 +1352,36 @@ def get_camera_source_settings(camera_id: str):
 
 
 def get_camera_source_frame_hub(camera_id: str) -> CameraFrameHub:
-    source_settings = get_camera_source_settings(camera_id).model_copy(
+    resolved_camera_id = (
+        get_camera_source_registry().active_source().camera_id
+        if camera_id.strip().lower() == "active"
+        else camera_id
+    )
+    source_settings = get_camera_source_settings(resolved_camera_id).model_copy(
         update={
             "camera_stream_keep_warm": False,
             "camera_stream_fps": min(max(_settings.camera_stream_fps, 1.0), 24.0),
         }
     )
-    normalized = camera_id.strip().lower()
+    normalized = resolved_camera_id.strip().lower()
     hub = _camera_source_frame_hubs.get(normalized)
     if hub is None:
+        logger.info(
+            "Creating CameraFrameHub cache_key=%s requested_camera_id=%s resolved_camera_id=%s",
+            normalized,
+            camera_id,
+            resolved_camera_id,
+        )
         hub = CameraFrameHub(source_settings)
         _camera_source_frame_hubs[normalized] = hub
+    else:
+        logger.info(
+            "Reusing CameraFrameHub cache_key=%s requested_camera_id=%s resolved_camera_id=%s hub_object_id=%s",
+            normalized,
+            camera_id,
+            resolved_camera_id,
+            id(hub),
+        )
     return hub
 
 

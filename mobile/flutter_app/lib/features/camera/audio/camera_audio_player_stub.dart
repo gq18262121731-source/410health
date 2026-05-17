@@ -3,7 +3,8 @@ import 'dart:typed_data';
 
 import 'camera_audio_player_base.dart';
 
-CameraAudioPlayer createCameraAudioPlayer() => _UnsupportedCameraAudioPlayer();
+CameraAudioPlayer createPlatformCameraAudioPlayer() =>
+    _UnsupportedCameraAudioPlayer();
 
 class _UnsupportedCameraAudioPlayer implements CameraAudioPlayer {
   final StreamController<double> _levels = StreamController<double>.broadcast();

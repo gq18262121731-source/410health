@@ -19,11 +19,13 @@ class FrameAnalysisWorkerService:
         *,
         project_root: Path,
         timeout_seconds: float = 20.0,
+        cold_start_timeout_seconds: float | None = None,
         task: str = "full",
         log_name: str = "frame_analysis_worker_stderr.log",
     ) -> None:
         self._project_root = project_root
         self._timeout_seconds = timeout_seconds
+        self._cold_start_timeout_seconds = max(timeout_seconds, cold_start_timeout_seconds or timeout_seconds)
         self._task = task
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
@@ -131,7 +133,12 @@ class FrameAnalysisWorkerService:
 
     async def _read_response(self, process: asyncio.subprocess.Process, *, request_id: str) -> dict[str, Any]:
         assert process.stdout is not None
-        deadline = time.monotonic() + self._timeout_seconds
+        timeout_seconds = self._timeout_seconds
+        if self._started_at is not None and self._last_ok_at is None:
+            age_seconds = max(0.0, time.time() - self._started_at)
+            if age_seconds < self._cold_start_timeout_seconds:
+                timeout_seconds = self._cold_start_timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

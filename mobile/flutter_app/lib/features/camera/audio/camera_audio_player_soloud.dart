@@ -150,3 +150,6 @@ class SoLoudCameraAudioPlayer implements CameraAudioPlayer {
     _levels.add(level.clamp(0, 100));
   }
 }
+
+CameraAudioPlayer createPlatformCameraAudioPlayer() =>
+    SoLoudCameraAudioPlayer();

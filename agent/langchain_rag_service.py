@@ -19,6 +19,8 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 from backend.config import Settings
 
@@ -52,6 +54,29 @@ class DocumentFingerprint:
     chunk_count: int
 
 
+class LocalOverlapReranker:
+    def __init__(self, token_pattern: re.Pattern[str], top_n: int) -> None:
+        self._token_pattern = token_pattern
+        self._top_n = top_n
+
+    def compress_documents(self, documents: list[Document], query: str) -> list[Document]:
+        query_tokens = {match.group(0).lower() for match in self._token_pattern.finditer(query or "")}
+        ranked = sorted(
+            documents,
+            key=lambda doc: self._score(query_tokens, doc.page_content),
+            reverse=True,
+        )
+        return ranked[: self._top_n]
+
+    def _score(self, query_tokens: set[str], text: str) -> float:
+        if not query_tokens:
+            return 0.0
+        tokens = {match.group(0).lower() for match in self._token_pattern.finditer(text or "")}
+        overlap = len(query_tokens.intersection(tokens))
+        density = overlap / max(len(tokens), 1)
+        return float(overlap) + density
+
+
 class LangChainRAGService:
     """Hybrid local knowledge retrieval with incremental file-level fingerprinting and ChromaDB."""
 
@@ -74,11 +99,15 @@ class LangChainRAGService:
         # Incremental loading
         self._documents, self._chunks, self._file_fingerprints = self._load_incremental()
         self._docs_hash = self._calculate_global_hash(self._file_fingerprints)
+        self._local_vectorizer: TfidfVectorizer | None = None
+        self._local_vector_matrix = None
         
         # Build retrievers
         self._bm25_retriever = self._build_bm25()
         self._vector_store = self._build_vector_store()
         self._reranker = self._build_reranker()
+        if self._vector_store is None:
+            self._local_vectorizer, self._local_vector_matrix = self._build_local_vector_index()
 
     def search(
         self,
@@ -162,9 +191,11 @@ class LangChainRAGService:
             "docs_hash": self._docs_hash,
             "knowledge_dir": str(self._knowledge_dir),
             "vector_collection": self._vector_collection_name,
-            "vector_enabled": self._vector_store is not None,
+            "vector_enabled": self._vector_store is not None or self._local_vectorizer is not None,
             "bm25_enabled": self._bm25_retriever is not None,
             "rerank_enabled": self._reranker is not None,
+            "vector_backend": "dashscope_chroma" if self._vector_store is not None else ("local_tfidf" if self._local_vectorizer is not None else "disabled"),
+            "rerank_backend": "dashscope_rerank" if isinstance(self._reranker, DashScopeRerank) else ("local_overlap" if self._reranker is not None else "disabled"),
             "fingerprint_manifest": str(self._manifest_path),
             "files": [asdict(f) for f in self._file_fingerprints],
         }
@@ -376,31 +407,75 @@ class LangChainRAGService:
             return None
 
     def _build_reranker(self) -> DashScopeRerank | None:
-        if not self._settings.qwen_enable_rerank or not self._settings.tongyi_rerank_configured:
+        if self._settings.qwen_enable_rerank and self._settings.tongyi_rerank_configured:
+            try:
+                return DashScopeRerank(
+                    model=self._settings.tongyi_rerank_model,
+                    api_key=self._settings.dashscope_api_key,
+                    top_n=max(3, self._settings.rag_top_k),
+                )
+            except Exception:
+                pass
+        if not self._chunks:
             return None
         try:
-            return DashScopeRerank(
-                model=self._settings.tongyi_rerank_model,
-                api_key=self._settings.dashscope_api_key,
-                top_n=max(3, self._settings.rag_top_k),
-            )
+            return LocalOverlapReranker(self._token_pattern, max(3, self._settings.rag_top_k))
         except Exception:
             return None
 
+    def _build_local_vector_index(self) -> tuple[TfidfVectorizer | None, Any]:
+        if not self._chunks:
+            return None, None
+        try:
+            vectorizer = TfidfVectorizer(
+                analyzer="char_wb",
+                ngram_range=(2, 4),
+                min_df=1,
+                max_features=12000,
+            )
+            matrix = vectorizer.fit_transform([chunk.page_content for chunk in self._chunks])
+            return vectorizer, matrix
+        except Exception:
+            return None, None
+
     def _vector_retrieve(self, query: str, top_k: int) -> list[RetrievalCandidate]:
-        if self._vector_store is None:
+        if self._vector_store is not None:
+            try:
+                docs_with_scores = self._vector_store.similarity_search_with_relevance_scores(query, k=top_k)
+            except Exception:
+                docs_with_scores = []
+            candidates: list[RetrievalCandidate] = []
+            for document, score in docs_with_scores:
+                candidates.append(
+                    RetrievalCandidate(
+                        source=str(document.metadata.get("source", "")),
+                        text=document.page_content,
+                        score=float(score or 0.5) + 1.0,
+                        chunk_id=str(document.metadata.get("chunk_id", "")),
+                        title=str(document.metadata.get("title", "")),
+                    )
+                )
+            if candidates:
+                return candidates
+        if self._local_vectorizer is None or self._local_vector_matrix is None:
             return []
         try:
-            docs_with_scores = self._vector_store.similarity_search_with_relevance_scores(query, k=top_k)
+            query_vec = self._local_vectorizer.transform([query])
+            similarities = cosine_similarity(query_vec, self._local_vector_matrix).ravel()
         except Exception:
             return []
-        candidates: list[RetrievalCandidate] = []
-        for document, score in docs_with_scores:
+        top_indices = similarities.argsort()[::-1][:top_k]
+        candidates = []
+        for index in top_indices:
+            score = float(similarities[index])
+            if score <= 0:
+                continue
+            document = self._chunks[int(index)]
             candidates.append(
                 RetrievalCandidate(
                     source=str(document.metadata.get("source", "")),
                     text=document.page_content,
-                    score=float(score or 0.5) + 1.0, # Default score if relevance not returned
+                    score=score + 0.75,
                     chunk_id=str(document.metadata.get("chunk_id", "")),
                     title=str(document.metadata.get("title", "")),
                 )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +38,7 @@ from backend.services.camera_service import CameraService
 
 
 router = APIRouter(prefix="/camera", tags=["camera"])
+logger = logging.getLogger(__name__)
 
 
 class CameraPtzRequest(BaseModel):
@@ -107,11 +110,17 @@ def _camera_detection_models_status() -> dict[str, object]:
     }
 
 
+def _log_api_timing(name: str, started_at: float) -> None:
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    logger.info("camera_api %s elapsed_ms=%.1f", name, elapsed_ms)
+
+
 @router.get("/status")
 async def camera_status() -> dict[str, object]:
+    started_at = time.perf_counter()
     active = get_camera_source_registry().active_source()
     status = await asyncio.to_thread(CameraService(get_camera_source_settings("active")).check_status)
-    return {
+    payload = {
         "camera_id": active.camera_id,
         "camera_name": active.name,
         "configured": status.configured,
@@ -125,12 +134,17 @@ async def camera_status() -> dict[str, object]:
         "source": status.source,
         "detail": status.detail,
     }
+    _log_api_timing("camera/status", started_at)
+    return payload
 
 
 @router.get("/stream-status")
 async def camera_stream_status() -> dict[str, object]:
+    started_at = time.perf_counter()
     active = get_camera_source_registry().active_source()
-    return {"camera_id": active.camera_id, **get_camera_source_frame_hub("active").status()}
+    payload = {"camera_id": active.camera_id, **get_camera_source_frame_hub("active").status()}
+    _log_api_timing("camera/stream-status", started_at)
+    return payload
 
 
 @router.get("/setup/config")
@@ -171,9 +185,10 @@ async def camera_setup_test_snapshot(payload: CameraSetupConfigRequest) -> Respo
 
 @router.get("/audio/status")
 async def camera_audio_status() -> dict[str, object]:
+    started_at = time.perf_counter()
     active = get_camera_source_registry().active_source()
     status = await asyncio.to_thread(CameraService(get_camera_source_settings("active")).check_audio_status)
-    return {
+    payload = {
         "camera_id": active.camera_id,
         "camera_name": active.name,
         "configured": status.configured,
@@ -195,6 +210,8 @@ async def camera_audio_status() -> dict[str, object]:
         "activex_message": status.activex_message,
         "error": status.error,
     }
+    _log_api_timing("camera/audio/status", started_at)
+    return payload
 
 
 @router.get("/audio/stream-status")
@@ -205,7 +222,10 @@ async def camera_audio_stream_status() -> dict[str, object]:
 
 @router.get("/detection-models/status")
 async def camera_detection_models_status() -> dict[str, object]:
-    return _camera_detection_models_status()
+    started_at = time.perf_counter()
+    payload = _camera_detection_models_status()
+    _log_api_timing("camera/detection-models/status", started_at)
+    return payload
 
 
 @router.post("/detection-models/enabled")
@@ -238,9 +258,11 @@ async def camera_detection_models_enabled(payload: DetectionModelsEnabledRequest
 
 @router.get("/fall-detection/status")
 async def camera_fall_detection_status() -> dict[str, object]:
+    started_at = time.perf_counter()
     payload = get_fall_detection_service().status()
     payload["multimodal_review"] = get_fall_multimodal_review_status()
     payload["resolved_target_device_mac"] = get_settings().resolved_fall_detection_target_device_mac
+    _log_api_timing("camera/fall-detection/status", started_at)
     return payload
 
 
@@ -262,7 +284,10 @@ async def camera_fall_detection_enabled(payload: DetectionEnabledRequest) -> dic
 
 @router.get("/pose-detection/status")
 async def camera_pose_detection_status() -> dict[str, object]:
-    return get_pose_detection_service().status()
+    started_at = time.perf_counter()
+    payload = get_pose_detection_service().status()
+    _log_api_timing("camera/pose-detection/status", started_at)
+    return payload
 
 
 @router.post("/pose-detection/enabled")
@@ -279,7 +304,10 @@ async def camera_pose_detection_enabled(payload: DetectionEnabledRequest) -> dic
 
 @router.get("/pose-detection/latest")
 async def camera_pose_detection_latest() -> dict[str, object]:
-    return get_pose_detection_service().latest() or {"status": "empty", "tracks": []}
+    started_at = time.perf_counter()
+    payload = get_pose_detection_service().latest() or {"status": "empty", "tracks": []}
+    _log_api_timing("camera/pose-detection/latest", started_at)
+    return payload
 
 
 @router.post("/analyze-frame")
@@ -371,12 +399,15 @@ async def camera_analyze_frame_fall(
 
 @router.get("/analyze-frame/status")
 async def camera_analyze_frame_status() -> dict[str, object]:
-    return {
+    started_at = time.perf_counter()
+    payload = {
         "enabled": True,
         "full": get_frame_analysis_worker_service().status(),
         "pose": get_pose_frame_analysis_worker_service().status(),
         "fall": get_fall_frame_analysis_worker_service().status(),
     }
+    _log_api_timing("camera/analyze-frame/status", started_at)
+    return payload
 
 
 @router.get("/pose-detection/config")

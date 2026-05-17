@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from dataclasses import dataclass
@@ -54,7 +54,14 @@ class StaticHealthTrainer:
 
     def train_from_excel(self, path: str | Path | None = None, sheet_name: str | int | None = None) -> TrainingSummary:
         source = Path(path or self.settings.static_health_data_path)
-        frame = load_health_excel(source, sheet_name=sheet_name or self.settings.static_health_sheet_name)
+        if source.exists():
+            frame = load_health_excel(source, sheet_name=sheet_name or self.settings.static_health_sheet_name)
+        else:
+            LOGGER.warning(
+                "Static health training source is missing (%s); generating a bootstrap synthetic dataset instead.",
+                source,
+            )
+            frame = self._build_bootstrap_dataframe()
         cleaned, stats = clean_health_dataframe(frame)
         if len(cleaned) < 8:
             raise TrainingError("Not enough valid samples after preprocessing; require at least 8 rows.")
@@ -253,6 +260,66 @@ class StaticHealthTrainer:
             encoding="utf-8",
         )
         cleaned.to_csv(Path(processed_dir) / "static_health_training_cleaned.csv", index=False, encoding="utf-8")
+
+    def _build_bootstrap_dataframe(self, sample_count: int = 512) -> pd.DataFrame:
+        rng = np.random.default_rng(self.settings.train_random_seed)
+        rows: list[dict[str, object]] = []
+        for _ in range(sample_count):
+            pattern = rng.choice(
+                ["normal", "tachy", "brady", "low_spo2", "hypertension", "fever", "mixed"],
+                p=[0.38, 0.12, 0.07, 0.16, 0.14, 0.07, 0.06],
+            )
+            heart_rate = float(rng.normal(76, 12))
+            spo2 = float(rng.normal(97, 1.5))
+            sbp = float(rng.normal(124, 14))
+            dbp = float(rng.normal(78, 9))
+            body_temp = float(rng.normal(36.6, 0.35))
+            fall_detection = int(rng.random() < 0.04)
+
+            if pattern == "tachy":
+                heart_rate = float(rng.normal(124, 12))
+            elif pattern == "brady":
+                heart_rate = float(rng.normal(46, 5))
+            elif pattern == "low_spo2":
+                spo2 = float(rng.normal(88, 2.2))
+            elif pattern == "hypertension":
+                sbp = float(rng.normal(156, 12))
+                dbp = float(rng.normal(98, 8))
+            elif pattern == "fever":
+                body_temp = float(rng.normal(38.1, 0.35))
+            elif pattern == "mixed":
+                heart_rate = float(rng.normal(118, 14))
+                spo2 = float(rng.normal(89, 2.5))
+                sbp = float(rng.normal(150, 14))
+                dbp = float(rng.normal(95, 8))
+                body_temp = float(rng.normal(37.9, 0.4))
+                fall_detection = int(rng.random() < 0.18)
+
+            heart_rate = float(np.clip(heart_rate, 35, 180))
+            spo2 = float(np.clip(spo2, 70, 100))
+            sbp = float(np.clip(sbp, 85, 220))
+            dbp = float(np.clip(dbp, 45, 130))
+            body_temp = float(np.clip(body_temp, 34.5, 41.0))
+            data_accuracy = float(np.clip(rng.normal(96, 4), 78, 100))
+
+            rows.append(
+                {
+                    "Patient Number": f"SYN-{len(rows) + 1:04d}",
+                    "Heart Rate (bpm)": round(heart_rate),
+                    "SpO2 Level (%)": round(spo2),
+                    "Systolic Blood Pressure (mmHg)": round(sbp),
+                    "Diastolic Blood Pressure (mmHg)": round(dbp),
+                    "Body Temperature (°C)": round(body_temp, 1),
+                    "Fall Detection": int(fall_detection),
+                    "Predicted Disease": pattern,
+                    "Data Accuracy (%)": round(data_accuracy, 1),
+                    "Heart Rate Alert": int(heart_rate > 100 or heart_rate < 50),
+                    "SpO2 Level Alert": int(spo2 < 93),
+                    "Blood Pressure Alert": int(sbp >= 140 or dbp >= 90 or sbp < 90 or dbp < 60),
+                    "Temperature Alert": int(body_temp >= 37.3 or body_temp < 35.0),
+                }
+            )
+        return pd.DataFrame(rows)
 
     def _resolve_device(self) -> torch.device:
         requested = self.settings.model_device

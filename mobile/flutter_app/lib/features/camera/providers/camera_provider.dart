@@ -53,6 +53,7 @@ class CameraProvider extends ChangeNotifier {
   DateTime? _lastAnalysisStartedAt;
   DateTime? _lastFallAnalysisStartedAt;
   DateTime? _lastWorkerStatusRefreshAt;
+  DateTime? _lastVideoFrameCapturedAt;
   int audioLevel = 0;
 
   WebSocketChannel? _frameChannel;
@@ -62,11 +63,16 @@ class CameraProvider extends ChangeNotifier {
   StreamSubscription<double>? _audioLevelSubscription;
   Timer? _statusTimer;
   Timer? _reconnectTimer;
+  Timer? _webSnapshotTimer;
+  bool _webSnapshotInFlight = false;
   bool _poseAnalysisInFlight = false;
   bool _fallAnalysisInFlight = false;
   int _fpsFrames = 0;
   DateTime _fpsStartedAt = DateTime.now();
+  int _receiveFpsFrames = 0;
+  DateTime _receiveFpsStartedAt = DateTime.now();
   double clientFps = 0;
+  double receiveFps = 0;
   late final CameraAudioPlayer _audioPlayer;
 
   CameraProvider(this._repository) {
@@ -78,6 +84,9 @@ class CameraProvider extends ChangeNotifier {
   }
 
   bool get hasFrame => frameBytes != null;
+
+  String get mjpegStreamUrl => _repository.mjpegStreamUrl;
+  String get latestSnapshotUrl => _repository.latestSnapshotUrl;
 
   String get frameAnalysisLabel {
     if (aiAnalysisRunning) return '正在调用接口';
@@ -109,8 +118,8 @@ class CameraProvider extends ChangeNotifier {
 
   Future<void> start() async {
     await loadSetupConfig();
-    startFrameRefresh();
     await refreshStatus();
+    startFrameRefresh();
     _statusTimer?.cancel();
     _statusTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       refreshDiagnostics();
@@ -184,9 +193,7 @@ class CameraProvider extends ChangeNotifier {
       await refreshDiagnostics();
       if (autoRefresh) {
         _closeFrameStream(clearFrame: true);
-        if (setupConfig.sourceMode != 'local') {
-          _startFrameStream();
-        }
+        _startFrameStream();
       }
     } catch (error) {
       setupMessage = _formatError(error, fallback: '摄像头配置保存失败');
@@ -198,35 +205,6 @@ class CameraProvider extends ChangeNotifier {
 
   Future<void> refreshDiagnostics() async {
     try {
-      if (setupConfig.sourceMode == 'local') {
-        final results = await Future.wait<Object>([
-          _repository.getDetectionModelsStatus(),
-          _repository.getFrameAnalysisStatus(),
-        ]);
-        final detectionModels =
-            results[0] as Map<String, CameraDetectionRuntimeStatus>;
-        fallDetectionStatus ??= detectionModels['fall_detection'];
-        poseDetectionStatus ??= detectionModels['pose_detection'];
-        frameAnalysisStatus = results[1] as CameraFrameAnalysisStatus;
-        status ??= const CameraStatus(
-          configured: true,
-          online: true,
-          source: 'browser_local_preview',
-        );
-        streamStatus ??= const CameraStreamStatus(
-          sourceFps: 0,
-          measuredFps: 0,
-          clients: 1,
-        );
-        audioStatus ??= const CameraAudioStatus(
-          configured: false,
-          listenSupported: false,
-          talkSupported: false,
-          source: 'browser_local_preview',
-        );
-        notifyListeners();
-        return;
-      }
       final results = await Future.wait<Object>([
         _repository.getStatus(),
         _repository.getStreamStatus(),
@@ -275,7 +253,9 @@ class CameraProvider extends ChangeNotifier {
     if (autoRefresh) return;
     autoRefresh = true;
     if (setupConfig.sourceMode != 'local') {
-      _startFrameStream();
+      if (!kIsWeb) {
+        _startFrameStream();
+      }
     }
     refreshDiagnostics();
     notifyListeners();
@@ -289,6 +269,14 @@ class CameraProvider extends ChangeNotifier {
         (_lastAnalysisStartedAt != null &&
             now.difference(_lastAnalysisStartedAt!).inMilliseconds < 800)) {
       return;
+    }
+    frameBytes = imageBytes;
+    final lastVideoFrameAt = _lastVideoFrameCapturedAt;
+    if (lastVideoFrameAt == null ||
+        now.difference(lastVideoFrameAt).inMilliseconds >= 240) {
+      _lastVideoFrameCapturedAt = now;
+      _recordDisplayFrame();
+      notifyListeners();
     }
     _lastAnalysisStartedAt = now;
     final shouldRunPose = singleFramePoseEnabled && !_poseAnalysisInFlight;
@@ -343,6 +331,9 @@ class CameraProvider extends ChangeNotifier {
     _fallAnalysisInFlight = true;
     try {
       final result = await _repository.analyzeFallFrame(imageBytes);
+      if (result['ok'] == false && result['error'] != null) {
+        lastAiAnalysisError = result['error'].toString();
+      }
       final fall = result['fall'];
       if (fall is Map) {
         final fallResult = Map<String, dynamic>.from(fall);
@@ -478,9 +469,7 @@ class CameraProvider extends ChangeNotifier {
   }
 
   void _startFrameStream() {
-    if (!autoRefresh ||
-        setupConfig.sourceMode == 'local' ||
-        _frameChannel != null) {
+    if (!autoRefresh || _frameChannel != null) {
       return;
     }
     isConnecting = true;
@@ -517,7 +506,7 @@ class CameraProvider extends ChangeNotifier {
     frameBytes = bytes;
     isConnecting = false;
     errorMessage = null;
-    _recordFrame();
+    _recordReceiveFrame();
     notifyListeners();
   }
 
@@ -534,7 +523,7 @@ class CameraProvider extends ChangeNotifier {
     _audioPlayer.playPcm16(bytes);
   }
 
-  void _recordFrame() {
+  bool _recordDisplayFrame() {
     _fpsFrames += 1;
     final now = DateTime.now();
     final elapsed = now.difference(_fpsStartedAt).inMilliseconds / 1000;
@@ -542,12 +531,88 @@ class CameraProvider extends ChangeNotifier {
       clientFps = _fpsFrames / elapsed;
       _fpsFrames = 0;
       _fpsStartedAt = now;
+      return true;
+    }
+    return false;
+  }
+
+  void _startWebSnapshotLoop() {
+    if (!autoRefresh || _webSnapshotTimer != null) {
+      return;
+    }
+    isConnecting = true;
+    errorMessage = null;
+    notifyListeners();
+    _webSnapshotTimer = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (_) => _fetchLatestSnapshotFrame(),
+    );
+    unawaited(_fetchLatestSnapshotFrame());
+  }
+
+  Future<void> _fetchLatestSnapshotFrame() async {
+    if (!autoRefresh || _webSnapshotInFlight) {
+      return;
+    }
+    _webSnapshotInFlight = true;
+    try {
+      final bytes = await _repository.fetchLatestSnapshot(
+        ts: DateTime.now().millisecondsSinceEpoch,
+      );
+      if (bytes.isEmpty) {
+        return;
+      }
+      frameBytes = bytes;
+      isConnecting = false;
+      errorMessage = null;
+      final receiveChanged = _recordReceiveFrame();
+      final displayChanged = _recordDisplayFrame();
+      if (receiveChanged || displayChanged) {
+        notifyListeners();
+      }
+    } catch (error) {
+      errorMessage = _formatError(error, fallback: '最新视频帧加载失败');
+      isConnecting = false;
+      notifyListeners();
+    } finally {
+      _webSnapshotInFlight = false;
+    }
+  }
+
+  bool _recordReceiveFrame() {
+    _receiveFpsFrames += 1;
+    final now = DateTime.now();
+    final elapsed = now.difference(_receiveFpsStartedAt).inMilliseconds / 1000;
+    if (elapsed >= 2) {
+      receiveFps = _receiveFpsFrames / elapsed;
+      _receiveFpsFrames = 0;
+      _receiveFpsStartedAt = now;
+      return true;
+    }
+    return false;
+  }
+
+  void updateRemoteStreamFps({
+    double? receive,
+    double? client,
+  }) {
+    var changed = false;
+    if (receive != null && receiveFps != receive) {
+      receiveFps = receive;
+      changed = true;
+    }
+    if (client != null && clientFps != client) {
+      clientFps = client;
+      changed = true;
+    }
+    if (changed) {
+      notifyListeners();
     }
   }
 
   void _scheduleReconnect() {
     _closeFrameStream(clearFrame: false);
-    if (!autoRefresh || setupConfig.sourceMode == 'local') {
+    if (!autoRefresh) {
       return;
     }
     isConnecting = true;
@@ -558,6 +623,9 @@ class CameraProvider extends ChangeNotifier {
   }
 
   void _closeFrameStream({bool clearFrame = false}) {
+    _webSnapshotTimer?.cancel();
+    _webSnapshotTimer = null;
+    _webSnapshotInFlight = false;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _frameSubscription?.cancel();

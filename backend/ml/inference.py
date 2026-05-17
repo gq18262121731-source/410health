@@ -14,6 +14,7 @@ from backend.ml.feature_engineering import build_single_feature_frame
 from backend.ml.preprocess import DataValidationError, validate_inference_record
 from backend.ml.rule_engine import HealthRuleEngine
 from backend.ml.scoring import fuse_health_scores, risk_raw_to_health_score
+from backend.ml.trainer import StaticHealthTrainer, TrainingError
 from backend.models.static_health_model import StaticHealthMultiTaskModel
 
 
@@ -119,9 +120,12 @@ class HealthInferenceEngine:
         ]
         missing = [str(path) for path in required if not path.exists()]
         if missing:
-            if self.settings.allow_rule_only_fallback:
-                raise InferenceError("Rule-only fallback is configured but not implemented for this runtime")
-            raise ModelArtifactMissingError(f"Missing model artifacts: {missing}")
+            self._try_bootstrap_artifacts(missing)
+            missing = [str(path) for path in required if not path.exists()]
+            if missing:
+                if self.settings.allow_rule_only_fallback:
+                    raise InferenceError("Rule-only fallback is configured but not implemented for this runtime")
+                raise ModelArtifactMissingError(f"Missing model artifacts: {missing}")
 
         model = StaticHealthMultiTaskModel.load(self.settings.static_model_path, map_location=self.device)
         LOGGER.info(
@@ -133,6 +137,14 @@ class HealthInferenceEngine:
         feature_columns = json.loads(Path(self.settings.static_feature_columns_path).read_text(encoding="utf-8"))
         self._artifacts = LoadedArtifacts(model=model, scaler=scaler, feature_columns=list(feature_columns))
         return self._artifacts
+
+    def _try_bootstrap_artifacts(self, missing: list[str]) -> None:
+        LOGGER.warning("Static health artifacts missing; attempting bootstrap training for: %s", missing)
+        try:
+            trainer = StaticHealthTrainer(settings=self.settings)
+            trainer.train_from_excel()
+        except (TrainingError, FileNotFoundError, ValueError) as exc:
+            LOGGER.warning("Static health bootstrap training failed: %s", exc)
 
     def _resolve_device(self) -> torch.device:
         requested = self.settings.model_device

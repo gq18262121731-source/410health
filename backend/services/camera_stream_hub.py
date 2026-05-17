@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import suppress
 from typing import Any, AsyncGenerator, Callable
@@ -33,11 +34,23 @@ class CameraFrameHub:
         self._broadcast_total = 0
         self._fps_window_started_at = time.monotonic()
         self._fps_window_frames = 0
+        self._capture_window_started_at = time.monotonic()
+        self._capture_window_frames = 0
+        self._capture_fps = 0.0
         self._source_fps = 0.0
         self._broadcast_fps = 0.0
         self._broadcast_window_started_at = time.monotonic()
         self._broadcast_window_frames = 0
+        self._mjpeg_window_started_at = time.monotonic()
+        self._mjpeg_window_frames = 0
+        self._mjpeg_fps = 0.0
+        self._mjpeg_total = 0
+        self._mjpeg_bytes_total = 0
+        self._status_log_started_at = time.monotonic()
         self._active_url: str | None = None
+        self._last_success_at: float | None = None
+        self._failed_count = 0
+        self._last_read_elapsed_ms = 0.0
         self._keep_warm = False
         self._last_broadcasted_at = 0.0
         # 优化2: 帧缓存机制 - 避免重复请求，提高响应速度
@@ -129,6 +142,7 @@ class CameraFrameHub:
                 frame_at = self._latest_frame_at
                 if frame and frame_at != last_frame_at:
                     last_frame_at = frame_at
+                    self._record_mjpeg_output(len(frame))
                     yield self._format_mjpeg_part(frame)
                     continue
 
@@ -136,6 +150,7 @@ class CameraFrameHub:
                     await asyncio.wait_for(self._frame_event.wait(), timeout=4.0)
                 except asyncio.TimeoutError:
                     if self._latest_frame:
+                        self._record_mjpeg_output(len(self._latest_frame))
                         yield self._format_mjpeg_part(self._latest_frame)
         finally:
             async with self._lock:
@@ -149,21 +164,35 @@ class CameraFrameHub:
             cache_hit_rate = (self._cache_hits / total_requests) * 100
         
         return {
+            "hub_object_id": id(self),
             "clients": len(self._clients) + self._mjpeg_clients,
             "websocket_clients": len(self._clients),
             "mjpeg_clients": self._mjpeg_clients,
             "running": bool(self._capture_task and not self._capture_task.done()),
             "keep_warm": self._keep_warm,
             "latest_frame_at": self._latest_frame_at,
+            "latest_frame_age_ms": (
+                round(max(0.0, (time.time() - self._latest_frame_at) * 1000), 1)
+                if self._latest_frame_at is not None
+                else None
+            ),
             "latest_frame_size": self._latest_frame_size,
             "last_error": self._last_error,
             "frames_total": self._frames_total,
             "broadcast_total": self._broadcast_total,
+            "mjpeg_total": self._mjpeg_total,
+            "mjpeg_bytes_total": self._mjpeg_bytes_total,
             "target_fps": round(max(1.0, min(self._settings.camera_stream_fps, 30.0)), 2),
+            "capture_fps": round(self._capture_fps, 2),
             "source_fps": round(self._source_fps, 2),
+            "processed_fps": round(self._source_fps, 2),
             "broadcast_fps": round(self._broadcast_fps, 2),
+            "mjpeg_fps": round(self._mjpeg_fps, 2),
             "measured_fps": round(self._source_fps, 2),
             "active_url": self._mask_url(self._active_url),
+            "last_success_at": self._last_success_at,
+            "failed_count": self._failed_count,
+            "last_read_elapsed_ms": round(self._last_read_elapsed_ms, 2),
             "profile": self._settings.camera_stream_profile,
             "jpeg_quality": max(2, min(self._settings.camera_stream_jpeg_quality, 12)),
             "stream_width": max(0, self._settings.camera_stream_width),
@@ -176,6 +205,9 @@ class CameraFrameHub:
 
     def latest_frame(self) -> bytes | None:
         return self._latest_frame
+
+    def latest_frame_at(self) -> float | None:
+        return self._latest_frame_at
 
     def _decorate_frame(self, frame: bytes) -> bytes:
         return frame
@@ -195,23 +227,43 @@ class CameraFrameHub:
 
     async def _capture_loop(self) -> None:
         service = CameraService(self._settings)
+        logger.info(
+            "CameraFrameHub capture loop started source_mode=%s keep_warm=%s clients=%s mjpeg_clients=%s",
+            service.resolved_source_mode(),
+            self._keep_warm,
+            len(self._clients),
+            self._mjpeg_clients,
+        )
 
         try:
             while True:
                 async with self._lock:
                     if not self._has_consumers():
+                        logger.info("CameraFrameHub capture loop exiting: no consumers")
                         return
 
                 preferred_mode = service.resolved_source_mode()
                 try:
                     if preferred_mode == "local":
+                        logger.info("CameraFrameHub using local snapshot stream")
                         await self._run_local_snapshot_stream(service)
                     else:
-                        await self._run_ffmpeg_stream(service)
+                        logger.info("CameraFrameHub using RTSP OpenCV stream")
+                        await self._run_opencv_rtsp_stream(service)
                 except Exception as exc:
                     self._last_error = f"{exc.__class__.__name__}: {exc}"
                     logger.warning("Camera stream failed, retrying: %s", self._last_error)
+                    if self._settings.camera_stream_experiment_mode == "pure_opencv":
+                        await asyncio.sleep(0.6)
+                        continue
                     if preferred_mode != "local":
+                        try:
+                            logger.info("CameraFrameHub RTSP OpenCV stream failed, trying ffmpeg stream")
+                            await self._run_ffmpeg_stream(service)
+                            continue
+                        except Exception as ffmpeg_exc:
+                            self._last_error = f"{ffmpeg_exc.__class__.__name__}: {ffmpeg_exc}"
+                            logger.warning("RTSP ffmpeg stream failed, trying snapshot fallback: %s", self._last_error)
                         try:
                             await self._run_snapshot_stream(service)
                         except Exception as snapshot_exc:
@@ -230,7 +282,163 @@ class CameraFrameHub:
                         await self._run_snapshot_stream(service)
                     await asyncio.sleep(0.6)
         except asyncio.CancelledError:
+            logger.info("CameraFrameHub capture loop cancelled")
             raise
+
+    async def _run_opencv_rtsp_stream(self, service: CameraService) -> None:
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError("OPENCV_NOT_INSTALLED") from exc
+
+        fps = max(1.0, min(self._settings.camera_stream_fps, 30.0))
+        delay = 1.0 / fps
+        last_error = ""
+        max_consecutive_read_failures = 10
+
+        urls = [url for url in service.stream_rtsp_urls if "/tcp/av0_1" in url.lower()]
+        if not urls:
+            urls = service.stream_rtsp_urls
+
+        for url in urls:
+            async with self._lock:
+                if not self._has_consumers():
+                    logger.info("CameraFrameHub _run_opencv_rtsp_stream exiting before url probe: no consumers")
+                    return
+
+            logger.info("CameraFrameHub trying OpenCV RTSP url=%s", self._mask_url(url))
+            previous_options = os.environ.get("OPENCV_FFMPEG_CAPTURE_OPTIONS")
+            transport = "udp" if "/udp/" in url.lower() else "tcp"
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                f"rtsp_transport;{transport}|stimeout;5000000|max_delay;0|fflags;nobuffer|flags;low_delay"
+            )
+
+            try:
+                cap = await asyncio.to_thread(cv2.VideoCapture, url, cv2.CAP_FFMPEG)
+            except Exception as exc:
+                last_error = f"OpenCV create failed: {exc.__class__.__name__}: {exc}"
+                if previous_options is None:
+                    os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+                else:
+                    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = previous_options
+                continue
+
+            frame_count = 0
+            consecutive_read_failures = 0
+            self._active_url = url
+            try:
+                opened = await asyncio.to_thread(cap.isOpened)
+                if not opened:
+                    last_error = "OpenCV RTSP camera not opened"
+                    continue
+
+                with suppress(Exception):
+                    await asyncio.to_thread(cap.set, cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                while True:
+                    loop_started_at = time.perf_counter()
+                    async with self._lock:
+                        if not self._has_consumers():
+                            logger.info("CameraFrameHub _run_opencv_rtsp_stream exiting while reading: no consumers")
+                            return
+
+                    read_started_at = time.perf_counter()
+                    ok, frame_data = await asyncio.to_thread(cap.read)
+                    read_ms = (time.perf_counter() - read_started_at) * 1000
+                    self._last_read_elapsed_ms = read_ms
+                    if read_ms >= 500:
+                        logger.warning(
+                            "CameraFrameHub OpenCV RTSP slow read url=%s read_ms=%.1f consecutive_failures=%s",
+                            self._mask_url(url),
+                            read_ms,
+                            consecutive_read_failures,
+                        )
+                    if not ok or frame_data is None:
+                        consecutive_read_failures += 1
+                        self._failed_count = consecutive_read_failures
+                        logger.warning(
+                            "CameraFrameHub OpenCV RTSP read failed url=%s consecutive_failures=%s read_ms=%.1f",
+                            self._mask_url(url),
+                            consecutive_read_failures,
+                            read_ms,
+                        )
+                        if consecutive_read_failures >= max_consecutive_read_failures:
+                            raise RuntimeError("RTSP_FRAME_READ_FAILED")
+                        await asyncio.sleep(min(delay, 0.08))
+                        continue
+                    consecutive_read_failures = 0
+                    self._failed_count = 0
+
+                    encode_started_at = time.perf_counter()
+                    frame, _headers = await asyncio.to_thread(
+                        service._encode_frame_to_jpeg,  # noqa: SLF001
+                        frame_data,
+                    )
+                    encode_ms = (time.perf_counter() - encode_started_at) * 1000
+                    frame_count += 1
+                    if frame_count == 1:
+                        logger.info(
+                            "CameraFrameHub OpenCV RTSP first frame url=%s size=%s",
+                            self._mask_url(url),
+                            len(frame),
+                        )
+                    self._record_capture_frame()
+                    decorate_started_at = time.perf_counter()
+                    frame = self._decorate_frame(frame)
+                    decorate_ms = (time.perf_counter() - decorate_started_at) * 1000
+                    self._latest_frame = frame
+                    self._latest_frame_at = time.time()
+                    self._last_success_at = self._latest_frame_at
+                    self._latest_frame_size = len(frame)
+                    self._last_error = None
+                    self._frame_event.set()
+                    self._record_frame()
+                    broadcast_started_at = time.perf_counter()
+                    await self._broadcast_frame(frame)
+                    broadcast_ms = (time.perf_counter() - broadcast_started_at) * 1000
+                    sleep_started_at = time.perf_counter()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    sleep_ms = (time.perf_counter() - sleep_started_at) * 1000
+                    loop_ms = (time.perf_counter() - loop_started_at) * 1000
+                    logger.info(
+                        "CameraFrameHub OpenCV loop url=%s frame_count=%s read_ms=%.1f encode_ms=%.1f decorate_ms=%.1f broadcast_ms=%.1f sleep_ms=%.1f loop_ms=%.1f latest_frame_at=%s frames_total=%s",
+                        self._mask_url(url),
+                        frame_count,
+                        read_ms,
+                        encode_ms,
+                        decorate_ms,
+                        broadcast_ms,
+                        sleep_ms,
+                        loop_ms,
+                        self._latest_frame_at,
+                        self._frames_total,
+                    )
+            except Exception as exc:
+                last_error = f"{exc.__class__.__name__}: {exc}"
+                self._last_error = last_error
+                logger.warning(
+                    "CameraFrameHub OpenCV RTSP stream failed url=%s error=%s",
+                    self._mask_url(url),
+                    last_error,
+                )
+            finally:
+                with suppress(Exception):
+                    await asyncio.to_thread(cap.release)
+                if previous_options is None:
+                    os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
+                else:
+                    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = previous_options
+
+            if frame_count > 0:
+                logger.info(
+                    "CameraFrameHub OpenCV RTSP stream established url=%s frame_count=%s",
+                    self._mask_url(url),
+                    frame_count,
+                )
+                return
+
+        raise RuntimeError(last_error or "OPENCV_RTSP_STREAM_NO_FRAMES")
 
     async def _run_ffmpeg_stream(self, service: CameraService) -> None:
         import imageio_ffmpeg
@@ -243,10 +451,17 @@ class CameraFrameHub:
         if stream_width > 0:
             filters.append(f"scale={stream_width}:-2:flags=bicubic")
         last_error = ""
+        logger.info(
+            "CameraFrameHub _run_ffmpeg_stream start target_fps=%.2f stream_width=%s jpeg_quality=%s",
+            fps,
+            stream_width,
+            jpeg_quality,
+        )
 
         for url in service.stream_rtsp_urls:
             async with self._lock:
                 if not self._has_consumers():
+                    logger.info("CameraFrameHub _run_ffmpeg_stream exiting before url probe: no consumers")
                     return
 
             transport = "udp" if "/udp/" in url.lower() else "tcp"
@@ -279,11 +494,13 @@ class CameraFrameHub:
                 "mjpeg",
                 "-",
             ]
+            logger.info("CameraFrameHub trying stream url=%s transport=%s", self._mask_url(url), transport)
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            logger.info("CameraFrameHub ffmpeg process started pid=%s", process.pid)
             buffer = b""
             frame_count = 0
             last_frame_at = time.monotonic()
@@ -296,17 +513,35 @@ class CameraFrameHub:
                 while True:
                     async with self._lock:
                         if not self._has_consumers():
+                            logger.info("CameraFrameHub _run_ffmpeg_stream exiting while reading: no consumers")
                             return
 
                     try:
                         chunk = await asyncio.wait_for(process.stdout.read(65536), timeout=4.0)
                     except asyncio.TimeoutError:
+                        logger.warning(
+                            "CameraFrameHub ffmpeg read timeout url=%s frame_count=%s",
+                            self._mask_url(url),
+                            frame_count,
+                        )
                         if frame_count == 0 or time.monotonic() - last_frame_at > 4.0:
                             raise RuntimeError("CAMERA_STREAM_READ_TIMEOUT")
                         continue
 
                     if not chunk:
+                        logger.warning(
+                            "CameraFrameHub ffmpeg stdout closed url=%s frame_count=%s",
+                            self._mask_url(url),
+                            frame_count,
+                        )
                         break
+
+                    if frame_count == 0:
+                        logger.info(
+                            "CameraFrameHub received first stdout chunk url=%s bytes=%s",
+                            self._mask_url(url),
+                            len(chunk),
+                        )
 
                     buffer += chunk
                     while True:
@@ -321,8 +556,15 @@ class CameraFrameHub:
 
                         frame = buffer[start : end + 2]
                         buffer = buffer[end + 2 :]
+                        self._record_capture_frame()
                         frame = self._decorate_frame(frame)
                         frame_count += 1
+                        if frame_count == 1:
+                            logger.info(
+                                "CameraFrameHub parsed first MJPEG frame url=%s size=%s",
+                                self._mask_url(url),
+                                len(frame),
+                            )
                         last_frame_at = time.monotonic()
                         self._latest_frame = frame
                         self._latest_frame_at = time.time()
@@ -336,6 +578,12 @@ class CameraFrameHub:
                     process.kill()
                 with suppress(ProcessLookupError, asyncio.TimeoutError):
                     await asyncio.wait_for(process.wait(), timeout=2.0)
+                logger.info(
+                    "CameraFrameHub ffmpeg process closed pid=%s url=%s frame_count=%s",
+                    process.pid,
+                    self._mask_url(url),
+                    frame_count,
+                )
 
             stderr = b""
             if process.stderr:
@@ -343,7 +591,17 @@ class CameraFrameHub:
                     stderr = await asyncio.wait_for(process.stderr.read(), timeout=0.2)
             last_error = stderr.decode("utf-8", errors="replace").strip()
             if frame_count > 0:
+                logger.info(
+                    "CameraFrameHub stream established url=%s frame_count=%s",
+                    self._mask_url(url),
+                    frame_count,
+                )
                 return
+            logger.warning(
+                "CameraFrameHub stream url produced no frames url=%s stderr=%s",
+                self._mask_url(url),
+                last_error[-400:] if last_error else "",
+            )
 
         raise RuntimeError(last_error or "CAMERA_STREAM_NO_FRAMES")
 
@@ -357,6 +615,7 @@ class CameraFrameHub:
         self._latest_frame_at = time.time()
         self._latest_frame_size = len(frame)
         self._frame_event.set()
+        self._record_capture_frame()
         self._record_frame()
         await self._broadcast_frame(frame)
 
@@ -393,6 +652,7 @@ class CameraFrameHub:
             self._latest_frame_size = len(frame)
             self._last_error = None
             self._frame_event.set()
+            self._record_capture_frame()
             self._record_frame()
             await self._broadcast_frame(frame)
             delivered += 1
@@ -484,6 +744,7 @@ class CameraFrameHub:
                         service._encode_frame_to_jpeg,  # noqa: SLF001
                         frame_data,
                     )
+                    self._record_capture_frame()
                     frame = self._decorate_frame(frame)
                     self._latest_frame = frame
                     self._latest_frame_at = time.time()
@@ -512,6 +773,29 @@ class CameraFrameHub:
             self._source_fps = self._fps_window_frames / elapsed
             self._fps_window_frames = 0
             self._fps_window_started_at = now
+            self._log_runtime_status(now)
+
+    def _record_capture_frame(self) -> None:
+        self._capture_window_frames += 1
+        now = time.monotonic()
+        elapsed = now - self._capture_window_started_at
+        if elapsed >= 2.0:
+            self._capture_fps = self._capture_window_frames / elapsed
+            self._capture_window_frames = 0
+            self._capture_window_started_at = now
+
+    def _log_runtime_status(self, now: float) -> None:
+        if now - self._status_log_started_at < 2.0:
+            return
+        self._status_log_started_at = now
+        logger.info(
+            "CameraFrameHub runtime url=%s capture_fps=%.2f processed_fps=%.2f broadcast_fps=%.2f last_error=%s",
+            self._mask_url(self._active_url),
+            self._capture_fps,
+            self._source_fps,
+            self._broadcast_fps,
+            self._last_error,
+        )
 
     def _record_broadcast(self, count: int) -> None:
         if count <= 0:
@@ -525,6 +809,17 @@ class CameraFrameHub:
             self._broadcast_fps = self._broadcast_window_frames / elapsed
             self._broadcast_window_frames = 0
             self._broadcast_window_started_at = now
+
+    def _record_mjpeg_output(self, payload_size: int) -> None:
+        self._mjpeg_total += 1
+        self._mjpeg_bytes_total += payload_size
+        self._mjpeg_window_frames += 1
+        now = time.monotonic()
+        elapsed = now - self._mjpeg_window_started_at
+        if elapsed >= 2.0:
+            self._mjpeg_fps = self._mjpeg_window_frames / elapsed
+            self._mjpeg_window_frames = 0
+            self._mjpeg_window_started_at = now
 
     async def _broadcast_frame(self, frame: bytes) -> None:
         async with self._lock:

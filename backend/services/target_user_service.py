@@ -263,7 +263,23 @@ class TargetUserService:
     ) -> dict[str, Any]:
         np_buffer = np.frombuffer(image_bytes, dtype=np.uint8)
         frame = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
+        frame = self._prepare_input_frame(frame)
         return self.extract_features_from_frame(frame, include_face=include_face, include_body=include_body)
+
+    @staticmethod
+    def _prepare_input_frame(frame: np.ndarray | None) -> np.ndarray | None:
+        if frame is None or frame.size == 0:
+            return frame
+        height, width = frame.shape[:2]
+        longest = max(height, width)
+        if longest <= 1280:
+            return frame
+        scale = 1280.0 / float(longest)
+        return cv2.resize(
+            frame,
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
 
     def _extract_face_embedding(self, frame: np.ndarray) -> list[float] | None:
         if self._face_detector_yn is not None and self._face_recognizer_sf is not None:
@@ -280,6 +296,23 @@ class TargetUserService:
         if crop.size == 0:
             return None
         resized = cv2.resize(crop, (32, 32), interpolation=cv2.INTER_AREA)
+        vector = resized.astype(np.float32).reshape(-1)
+        norm = float(np.linalg.norm(vector))
+        if norm <= 1e-6:
+            return self._extract_center_face_embedding(gray)
+        return (vector / norm).tolist()
+
+    def _extract_center_face_embedding(self, gray: np.ndarray) -> list[float] | None:
+        height, width = gray.shape[:2]
+        cx1 = int(width * 0.2)
+        cx2 = int(width * 0.8)
+        cy1 = int(height * 0.1)
+        cy2 = int(height * 0.75)
+        center_crop = gray[cy1:cy2, cx1:cx2]
+        if center_crop.size == 0:
+            return None
+        enhanced = cv2.equalizeHist(center_crop)
+        resized = cv2.resize(enhanced, (32, 32), interpolation=cv2.INTER_AREA)
         vector = resized.astype(np.float32).reshape(-1)
         norm = float(np.linalg.norm(vector))
         if norm <= 1e-6:
@@ -342,7 +375,7 @@ class TargetUserService:
                 conf=0.2,
             )
         if not person_boxes:
-            return None
+            return self._build_center_body_profile(frame)
         box, conf, label = max(person_boxes, key=lambda item: (item[1], (item[0][2] - item[0][0]) * (item[0][3] - item[0][1])))
         x1, y1, x2, y2 = [float(value) for value in box]
         width = max(1.0, x2 - x1)
@@ -366,6 +399,24 @@ class TargetUserService:
                 "lying": 4,
                 "bending": 5,
             }.get(label, 0)),
+        }
+
+    @staticmethod
+    def _build_center_body_profile(frame: np.ndarray) -> dict[str, float] | None:
+        if frame is None or frame.size == 0:
+            return None
+        frame_h, frame_w = frame.shape[:2]
+        width = float(frame_w * 0.42)
+        height = float(frame_h * 0.72)
+        area_ratio = float((width * height) / max(1.0, frame_h * frame_w))
+        aspect = float(width / max(height, 1.0))
+        return {
+            "aspect": round(aspect, 6),
+            "area_ratio": round(area_ratio, 6),
+            "center_x": 0.5,
+            "center_y": 0.5,
+            "confidence": 0.08,
+            "label_code": -1.0,
         }
 
     @staticmethod

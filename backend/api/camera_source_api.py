@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 
 from fastapi import APIRouter, HTTPException, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from backend.dependencies import (
@@ -16,6 +18,12 @@ from backend.services.camera_service import CameraService
 
 
 router = APIRouter(prefix="/camera-sources", tags=["camera-sources"])
+logger = logging.getLogger(__name__)
+
+
+def _log_api_timing(name: str, started_at: float) -> None:
+    elapsed_ms = (time.perf_counter() - started_at) * 1000
+    logger.info("camera_source_api %s elapsed_ms=%.1f", name, elapsed_ms)
 
 
 class CameraSourcePtzRequest(BaseModel):
@@ -92,33 +100,58 @@ async def active_camera_source_detail() -> dict[str, object]:
 
 @router.get("/active/status")
 async def active_camera_source_status() -> dict[str, object]:
+    started_at = time.perf_counter()
     active = get_camera_source_registry().active_source()
-    return await camera_source_status(active.camera_id)
+    payload = await camera_source_status(active.camera_id)
+    _log_api_timing("camera-sources/active/status", started_at)
+    return payload
 
 
 @router.get("/active/snapshot")
 async def active_camera_source_snapshot() -> Response:
     active = get_camera_source_registry().active_source()
-    if active.source_mode == "local":
-        hub = get_camera_source_frame_hub(active.camera_id)
-        frame = await hub.snapshot_frame(
-            timeout_seconds=6.0,
-            max_age_seconds=2.5,
+    hub = get_camera_source_frame_hub(active.camera_id)
+    await hub.start_keep_warm()
+    frame = await hub.snapshot_frame(
+        timeout_seconds=6.0,
+        max_age_seconds=2.5,
+    )
+    if frame is not None:
+        latest_frame_at = hub.latest_frame_at()
+        age_ms = (
+            int(max(0.0, (time.time() - latest_frame_at) * 1000))
+            if latest_frame_at is not None
+            else -1
         )
-        if frame is not None:
-            return Response(
-                content=frame,
-                media_type="image/jpeg",
-                headers={"Cache-Control": "no-store, max-age=0"},
-            )
+        return Response(
+            content=frame,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "X-Latest-Frame-At": "" if latest_frame_at is None else str(latest_frame_at),
+                "X-Latest-Frame-Age-Ms": str(age_ms),
+            },
+        )
+    if active.source_mode == "local":
         return await camera_source_snapshot(active.camera_id)
     return await camera_source_snapshot(active.camera_id)
 
 
 @router.get("/active/stream-status")
 async def active_camera_source_stream_status() -> dict[str, object]:
+    started_at = time.perf_counter()
     active = get_camera_source_registry().active_source()
-    return await camera_source_stream_status(active.camera_id)
+    hub = get_camera_source_frame_hub(active.camera_id)
+    await hub.start_keep_warm()
+    payload = await camera_source_stream_status(active.camera_id)
+    payload["active_source_id"] = active.camera_id
+    payload["requested_camera_id"] = "active"
+    payload["hub_cache_key"] = active.camera_id.strip().lower()
+    payload["hub_object_id"] = id(hub)
+    _log_api_timing("camera-sources/active/stream-status", started_at)
+    return payload
 
 
 @router.get("/active/stream.mjpg")
@@ -129,10 +162,124 @@ async def active_camera_source_stream() -> StreamingResponse:
     return await camera_source_stream(active.camera_id)
 
 
+@router.get("/active/video-preview", response_class=HTMLResponse)
+async def active_camera_source_video_preview() -> HTMLResponse:
+    html = """
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>Camera Preview</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0f172a;
+      }
+      .stage {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.12), transparent 32%),
+          radial-gradient(circle at 80% 10%, rgba(14, 165, 233, 0.12), transparent 28%),
+          #0f172a;
+      }
+      #video {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: block;
+        background: #020617;
+      }
+      .badge {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        z-index: 5;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.76);
+        color: #e2e8f0;
+        font: 600 12px/1.2 sans-serif;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <div class="badge" id="stats">Latest Frame Preview</div>
+      <img id="video" alt="camera preview" />
+    </div>
+    <script>
+      const img = document.getElementById('video');
+      const stats = document.getElementById('stats');
+      let loading = false;
+      let frames = 0;
+      let lastStatsAt = performance.now();
+
+      function updateStats() {
+        const now = performance.now();
+        const elapsed = (now - lastStatsAt) / 1000;
+        if (elapsed < 1) return;
+        const fps = frames / elapsed;
+        stats.textContent = `Latest Frame ${fps.toFixed(1)} fps`;
+        frames = 0;
+        lastStatsAt = now;
+      }
+
+      function tick() {
+        if (loading) {
+          updateStats();
+          return;
+        }
+        loading = true;
+        const ts = Date.now();
+        const next = new Image();
+        next.onload = () => {
+          img.src = next.src;
+          frames += 1;
+          loading = false;
+          updateStats();
+        };
+        next.onerror = () => {
+          loading = false;
+          updateStats();
+        };
+        next.src = `/api/v1/camera-sources/active/snapshot?ts=${ts}`;
+      }
+
+      setInterval(tick, 200);
+      tick();
+    </script>
+  </body>
+</html>
+"""
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
 @router.get("/active/audio/status")
 async def active_camera_source_audio_status() -> dict[str, object]:
+    started_at = time.perf_counter()
     active = get_camera_source_registry().active_source()
-    return await camera_source_audio_status(active.camera_id)
+    payload = await camera_source_audio_status(active.camera_id)
+    _log_api_timing("camera-sources/active/audio/status", started_at)
+    return payload
 
 
 @router.get("/active/audio/stream-status")
@@ -191,10 +338,17 @@ async def camera_source_snapshot(camera_id: str) -> Response:
 @router.get("/{camera_id}/stream-status")
 async def camera_source_stream_status(camera_id: str) -> dict[str, object]:
     try:
-        status = get_camera_source_frame_hub(camera_id).status()
+        hub = get_camera_source_frame_hub(camera_id)
+        status = hub.status()
     except KeyError as exc:
         raise _camera_not_found(exc) from exc
-    return {"camera_id": camera_id, **status}
+    return {
+        "camera_id": camera_id,
+        "requested_camera_id": camera_id,
+        "hub_cache_key": camera_id.strip().lower(),
+        "hub_object_id": id(hub),
+        **status,
+    }
 
 
 @router.get("/{camera_id}/stream.mjpg")

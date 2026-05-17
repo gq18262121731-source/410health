@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -53,6 +54,7 @@ class TargetPoseService:
         self._pose_path = raw_model_path if raw_model_path.is_absolute() else model_root / raw_model_path
         self._session_states: dict[str, dict[str, Any]] = {}
         self._max_state_age_ms = 1600
+        self._prefer_gpu_runtime = str(self._pose_path).lower().endswith(".onnx")
 
     def status(self) -> dict[str, Any]:
         return {
@@ -160,12 +162,40 @@ class TargetPoseService:
                 return
             if not self._pose_path.exists():
                 raise FileNotFoundError(self._pose_path)
-            use_cuda = torch.cuda.is_available()
+            self._prepare_onnxruntime_runtime()
+            use_cuda = torch.cuda.is_available() and not self._prefer_gpu_runtime
             self._device = 0 if use_cuda else "cpu"
             self._half = use_cuda
             self._model = YOLO(str(self._pose_path))
             self._loaded = True
             self._load_error = None
+
+    def _prepare_onnxruntime_runtime(self) -> None:
+        if not self._prefer_gpu_runtime:
+            return
+        site_packages = Path(getattr(os, "__file__", "")).resolve().parents[1] / "site-packages"
+        dll_dirs = [
+            site_packages / "nvidia" / "cublas" / "bin",
+            site_packages / "nvidia" / "cuda_nvrtc" / "bin",
+            site_packages / "nvidia" / "cudnn" / "bin",
+        ]
+        existing_path_entries = os.environ.get("PATH", "").split(os.pathsep)
+        prepend: list[str] = []
+        for dll_dir in dll_dirs:
+            if dll_dir.exists():
+                text = str(dll_dir)
+                if text not in existing_path_entries and text not in prepend:
+                    prepend.append(text)
+        if prepend:
+            os.environ["PATH"] = os.pathsep.join(prepend + existing_path_entries)
+        try:
+            import onnxruntime as ort
+
+            if hasattr(ort, "preload_dlls"):
+                ort.preload_dlls()
+        except Exception:
+            # Ultralytics can still fall back to CPU if preload is unavailable.
+            return
 
     def _smooth_points(
         self,

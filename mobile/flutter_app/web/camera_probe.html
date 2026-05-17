@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Camera Probe</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: #0f172a;
+      color: #e5eefb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .shell {
+      width: min(92vw, 980px);
+    }
+    .panel {
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 20px;
+      padding: 20px;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+    }
+    .title {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .hint {
+      color: #94a3b8;
+      margin-bottom: 16px;
+      line-height: 1.6;
+    }
+    .status {
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(15, 118, 110, 0.15);
+      border: 1px solid rgba(20, 184, 166, 0.3);
+      font-size: 14px;
+      white-space: pre-wrap;
+    }
+    .stage {
+      font-family: Consolas, monospace;
+      color: #5eead4;
+      margin-bottom: 12px;
+    }
+    .viewport {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #020617;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="panel">
+      <div class="title">纯 HTML 摄像头对照页</div>
+      <div class="hint">
+        这个页面不经过 Flutter、不经过 HtmlElementView，只验证浏览器原生
+        <code>&lt;video autoplay playsinline&gt;</code> 是否能正常显示本地摄像头。
+      </div>
+      <div class="stage" id="stage">stage: init</div>
+      <div class="status" id="status">等待开始...</div>
+      <div class="viewport">
+        <video id="preview" autoplay muted playsinline></video>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const stageEl = document.getElementById('stage');
+    const statusEl = document.getElementById('status');
+    const videoEl = document.getElementById('preview');
+
+    const log = (stage, message) => {
+      stageEl.textContent = `stage: ${stage}`;
+      statusEl.textContent = message;
+      console.log(`[camera_probe] ${stage} ${message}`);
+    };
+
+    async function main() {
+      try {
+        log('request', '正在请求浏览器摄像头权限...');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 960 },
+            height: { ideal: 540 },
+            frameRate: { ideal: 20, max: 24 },
+          },
+          audio: false,
+        });
+
+        log('stream', `拿到媒体流，tracks=${stream.getTracks().length}`);
+        videoEl.srcObject = stream;
+
+        await videoEl.play();
+        log(
+          'playing',
+          `video.play() 成功\nsize=${videoEl.videoWidth}x${videoEl.videoHeight}\nreadyState=${videoEl.readyState}`
+        );
+      } catch (error) {
+        log('error', String(error));
+      }
+    }
+
+    main();
+  </script>
+</body>
+</html>

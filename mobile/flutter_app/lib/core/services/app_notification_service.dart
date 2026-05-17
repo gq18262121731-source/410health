@@ -34,6 +34,10 @@ class AppNotificationService {
     if (_initialized) {
       return;
     }
+    if (kIsWeb) {
+      _initialized = true;
+      return;
+    }
 
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const darwinSettings = DarwinInitializationSettings(
@@ -71,6 +75,9 @@ class AppNotificationService {
       return;
     }
     _requestedPermissionsThisLaunch = true;
+    if (kIsWeb) {
+      return;
+    }
     await initialize();
 
     final androidPlugin = _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
