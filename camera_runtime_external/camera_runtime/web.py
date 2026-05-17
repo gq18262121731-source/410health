@@ -171,6 +171,10 @@ def build_handler(runtime: CameraRuntime):
 
         def _send_health(self) -> None:
             state = runtime.frame_store.snapshot()
+            frame_age_seconds = None
+            if state.latest_frame_at is not None:
+                frame_age_seconds = max(0.0, time.time() - state.latest_frame_at)
+            stale_frame = frame_age_seconds is None or frame_age_seconds > 6.0
             payload = {
                 "running": state.running,
                 "source": runtime.camera_config.masked_rtsp_url,
@@ -179,6 +183,9 @@ def build_handler(runtime: CameraRuntime):
                 "rtsp_port": runtime.camera_config.rtsp_port,
                 "has_frame": state.latest_jpeg is not None,
                 "latest_frame_at": state.latest_frame_at,
+                "frame_age_seconds": frame_age_seconds,
+                "fresh_frame": state.latest_jpeg is not None and not stale_frame,
+                "stale_frame": stale_frame,
                 "frame_count": state.frame_count,
                 "last_error": state.last_error,
                 "last_opened_at": state.last_opened_at,
@@ -207,6 +214,10 @@ def build_handler(runtime: CameraRuntime):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Type", "image/jpeg")
             self.send_header("Content-Length", str(len(state.latest_jpeg)))
+            if state.latest_frame_at is not None:
+                age_ms = int(max(0.0, time.time() - state.latest_frame_at) * 1000)
+                self.send_header("X-Camera-Frame-Age-Ms", str(age_ms))
+            self.send_header("X-Camera-Frame-Count", str(state.frame_count))
             self.end_headers()
             self.wfile.write(state.latest_jpeg)
 
@@ -267,4 +278,3 @@ def build_handler(runtime: CameraRuntime):
 
 def create_http_server(runtime: CameraRuntime, listen_host: str, listen_port: int) -> ThreadingHTTPServer:
     return ThreadingHTTPServer((listen_host, listen_port), build_handler(runtime))
-

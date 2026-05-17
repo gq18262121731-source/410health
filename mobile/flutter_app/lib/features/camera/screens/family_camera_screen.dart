@@ -282,10 +282,16 @@ class _VideoPanelState extends State<_VideoPanel> {
                   ),
                   if (showingProcessedVideo) ...<Widget>[
                     const SizedBox(height: 10),
-                    const _InlineNotice(
+                    _InlineNotice(
                       icon: Icons.auto_awesome_motion_outlined,
                       color: AppColors.primary,
-                      text: '处理后视频会显示后端模型绘制的红框和姿态骨架',
+                      text: provider.processedOverlayNotice,
+                    ),
+                    const SizedBox(height: 8),
+                    _InlineNotice(
+                      icon: Icons.warning_amber_rounded,
+                      color: AppColors.warning,
+                      text: provider.fallDecisionNotice,
                     ),
                   ],
                 ],
@@ -924,6 +930,7 @@ class _DiagnosticsPanel extends StatelessWidget {
     final provider = context.watch<CameraProvider>();
     final sourceFps = provider.streamStatus?.displayFps ?? 0;
     final latency = provider.status?.latencyMs;
+    final processedOverlay = provider.streamStatus?.processedOverlay;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -942,6 +949,8 @@ class _DiagnosticsPanel extends StatelessWidget {
             _MetricChip(label: '源帧率 ${sourceFps.toStringAsFixed(1)} fps'),
           if (latency != null)
             _MetricChip(label: '延迟 ${latency.toStringAsFixed(1)} ms'),
+          if (processedOverlay != null)
+            _MetricChip(label: '处理流 ${processedOverlay.label}'),
           _MetricChip(label: provider.audioStatus?.listenLabel ?? '音频检测中'),
           _MetricChip(label: '观看端 ${provider.streamStatus?.clients ?? 0}'),
         ],

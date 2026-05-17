@@ -35,7 +35,7 @@ class FallFrameTestService:
         self._posture: YOLO | None = None
         self._device: str | int = "cpu"
         self._half = False
-        self._model_root = settings.fall_detection_model_root
+        self._model_root = Path(settings.fall_detection_model_root)
         self._detector_path = self._model_root / "weights" / "yolo_fall_detector_v1.pt"
         self._posture_path = self._model_root / "runs" / "yolo_posture_person_binary_cls_v1" / "weights" / "best.pt"
 

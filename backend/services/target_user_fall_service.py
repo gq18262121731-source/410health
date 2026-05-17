@@ -395,7 +395,7 @@ class TargetUserFallService:
         tracker = self._get_or_create_tracker(session_id)
         person_boxes = self._target_user_service._collect_person_boxes(  # type: ignore[attr-defined]
             frame,
-            self._target_user_service._person_model,  # type: ignore[attr-defined]
+            self._target_user_service.person_model,  # type: ignore[attr-defined]
             allowed_labels={"person"},
             conf=0.2,
             imgsz=speed["person_imgsz"],
@@ -403,7 +403,7 @@ class TargetUserFallService:
         if not person_boxes:
             person_boxes = self._target_user_service._collect_person_boxes(  # type: ignore[attr-defined]
                 frame,
-                self._target_user_service._fallback_person_model,  # type: ignore[attr-defined]
+                self._target_user_service.fallback_person_model,  # type: ignore[attr-defined]
                 allowed_labels={"person", "fall", "fallen", "sitting", "lying", "bending"},
                 conf=0.2,
                 imgsz=speed["person_imgsz"],

@@ -22,6 +22,7 @@ import 'features/care/repositories/care_repository.dart';
 import 'features/care/screens/elder_home_screen.dart';
 import 'features/care/screens/family_home_screen.dart';
 import 'features/camera/repositories/camera_repository.dart';
+import 'features/camera/providers/camera_provider.dart';
 import 'features/health/repositories/health_repository.dart';
 import 'features/session/services/session_manager.dart';
 import 'features/agent/repositories/agent_repository.dart';
@@ -98,6 +99,16 @@ class AppBootstrap extends StatelessWidget {
             endpointConfig: endpoint,
           ),
         ),
+        ChangeNotifierProxyProvider<CameraRepository, CameraProvider>(
+          create: (context) => CameraProvider(
+            context.read<CameraRepository>(),
+          ),
+          update: (context, repo, prev) {
+            final provider = prev ?? CameraProvider(repo);
+            provider.updateRepository(repo);
+            return provider;
+          },
+        ),
         ProxyProvider<ApiClient, AgentRepository>(
           update: (_, client, __) => AgentRepository(client),
         ),
@@ -125,8 +136,16 @@ class AppBootstrap extends StatelessWidget {
             context.read<SessionManager>(),
             context.read<MobileDeviceRegistrationService>(),
           ),
-          update: (context, authRepo, session, registrationService, prevAuth) =>
-              prevAuth ?? AuthProvider(authRepo, session, registrationService),
+          update: (context, authRepo, session, registrationService, prevAuth) {
+            final provider =
+                prevAuth ?? AuthProvider(authRepo, session, registrationService);
+            provider.updateDependencies(
+              authRepo,
+              session,
+              registrationService,
+            );
+            return provider;
+          },
         ),
         ChangeNotifierProxyProvider2<CareRepository, SessionManager,
             CareProvider>(
@@ -142,7 +161,11 @@ class AppBootstrap extends StatelessWidget {
         ),
         ChangeNotifierProxyProvider<AlarmRepository, AlarmProvider>(
           create: (context) => AlarmProvider(context.read<AlarmRepository>()),
-          update: (context, repo, prev) => prev ?? AlarmProvider(repo),
+          update: (context, repo, prev) {
+            final provider = prev ?? AlarmProvider(repo);
+            provider.updateRepository(repo);
+            return provider;
+          },
         ),
         ChangeNotifierProxyProvider2<VoiceRepository, AudioService,
             VoiceProvider>(
@@ -266,6 +289,10 @@ class _AiHealthAppState extends State<AiHealthApp> {
   @override
   Widget build(BuildContext context) {
     final authStatus = context.watch<AuthProvider>().status;
+    final authUser = context.select<AuthProvider, Object?>(
+      (provider) => provider.user?.id ?? provider.user?.role ?? authStatus,
+    );
+    final homeKey = ValueKey<String>('app-home-shell-$authStatus-$authUser');
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
@@ -354,7 +381,10 @@ class _AiHealthAppState extends State<AiHealthApp> {
         ),
       ),
       home: GlobalAlarmListener(
-        child: _buildHome(context, authStatus),
+        child: KeyedSubtree(
+          key: homeKey,
+          child: _buildHome(context, authStatus),
+        ),
       ),
     );
   }
@@ -362,6 +392,7 @@ class _AiHealthAppState extends State<AiHealthApp> {
   Widget _buildHome(BuildContext context, AuthStatus status) {
     if (status == AuthStatus.initial) {
       return const Scaffold(
+        key: ValueKey('app-home-initial'),
         backgroundColor: Color(0xFFF8FAFC),
         body:
             Center(child: CircularProgressIndicator(color: Color(0xFF2563EB))),
@@ -371,14 +402,16 @@ class _AiHealthAppState extends State<AiHealthApp> {
     if (status == AuthStatus.authenticated) {
       final user = context.read<AuthProvider>().user;
       if (user?.role == 'elder') {
-        return const ElderHomeScreen();
+        return const ElderHomeScreen(key: ValueKey('app-home-elder'));
       }
       if (user?.role == 'family') {
-        return const FamilyHomeScreen();
+        return const FamilyHomeScreen(key: ValueKey('app-home-family'));
       }
-      return const CommunityMobileNoticeScreen();
+      return const CommunityMobileNoticeScreen(
+        key: ValueKey('app-home-community'),
+      );
     }
 
-    return const LoginScreen();
+    return const LoginScreen(key: ValueKey('app-home-login'));
   }
 }

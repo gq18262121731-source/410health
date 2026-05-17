@@ -737,7 +737,7 @@ function startPrimaryVideoTransport() {
 function buildMjpegStreamUrl() {
   const baseUrl =
     cameraViewMode.value === "fall"
-      ? api.getCameraDetectionStreamUrl()
+      ? api.getCameraProcessedStreamUrl()
       : cameraViewMode.value === "pose"
         ? api.getCameraPoseStreamUrl()
         : api.getActiveCameraStreamUrl();

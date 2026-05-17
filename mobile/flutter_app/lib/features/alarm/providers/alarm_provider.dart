@@ -91,7 +91,7 @@ Map<String, dynamic>? _asMap(dynamic raw) {
 class AlarmProvider extends ChangeNotifier {
   static const Duration _fallbackRefreshInterval = Duration(seconds: 12);
 
-  final AlarmRepository _repository;
+  AlarmRepository _repository;
 
   AlarmLoadStatus _status = AlarmLoadStatus.initial;
   List<AlarmRecord> _alarms = [];
@@ -108,8 +108,25 @@ class AlarmProvider extends ChangeNotifier {
   int _reconnectAttempts = 0;
   bool _started = false;
   bool _refreshInFlight = false;
+  bool _disposed = false;
 
   AlarmProvider(this._repository);
+
+  void updateRepository(AlarmRepository repository) {
+    if (identical(_repository, repository)) {
+      return;
+    }
+    _repository = repository;
+    if (_started) {
+      unawaited(reloadFromEndpointChange());
+    }
+  }
+
+  void _notifyIfAlive() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
 
   AlarmLoadStatus get status => _status;
   List<AlarmRecord> get alarms => _alarms;
@@ -131,7 +148,7 @@ class AlarmProvider extends ChangeNotifier {
     _status = AlarmLoadStatus.loading;
     _errorMessage = null;
     _pendingFallReviews = <String, FallReviewPendingMessage>{};
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       List<AlarmRecord>? alarms;
@@ -168,13 +185,13 @@ class AlarmProvider extends ChangeNotifier {
       _reconcileActiveQueue(null);
 
       _status = AlarmLoadStatus.loaded;
-      notifyListeners();
+      _notifyIfAlive();
 
       _connectWebSocket();
     } catch (_) {
       _status = AlarmLoadStatus.error;
       _errorMessage = '获取告警信息失败';
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -204,7 +221,7 @@ class AlarmProvider extends ChangeNotifier {
       final msgType = data['type'] as String?;
       if (msgType == 'alarm_queue') {
         _reconcileActiveQueue(data['queue'] as List<dynamic>?);
-        notifyListeners();
+        _notifyIfAlive();
         return;
       }
 
@@ -212,7 +229,7 @@ class AlarmProvider extends ChangeNotifier {
         final review = FallReviewPendingMessage.fromJson(data);
         if (review.incidentId.isNotEmpty) {
           _pendingFallReviews[review.incidentId] = review;
-          notifyListeners();
+          _notifyIfAlive();
         }
         return;
       }
@@ -222,7 +239,7 @@ class AlarmProvider extends ChangeNotifier {
         if (review.incidentId.isNotEmpty) {
           _pendingFallReviews.remove(review.incidentId);
           _mergeFallReviewFinalized(review);
-          notifyListeners();
+          _notifyIfAlive();
         }
         return;
       }
@@ -231,7 +248,7 @@ class AlarmProvider extends ChangeNotifier {
         final newAlarm = AlarmRecord.fromJson(data);
         if (newAlarm.isFall && newAlarm.incidentId != null) {
           _replaceExistingIncidentAlarm(newAlarm);
-          notifyListeners();
+          _notifyIfAlive();
           return;
         }
         final index = _alarms.indexWhere((a) => a.id == newAlarm.id);
@@ -241,7 +258,7 @@ class AlarmProvider extends ChangeNotifier {
           _alarms.insert(0, newAlarm);
         }
         _sortAlarms();
-        notifyListeners();
+        _notifyIfAlive();
       }
     } catch (_) {}
   }
@@ -374,14 +391,14 @@ class AlarmProvider extends ChangeNotifier {
     if (index != -1) {
       previousAcknowledged = _alarms[index].acknowledged;
       _alarms[index].acknowledged = true;
-      notifyListeners();
+      _notifyIfAlive();
     }
     try {
       await _repository.acknowledgeAlarm(alarmId);
     } catch (_) {
       if (index != -1) {
         _alarms[index].acknowledged = previousAcknowledged;
-        notifyListeners();
+        _notifyIfAlive();
       }
     }
   }
@@ -397,14 +414,14 @@ class AlarmProvider extends ChangeNotifier {
     _reconnectTimer?.cancel();
     _stopFallbackRefresh();
     _closeWebSocket();
-    notifyListeners();
+    _notifyIfAlive();
   }
 
-  void reloadFromEndpointChange() {
+  Future<void> reloadFromEndpointChange() async {
     if (!_started) {
       return;
     }
-    init();
+    await init();
   }
 
   Future<void> resyncAfterForegroundResume() async {
@@ -465,7 +482,7 @@ class AlarmProvider extends ChangeNotifier {
         _status = AlarmLoadStatus.loaded;
         _errorMessage = null;
       }
-      notifyListeners();
+      _notifyIfAlive();
     } finally {
       _refreshInFlight = false;
     }
@@ -498,6 +515,7 @@ class AlarmProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _reconnectTimer?.cancel();
     _stopFallbackRefresh();
     _closeWebSocket();

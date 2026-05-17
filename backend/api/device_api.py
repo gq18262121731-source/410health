@@ -218,6 +218,14 @@ async def bind_device_self(
     device_service = get_device_service()
     existing = device_service.get_device(payload.mac_address)
 
+    def _activate_serial_target(device: DeviceRecord) -> None:
+        if device.ingest_mode != DeviceIngestMode.SERIAL:
+            return
+        try:
+            device_service.set_active_serial_target(device.mac_address)
+        except ValueError:
+            pass
+
     try:
         if existing is None:
             await _clear_device_sos_guard(payload.mac_address)
@@ -236,18 +244,37 @@ async def bind_device_self(
                 DeviceRegisterRequest(**register_payload),
                 operator_id=user.id,
             )
+            _activate_serial_target(created)
             return created
 
         if existing.user_id == user.id and existing.bind_status == DeviceBindStatus.BOUND:
             await _clear_device_sos_guard(existing.mac_address)
-            if existing.ingest_mode == DeviceIngestMode.SERIAL:
-                try:
-                    device_service.set_active_serial_target(existing.mac_address)
-                except ValueError:
-                    pass
+            _activate_serial_target(existing)
             return existing
 
         await _clear_device_sos_guard(existing.mac_address)
+        existing_device_name = (existing.device_name or "").strip() or "T10-WATCH"
+        requested_device_name = (payload.device_name or "").strip() or existing_device_name
+        if existing_device_name.strip().upper() == requested_device_name.strip().upper():
+            for device in device_service.list_devices():
+                if (
+                    device.user_id == user.id
+                    and device.bind_status == DeviceBindStatus.BOUND
+                    and device.ingest_mode == DeviceIngestMode.SERIAL
+                    and device.mac_address != existing.mac_address
+                    and (device.device_name or "").strip().upper() == existing_device_name.strip().upper()
+                ):
+                    try:
+                        device_service.unbind_device(
+                            DeviceUnbindRequest(
+                                mac_address=device.mac_address,
+                                operator_id=user.id,
+                                reason="elder_self_serial_rebind",
+                            )
+                        )
+                        await _clear_device_sos_guard(device.mac_address)
+                    except ValueError:
+                        pass
         device_service.bind_device(
             DeviceBindRequest(
                 mac_address=existing.mac_address,
@@ -259,11 +286,7 @@ async def bind_device_self(
         bound = device_service.get_device(existing.mac_address)
         if bound is None:
             raise HTTPException(status_code=404, detail="DEVICE_NOT_FOUND")
-        if bound.ingest_mode == DeviceIngestMode.SERIAL:
-            try:
-                device_service.set_active_serial_target(bound.mac_address)
-            except ValueError:
-                pass
+        _activate_serial_target(bound)
         return bound
     except ValueError as exc:
         code = str(exc)
@@ -315,7 +338,7 @@ async def switch_serial_target(
         code = str(exc)
         if code == "DEVICE_NOT_FOUND":
             raise HTTPException(status_code=404, detail=code) from exc
-        if code in {"DEVICE_NOT_SERIAL", "DEVICE_DISABLED"}:
+        if code in {"DEVICE_NOT_SERIAL", "DEVICE_DISABLED", "DEVICE_NOT_BOUND"}:
             raise HTTPException(status_code=409, detail=code) from exc
         raise HTTPException(status_code=400, detail=code) from exc
 

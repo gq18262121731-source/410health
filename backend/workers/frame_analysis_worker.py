@@ -10,10 +10,61 @@ import cv2
 import numpy as np
 
 from backend.config import get_settings
-from backend.dependencies import get_fall_multimodal_review_status, get_target_pose_service, get_target_user_fall_service
+from backend.services.fall_frame_test_service import FallFrameTestService
+from backend.services.posture_event_service import PostureEventService
+from backend.services.posture_knowledge_service import PostureKnowledgeService
+from backend.services.target_pose_service import TargetPoseService
+from backend.services.target_user_fall_service import TargetUserFallService
+from backend.services.target_user_service import TargetUserService
 
 _SESSION_BBOX: dict[str, list[int]] = {}
 _SETTINGS = get_settings()
+_MODEL_ROOT = _SETTINGS.data_dir.parent / "fall_detection_model_bundle"
+if not _MODEL_ROOT.exists():
+    _MODEL_ROOT = _SETTINGS.data_dir.parent / "backend" / "fall_detection_model_bundle"
+if not _MODEL_ROOT.exists():
+    _MODEL_ROOT = __import__("pathlib").Path(_SETTINGS.fall_detection_model_root)
+
+_TARGET_USER_SERVICE: TargetUserService | None = None
+_TARGET_POSE_SERVICE: TargetPoseService | None = None
+_TARGET_USER_FALL_SERVICE: TargetUserFallService | None = None
+_FALL_FRAME_SERVICE: FallFrameTestService | None = None
+
+
+def _target_user_service() -> TargetUserService:
+    global _TARGET_USER_SERVICE
+    if _TARGET_USER_SERVICE is None:
+        _TARGET_USER_SERVICE = TargetUserService(data_root=_SETTINGS.data_dir, model_root=_MODEL_ROOT)
+    return _TARGET_USER_SERVICE
+
+
+def _target_pose_service() -> TargetPoseService:
+    global _TARGET_POSE_SERVICE
+    if _TARGET_POSE_SERVICE is None:
+        _TARGET_POSE_SERVICE = TargetPoseService(model_root=_MODEL_ROOT)
+    return _TARGET_POSE_SERVICE
+
+
+def _fall_frame_service() -> FallFrameTestService:
+    global _FALL_FRAME_SERVICE
+    if _FALL_FRAME_SERVICE is None:
+        _FALL_FRAME_SERVICE = FallFrameTestService(_SETTINGS)
+    return _FALL_FRAME_SERVICE
+
+
+def _target_user_fall_service() -> TargetUserFallService:
+    global _TARGET_USER_FALL_SERVICE
+    if _TARGET_USER_FALL_SERVICE is None:
+        resources_root = __import__("pathlib").Path(__file__).resolve().parents[1] / "resources"
+        _TARGET_USER_FALL_SERVICE = TargetUserFallService(
+            data_root=_SETTINGS.data_dir,
+            model_root=_MODEL_ROOT,
+            target_user_service=_target_user_service(),
+            target_pose_service=_target_pose_service(),
+            posture_event_service=PostureEventService(),
+            posture_knowledge_service=PostureKnowledgeService(resources_root=resources_root),
+        )
+    return _TARGET_USER_FALL_SERVICE
 
 
 def _pose_points_to_latest(pose_result: dict[str, Any], *, width: int, height: int) -> dict[str, Any]:
@@ -43,6 +94,7 @@ def _pose_points_to_latest(pose_result: dict[str, Any], *, width: int, height: i
     label = str(posture.get("label") or "unknown") if isinstance(posture, dict) else "unknown"
     score = float(posture.get("score") or posture.get("confidence") or 0) if isinstance(posture, dict) else 0.0
     pose_score = float(quality.get("mean_score") or 0) if isinstance(quality, dict) else 0.0
+    bbox = _bbox_from_keypoints(keypoints)
     return {
         "backend": "single_frame_worker",
         "profile": "browser_preview",
@@ -51,15 +103,41 @@ def _pose_points_to_latest(pose_result: dict[str, Any], *, width: int, height: i
         "tracks": [
             {
                 "track_id": 1,
-                "bbox": [],
+                "bbox": bbox or [],
                 "pose_score": pose_score,
                 "state_label": label,
+                "posture_label": label,
                 "state_score": score,
+                "posture_score": score,
                 "keypoints": keypoints,
                 "features": {"quality": quality},
             }
         ],
     }
+
+
+def _bbox_from_keypoints(keypoints: list[list[float]]) -> list[int] | None:
+    xs: list[float] = []
+    ys: list[float] = []
+    for point in keypoints:
+      if len(point) < 3:
+        continue
+      if float(point[2] or 0) < 0.15:
+        continue
+      xs.append(float(point[0] or 0))
+      ys.append(float(point[1] or 0))
+    if len(xs) < 4 or len(ys) < 4:
+      return None
+    x1, x2 = min(xs), max(xs)
+    y1, y2 = min(ys), max(ys)
+    pad_x = max(20.0, (x2 - x1) * 0.22)
+    pad_y = max(28.0, (y2 - y1) * 0.24)
+    return [
+      int(round(x1 - pad_x)),
+      int(round(y1 - pad_y)),
+      int(round(x2 + pad_x)),
+      int(round(y2 + pad_y)),
+    ]
 
 
 def _bbox_from_pose_latest(pose_latest: dict[str, Any]) -> list[int] | None:
@@ -114,10 +192,10 @@ def _analyze(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "INVALID_IMAGE"}
 
     if run_pose:
-        pose_result = get_target_pose_service().estimate_pose(
+        pose_result = _target_pose_service().estimate_pose(
             frame,
             imgsz=int(payload.get("pose_imgsz") or _SETTINGS.pose_detection_single_frame_imgsz),
-            conf=float(payload.get("pose_conf") or 0.2),
+            conf=float(payload.get("pose_conf") or 0.12),
             session_id=session_id,
         )
     else:
@@ -132,11 +210,12 @@ def _analyze(payload: dict[str, Any]) -> dict[str, Any]:
             },
         }
     if run_fall:
-        fall_result = get_target_user_fall_service().detect(
+        fall_result = _target_user_fall_service().detect(
             image_bytes,
             include_annotated_image=False,
             target_only=False,
             session_id=session_id,
+            speed_mode="low_latency",
         )
     else:
         fall_result = {"ok": False, "status": "skipped", "fall_result": None}
@@ -151,7 +230,7 @@ def _analyze(payload: dict[str, Any]) -> dict[str, Any]:
         "pose": pose_result,
         "pose_latest": pose_latest,
         "fall": fall_result,
-        "multimodal_review": get_fall_multimodal_review_status(),
+        "multimodal_review": {"enabled": bool(_SETTINGS.fall_detection_multimodal_enabled)},
     }
 
 
@@ -163,11 +242,11 @@ def _analyze_pose(payload: dict[str, Any]) -> dict[str, Any]:
     if frame is None:
         return {"ok": False, "error": "INVALID_IMAGE", "pose_latest": {"status": "empty", "tracks": []}}
 
-    pose_result = get_target_pose_service().estimate_pose(
+    pose_result = _target_pose_service().estimate_pose(
         frame,
         bbox=_clamp_bbox(_SESSION_BBOX.get(session_id, []), width=int(frame.shape[1]), height=int(frame.shape[0])),
         imgsz=int(payload.get("pose_imgsz") or _SETTINGS.pose_detection_single_frame_imgsz),
-        conf=float(payload.get("pose_conf") or 0.2),
+        conf=float(payload.get("pose_conf") or 0.12),
         session_id=session_id,
     )
     pose_latest = _pose_points_to_latest(
@@ -191,16 +270,24 @@ def _analyze_fall(payload: dict[str, Any]) -> dict[str, Any]:
     image_b64 = str(payload.get("image_b64") or "")
     session_id = str(payload.get("session_id") or "browser-preview")
     image_bytes = base64.b64decode(image_b64, validate=True)
-    fall_result = get_target_user_fall_service().detect(
+    fall_result = _target_user_fall_service().detect(
         image_bytes,
         include_annotated_image=False,
         target_only=False,
         session_id=session_id,
+        speed_mode="low_latency",
     )
+    if not fall_result.get("ok"):
+        fall_result = _fall_frame_service().detect(
+            image_bytes,
+            include_annotated_image=False,
+            imgsz=416,
+            posture_imgsz=256,
+        )
     return {
         "ok": bool(fall_result.get("ok")),
         "fall": fall_result,
-        "multimodal_review": get_fall_multimodal_review_status(),
+        "multimodal_review": {"enabled": bool(_SETTINGS.fall_detection_multimodal_enabled)},
     }
 
 

@@ -1,7 +1,3 @@
-param(
-    [string]$CondaEnv = "health"
-)
-
 $ErrorActionPreference = "Stop"
 
 function Resolve-EnvPython {

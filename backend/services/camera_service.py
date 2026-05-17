@@ -91,6 +91,9 @@ class CameraService:
         self._http_session.mount('https://', adapter)
         # 设置默认超时
         self._http_session.timeout = max(2.0, settings.camera_probe_timeout_seconds)
+        self._runtime_health_url = "http://127.0.0.1:8090/api/v1/camera/health"
+        self._runtime_snapshot_url = "http://127.0.0.1:8090/api/v1/camera/snapshot"
+        self._runtime_mjpeg_url = "http://127.0.0.1:8090/api/v1/camera/stream.mjpg"
 
     @property
     def configured(self) -> bool:
@@ -114,11 +117,72 @@ class CameraService:
         mode = self._settings.camera_source_mode
         if mode != "auto":
             return mode
+        if self.uses_runtime_managed_source():
+            return "rtsp"
         if self._rtsp_target_is_local_machine():
             return "local"
         if self._rtsp_configured:
             return "rtsp"
         return "local"
+
+    def uses_runtime_managed_source(self) -> bool:
+        host = self._settings.camera_ip.strip()
+        return bool(host == "192.168.8.253")
+
+    @property
+    def runtime_mjpeg_url(self) -> str:
+        return self._runtime_mjpeg_url
+
+    @property
+    def runtime_snapshot_url(self) -> str:
+        return self._runtime_snapshot_url
+
+    def capture_runtime_jpeg_fast(self, *, timeout_seconds: float = 0.8) -> tuple[bytes, dict[str, str]]:
+        """Return the latest frame from the external runtime without RTSP fallback.
+
+        The runtime already owns the RTSP connection and keeps the latest JPEG
+        in memory. Public API routes use this as a hard fast path so a mobile
+        snapshot request cannot fall through into slow OpenCV/ffmpeg probing.
+        """
+        if not self.uses_runtime_managed_source():
+            raise RuntimeError("RUNTIME_SOURCE_NOT_ACTIVE")
+
+        timeout = max(0.25, min(float(timeout_seconds), 1.5))
+        response = requests.get(
+            self._runtime_snapshot_url,
+            timeout=timeout,
+            headers={"Cache-Control": "no-cache"},
+        )
+        response.raise_for_status()
+        content = response.content
+        if not content.startswith(b"\xff\xd8") or len(content) <= 1000:
+            raise RuntimeError("RUNTIME_SNAPSHOT_INVALID")
+        headers = {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "X-Camera-Source": "runtime-snapshot-fast-proxy",
+        }
+        frame_age = response.headers.get("X-Frame-Age-Seconds")
+        if frame_age:
+            headers["X-Frame-Age-Seconds"] = frame_age
+        frame_at = response.headers.get("X-Frame-Timestamp")
+        if frame_at:
+            headers["X-Frame-Timestamp"] = frame_at
+        return content, headers
+
+    def runtime_health(self) -> dict[str, Any] | None:
+        if not self.uses_runtime_managed_source():
+            return None
+        try:
+            response = self._http_session.get(
+                self._runtime_health_url,
+                timeout=max(1.0, self._settings.camera_probe_timeout_seconds),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            return None
 
     def can_use_local_camera_fallback(self) -> bool:
         return self._settings.camera_source_mode in {"auto", "local"} and self._settings.camera_local_index >= 0
@@ -210,6 +274,25 @@ class CameraService:
                 source="rtsp",
             )
 
+        if self.uses_runtime_managed_source():
+            runtime = self.runtime_health()
+            if runtime is not None:
+                has_frame = bool(runtime.get("has_frame"))
+                last_error = str(runtime.get("last_error") or "").strip() or None
+                status_error = None if has_frame else (last_error or "RUNTIME_NO_FRAME")
+                return CameraStatus(
+                    configured=True,
+                    online=has_frame,
+                    ip=ip,
+                    port=port,
+                    path=path,
+                    checked_at=checked_at,
+                    latency_ms=round(float(runtime.get("bridge_latency_ms") or 0.0), 2),
+                    error=status_error,
+                    source="rtsp",
+                    detail=f"runtime-proxy -> {self._runtime_mjpeg_url}",
+                )
+
         started = time.perf_counter()
         try:
             with socket.create_connection((ip, port), timeout=self._settings.camera_probe_timeout_seconds):
@@ -290,6 +373,9 @@ class CameraService:
             if self.can_use_local_camera_fallback():
                 return self.capture_local_jpeg()
             raise RuntimeError("CAMERA_NOT_CONFIGURED")
+
+        if self.uses_runtime_managed_source():
+            return self.capture_runtime_jpeg_fast(timeout_seconds=0.8)
 
         if source_mode == "rtsp":
             try:

@@ -85,6 +85,8 @@ class DeviceService:
                 raise ValueError("DEVICE_NOT_SERIAL")
             if device.bind_status == DeviceBindStatus.DISABLED:
                 raise ValueError("DEVICE_DISABLED")
+            if device.bind_status != DeviceBindStatus.BOUND:
+                raise ValueError("DEVICE_NOT_BOUND")
             previous_target_mac = self._active_serial_target_mac
             target = self._set_active_serial_target_locked(device.mac_address)
             if target is None:
@@ -100,11 +102,12 @@ class DeviceService:
             if payload.user_id:
                 self._validate_binding_target(payload.user_id)
                 if payload.ingest_mode == DeviceIngestMode.SERIAL:
-                    self._detach_conflicting_mock_devices(
+                    self._detach_conflicting_devices(
                         user_id=payload.user_id,
                         device_name=device_name,
                         operator_id=operator_id,
                         reason="serial_device_override",
+                        allowed_ingest_modes={DeviceIngestMode.MOCK, DeviceIngestMode.SERIAL},
                     )
                 self._ensure_unique_model_per_target_user(payload.user_id, device_name)
                 bind_status = DeviceBindStatus.BOUND
@@ -126,7 +129,7 @@ class DeviceService:
             )
             self._devices[record.mac_address] = record
             self._upsert_device(record)
-            if record.ingest_mode == DeviceIngestMode.SERIAL:
+            if record.ingest_mode == DeviceIngestMode.SERIAL and record.bind_status == DeviceBindStatus.BOUND:
                 self._set_active_serial_target_locked(record.mac_address)
             if payload.user_id:
                 log = DeviceBindLogRecord(
@@ -206,12 +209,13 @@ class DeviceService:
             if device.user_id == payload.target_user_id and device.bind_status == DeviceBindStatus.BOUND:
                 raise ValueError("DEVICE_ALREADY_BOUND_TO_TARGET")
             if device.ingest_mode == DeviceIngestMode.SERIAL:
-                self._detach_conflicting_mock_devices(
+                self._detach_conflicting_devices(
                     user_id=payload.target_user_id,
                     device_name=device.device_name,
                     operator_id=payload.operator_id,
                     reason="serial_device_override",
                     current_device_id=device.id,
+                    allowed_ingest_modes={DeviceIngestMode.MOCK, DeviceIngestMode.SERIAL},
                 )
             self._ensure_unique_model_per_target_user(
                 payload.target_user_id,
@@ -285,12 +289,13 @@ class DeviceService:
             if device.user_id == payload.new_user_id:
                 raise ValueError("DEVICE_ALREADY_BOUND_TO_TARGET")
             if device.ingest_mode == DeviceIngestMode.SERIAL:
-                self._detach_conflicting_mock_devices(
+                self._detach_conflicting_devices(
                     user_id=payload.new_user_id,
                     device_name=device.device_name,
                     operator_id=payload.operator_id,
                     reason="serial_device_override",
                     current_device_id=device.id,
+                    allowed_ingest_modes={DeviceIngestMode.MOCK, DeviceIngestMode.SERIAL},
                 )
             self._ensure_unique_model_per_target_user(
                 payload.new_user_id,
@@ -376,7 +381,7 @@ class DeviceService:
             if self._normalize_device_name(device.device_name) == normalized_name:
                 raise ValueError("TARGET_USER_ALREADY_HAS_DEVICE_OF_SAME_MODEL")
 
-    def _detach_conflicting_mock_devices(
+    def _detach_conflicting_devices(
         self,
         *,
         user_id: str,
@@ -384,14 +389,16 @@ class DeviceService:
         operator_id: str | None,
         reason: str,
         current_device_id: str | None = None,
+        allowed_ingest_modes: set[DeviceIngestMode] | None = None,
     ) -> None:
+        modes = allowed_ingest_modes or {DeviceIngestMode.MOCK}
         normalized_name = self._normalize_device_name(device_name)
         for device in list(self._devices.values()):
             if device.user_id != user_id or device.bind_status != DeviceBindStatus.BOUND:
                 continue
             if current_device_id and device.id == current_device_id:
                 continue
-            if device.ingest_mode != DeviceIngestMode.MOCK:
+            if device.ingest_mode not in modes:
                 continue
             if self._normalize_device_name(device.device_name) != normalized_name:
                 continue
@@ -554,7 +561,7 @@ class DeviceService:
         if (
             device is None
             or device.ingest_mode != DeviceIngestMode.SERIAL
-            or device.bind_status == DeviceBindStatus.DISABLED
+            or device.bind_status != DeviceBindStatus.BOUND
         ):
             self._active_serial_target_mac = None
             return None
@@ -567,7 +574,7 @@ class DeviceService:
                 device
                 for device in self._devices.values()
                 if device.ingest_mode == DeviceIngestMode.SERIAL
-                and device.bind_status != DeviceBindStatus.DISABLED
+                and device.bind_status == DeviceBindStatus.BOUND
             ),
             key=lambda item: (item.created_at, item.mac_address),
         )

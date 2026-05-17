@@ -105,8 +105,8 @@ const rawPreviewUrl = computed(() => {
 });
 
 const processedPreviewUrl = computed(() => {
-  const base = api.getCameraDetectionStreamUrl();
-  return `${base}${base.includes("?") ? "&" : "?"}fall=${livePreviewVersion.value}`;
+  const base = api.getCameraProcessedStreamUrl();
+  return `${base}${base.includes("?") ? "&" : "?"}processed=${livePreviewVersion.value}`;
 });
 
 const skeletonPreviewUrl = computed(() => {

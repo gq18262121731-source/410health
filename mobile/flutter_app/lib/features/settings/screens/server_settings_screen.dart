@@ -26,6 +26,8 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
   String? _testResult;
   bool _lastTestPassed = false;
 
+  static const _recommendedLanHost = '192.168.8.252';
+
   @override
   void initState() {
     super.initState();
@@ -40,6 +42,28 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
     _hostController.dispose();
     _portController.dispose();
     super.dispose();
+  }
+
+  bool get _isAndroidRealDeviceMode => true;
+
+  String? _validateHost(String? value) {
+    final host = value?.trim() ?? '';
+    final port = int.tryParse(_portController.text) ?? 0;
+    return ServerEndpointConfig.validateEndpoint(
+      host: host,
+      port: port,
+      isAndroidRealDeviceMode: _isAndroidRealDeviceMode,
+    );
+  }
+
+  String? _validatePort(String? value) {
+    final host = _hostController.text.trim();
+    final port = int.tryParse(value ?? '') ?? -1;
+    return ServerEndpointConfig.validateEndpoint(
+      host: host,
+      port: port,
+      isAndroidRealDeviceMode: _isAndroidRealDeviceMode,
+    );
   }
 
   Future<void> _testConnection() async {
@@ -58,6 +82,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
       host: _hostController.text,
       port: int.parse(_portController.text),
       scheme: _scheme,
+      isAndroidRealDeviceMode: _isAndroidRealDeviceMode,
     );
 
     if (!mounted) {
@@ -83,10 +108,13 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
     });
 
     final config = context.read<ServerEndpointConfig>();
+    final careProvider = context.read<CareProvider>();
+    final alarmProvider = context.read<AlarmProvider>();
     final error = await config.testConnection(
       host: _hostController.text,
       port: int.parse(_portController.text),
       scheme: _scheme,
+      isAndroidRealDeviceMode: _isAndroidRealDeviceMode,
     );
 
     if (error != null) {
@@ -100,6 +128,8 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
       return;
     }
 
+    careProvider.stopAutoRefresh();
+
     await config.save(
       host: _hostController.text,
       port: int.parse(_portController.text),
@@ -110,29 +140,36 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
       return;
     }
 
-    final careProvider = context.read<CareProvider>();
-    careProvider.fetchProfile();
-
-    final alarmProvider = context.read<AlarmProvider>();
-    alarmProvider.reloadFromEndpointChange();
-
     setState(() {
       _isSaving = false;
       _lastTestPassed = true;
       _testResult = '连接成功，已切换到 ${config.origin}';
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('服务器地址已更新为 ${config.origin}'),
-      ),
-    );
-    Navigator.pop(context);
+    Navigator.of(context).pop();
+    Future<void>.delayed(const Duration(milliseconds: 160), () async {
+      careProvider.stopAutoRefresh();
+      await careProvider.fetchProfile(silent: true);
+      await alarmProvider.reloadFromEndpointChange();
+    });
+  }
+
+  void _applyRecommendedLanAddress() {
+    _hostController.text = _recommendedLanHost;
+    _portController.text = '8000';
+    setState(() {
+      _scheme = 'http';
+      _testResult = null;
+      _lastTestPassed = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final config = context.watch<ServerEndpointConfig>();
+    final warning = config.getCurrentEndpointWarning(
+      isAndroidRealDeviceMode: _isAndroidRealDeviceMode,
+    );
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -154,6 +191,12 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildInfoCard(config),
+              if (warning != null) ...[
+                const SizedBox(height: 12),
+                _buildWarningCard(warning),
+              ],
+              const SizedBox(height: 16),
+              _buildRecommendationCard(),
               const SizedBox(height: 16),
               _buildFieldLabel('协议'),
               const SizedBox(height: 8),
@@ -180,13 +223,8 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
               TextFormField(
                 controller: _hostController,
                 style: const TextStyle(color: AppColors.textMain, fontWeight: FontWeight.bold),
-                decoration: _inputDecoration(hintText: '例如 192.168.8.249'),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return '请输入服务器地址';
-                  }
-                  return null;
-                },
+                decoration: _inputDecoration(hintText: '例如 192.168.8.252'),
+                validator: _validateHost,
               ),
               const SizedBox(height: 16),
               _buildFieldLabel('端口'),
@@ -197,17 +235,11 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 decoration: _inputDecoration(hintText: '8000'),
-                validator: (value) {
-                  final port = int.tryParse(value ?? '');
-                  if (port == null || port < 1 || port > 65535) {
-                    return '请输入 1 到 65535 之间的端口';
-                  }
-                  return null;
-                },
+                validator: _validatePort,
               ),
               const SizedBox(height: 12),
               const Text(
-                '当前项目的移动端应连接后端服务，默认端口是 8000。像 9000/9001 这类前端开发端口不能用于登录。',
+                '移动端只能连接后端服务。请填写运行后端那台电脑的局域网 IP 和 8000 端口，不要填写 5173、5182、7860 或 8090。',
                 style: TextStyle(color: AppColors.textSub, height: 1.5),
               ),
               const SizedBox(height: 20),
@@ -300,10 +332,62 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
           ),
           const SizedBox(height: 12),
           const Text(
-            'Android 真机接入同一局域网时，这里应填写运行后端服务那台电脑的局域网 IP 和 8000 端口，例如 http://192.168.8.249:8000。',
+            'Android 真机接入同一局域网时，这里应填写运行后端服务那台电脑的局域网 IP 和 8000 端口。',
             style: TextStyle(color: AppColors.textSub, height: 1.5),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildRecommendationCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '推荐真机地址',
+            style: TextStyle(color: AppColors.textMain, fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'http://$_recommendedLanHost:8000',
+            style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            '如果你当前连接的是这台电脑所在的同一 Wi‑Fi，优先使用上面的地址。',
+            style: TextStyle(color: AppColors.textSub, height: 1.5),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton(
+            onPressed: _applyRecommendedLanAddress,
+            child: const Text('一键填入推荐地址'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWarningCard(String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.warning),
+      ),
+      child: Text(
+        message,
+        style: const TextStyle(color: AppColors.textMain, height: 1.45),
       ),
     );
   }

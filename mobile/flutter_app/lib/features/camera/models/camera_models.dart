@@ -71,12 +71,18 @@ class CameraStreamStatus {
   final double measuredFps;
   final int clients;
   final String? lastError;
+  final CameraOverlayStatus? processedOverlay;
+  final CameraOverlayStatus? poseOverlay;
+  final CameraOverlayStatus? fallOverlay;
 
   const CameraStreamStatus({
     required this.sourceFps,
     required this.measuredFps,
     required this.clients,
     this.lastError,
+    this.processedOverlay,
+    this.poseOverlay,
+    this.fallOverlay,
   });
 
   factory CameraStreamStatus.fromJson(Map<String, dynamic> json) {
@@ -85,10 +91,70 @@ class CameraStreamStatus {
       measuredFps: _toDouble(json['measured_fps']) ?? 0,
       clients: _toInt(json['clients']) ?? 0,
       lastError: json['last_error']?.toString(),
+      processedOverlay: CameraOverlayStatus.fromDynamic(
+        json['processed_overlay'],
+      ),
+      poseOverlay: CameraOverlayStatus.fromDynamic(json['pose_overlay']),
+      fallOverlay: CameraOverlayStatus.fromDynamic(json['fall_overlay']),
     );
   }
 
   double get displayFps => sourceFps > 0 ? sourceFps : measuredFps;
+}
+
+class CameraOverlayStatus {
+  final String type;
+  final bool hasRenderableOverlay;
+  final bool posePayloadValid;
+  final bool poseFallbackValid;
+  final int poseTrackCount;
+  final bool fallPayloadValid;
+  final bool fallFallbackValid;
+  final bool poseFallbackRunning;
+  final bool fallFallbackRunning;
+
+  const CameraOverlayStatus({
+    required this.type,
+    required this.hasRenderableOverlay,
+    required this.posePayloadValid,
+    required this.poseFallbackValid,
+    required this.poseTrackCount,
+    required this.fallPayloadValid,
+    required this.fallFallbackValid,
+    required this.poseFallbackRunning,
+    required this.fallFallbackRunning,
+  });
+
+  factory CameraOverlayStatus.fromJson(Map<String, dynamic> json) {
+    return CameraOverlayStatus(
+      type: json['type']?.toString() ?? 'unknown',
+      hasRenderableOverlay: json['has_renderable_overlay'] == true,
+      posePayloadValid: json['pose_payload_valid'] == true,
+      poseFallbackValid: json['pose_fallback_valid'] == true,
+      poseTrackCount: _toInt(json['pose_track_count']) ?? 0,
+      fallPayloadValid: json['fall_payload_valid'] == true ||
+          json['event_valid'] == true,
+      fallFallbackValid: json['fall_fallback_valid'] == true ||
+          json['fallback_valid'] == true,
+      poseFallbackRunning: json['pose_fallback_running'] == true,
+      fallFallbackRunning: json['fall_fallback_running'] == true,
+    );
+  }
+
+  static CameraOverlayStatus? fromDynamic(Object? value) {
+    final map = _toMap(value);
+    return map == null ? null : CameraOverlayStatus.fromJson(map);
+  }
+
+  String get label {
+    if (hasRenderableOverlay) {
+      if (poseTrackCount > 0) return '已绘制骨架 $poseTrackCount 个';
+      if (fallPayloadValid || fallFallbackValid) return '已绘制跌倒框';
+      return '已绘制处理标注';
+    }
+    if (poseFallbackRunning || fallFallbackRunning) return '正在生成处理标注';
+    return '当前无可绘制目标';
+  }
 }
 
 class CameraAudioStatus {
@@ -232,6 +298,7 @@ class CameraDetectionRuntimeStatus {
   final String? lastError;
   final Map<String, dynamic>? lastEvent;
   final Map<String, dynamic>? multimodalReview;
+  final Map<String, dynamic>? decisionDebug;
 
   const CameraDetectionRuntimeStatus({
     required this.enabled,
@@ -242,6 +309,7 @@ class CameraDetectionRuntimeStatus {
     this.lastError,
     this.lastEvent,
     this.multimodalReview,
+    this.decisionDebug,
   });
 
   factory CameraDetectionRuntimeStatus.fromJson(Map<String, dynamic> json) {
@@ -254,6 +322,7 @@ class CameraDetectionRuntimeStatus {
       lastError: json['last_error']?.toString(),
       lastEvent: _toMap(json['last_event']),
       multimodalReview: _toMap(json['multimodal_review']),
+      decisionDebug: _toMap(json['decision_debug']),
     );
   }
 
@@ -262,6 +331,48 @@ class CameraDetectionRuntimeStatus {
     if (processRunning) return '运行中';
     if (running) return '启动中';
     return '未运行';
+  }
+
+  bool get hasRenderableEvent {
+    final event = lastEvent;
+    if (event == null) return false;
+    final bbox = event['bbox'];
+    if (bbox is List && bbox.length >= 4) return true;
+    final detections = event['detections'];
+    if (detections is List && detections.isNotEmpty) return true;
+    return false;
+  }
+
+  String get decisionStatusLabel {
+    final debug = decisionDebug;
+    if (debug == null) return '等待跌倒判定';
+    final status = debug['status_label']?.toString() ?? '';
+    switch (status) {
+      case 'admitted':
+        return '已形成正式跌倒告警';
+      case 'deduped':
+        return '同一跌倒事件已去重，避免重复弹窗';
+      case 'suppressed':
+      case 'suppressed_by_alarm_service':
+        return '当前帧已识别异常，但未满足正式告警条件';
+      case 'observing':
+        return '疑似跌倒观察中，等待更多连续证据';
+      default:
+        return '等待跌倒判定';
+    }
+  }
+
+  String get decisionReasonLabel {
+    final debug = decisionDebug;
+    if (debug == null) return '';
+    final reasons = (debug['suppress_reasons'] is List)
+        ? (debug['suppress_reasons'] as List)
+            .map((item) => item?.toString() ?? '')
+            .where((item) => item.isNotEmpty)
+            .toList(growable: false)
+        : const <String>[];
+    if (reasons.isEmpty) return '';
+    return '未触发原因：${reasons.join(" / ")}';
   }
 }
 
@@ -420,6 +531,8 @@ class PoseTrack {
       _ => stateLabel,
     };
   }
+
+  bool get hasBBox => bbox.length >= 4;
 }
 
 class PoseKeypoint {

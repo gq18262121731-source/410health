@@ -53,8 +53,10 @@ class TargetUserService:
         use_cuda = torch.cuda.is_available()
         self._device: str | int = 0 if use_cuda else "cpu"
         self._half = use_cuda
-        self._person_model = YOLO(str(model_root / "yolo11n.pt"))
-        self._fallback_person_model = YOLO(str(model_root / "weights" / "yolo_fall_detector_v1.pt"))
+        self._person_model_path = model_root / "yolo11n.pt"
+        self._fallback_person_model_path = model_root / "weights" / "yolo_fall_detector_v1.pt"
+        self._person_model: YOLO | None = None
+        self._fallback_person_model: YOLO | None = None
         self._reid_embedding_service = OptionalReidEmbeddingService()
         self._load_records()
 
@@ -163,6 +165,8 @@ class TargetUserService:
             "fallback_haar_available": not self._haar_face_detector.empty(),
             "person_detector_device": self._device,
             "person_detector_half": self._half,
+            "person_detector_loaded": self._person_model is not None,
+            "fallback_person_detector_loaded": self._fallback_person_model is not None,
             "body_reid": self._reid_embedding_service.status(),
         }
 
@@ -170,10 +174,10 @@ class TargetUserService:
         started = time.perf_counter()
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
         try:
-            self._collect_person_boxes(dummy, self._person_model, allowed_labels={"person"}, conf=0.2, imgsz=imgsz)
+            self._collect_person_boxes(dummy, self.person_model, allowed_labels={"person"}, conf=0.2, imgsz=imgsz)
             self._collect_person_boxes(
                 dummy,
-                self._fallback_person_model,
+                self.fallback_person_model,
                 allowed_labels={"person", "fall", "fallen", "sitting", "lying", "bending"},
                 conf=0.2,
                 imgsz=imgsz,
@@ -452,11 +456,11 @@ class TargetUserService:
         return self._extract_body_features(frame, imgsz=imgsz)["embedding"]
 
     def _extract_body_features(self, frame: np.ndarray, *, imgsz: int = 640) -> dict[str, Any]:
-        person_boxes = self._collect_person_boxes(frame, self._person_model, allowed_labels={"person"}, conf=0.2, imgsz=imgsz)
+        person_boxes = self._collect_person_boxes(frame, self.person_model, allowed_labels={"person"}, conf=0.2, imgsz=imgsz)
         if not person_boxes:
             person_boxes = self._collect_person_boxes(
                 frame,
-                self._fallback_person_model,
+                self.fallback_person_model,
                 allowed_labels={"person", "fall", "fallen", "sitting", "lying", "bending"},
                 conf=0.2,
                 imgsz=imgsz,
@@ -527,6 +531,20 @@ class TargetUserService:
         if norm <= 1e-6:
             return None
         return (vector / norm).tolist()
+
+    @property
+    def person_model(self) -> YOLO:
+        with self._lock:
+            if self._person_model is None:
+                self._person_model = YOLO(str(self._person_model_path))
+            return self._person_model
+
+    @property
+    def fallback_person_model(self) -> YOLO:
+        with self._lock:
+            if self._fallback_person_model is None:
+                self._fallback_person_model = YOLO(str(self._fallback_person_model_path))
+            return self._fallback_person_model
 
     @staticmethod
     def _purge_directory(path: Path) -> None:

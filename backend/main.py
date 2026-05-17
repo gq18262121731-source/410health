@@ -30,9 +30,12 @@ from backend.config import get_settings
 from backend.models.device_model import DeviceIngestMode, DeviceStatus
 from backend.dependencies import (
     ensure_demo_overlay_history_window,
+    resolve_alarm_visible_elder_ids,
+    resolve_alarm_visible_family_ids,
     get_alarm_service,
     get_camera_audio_hub,
     get_camera_detection_frame_hub,
+    get_camera_processed_frame_hub,
     get_camera_pose_frame_hub,
     get_camera_source_audio_hub,
     get_camera_source_frame_hub,
@@ -42,6 +45,7 @@ from backend.dependencies import (
     get_data_generator,
     get_demo_data_status,
     get_device_service,
+    get_external_camera_bridge_service,
     get_fall_detection_service,
     get_pose_detection_service,
     get_parser,
@@ -102,43 +106,72 @@ async def _warmup_target_user_vision_after_startup() -> None:
         logger.exception("Target-user realtime vision warmup failed")
 
 
+async def _ensure_demo_history_after_startup() -> None:
+    await asyncio.sleep(0.5)
+    try:
+        result = await asyncio.to_thread(ensure_demo_overlay_history_window, hours=24, step_minutes=10)
+        logger.info("Demo overlay history ensure finished: %s", result)
+    except Exception:
+        logger.exception("Demo overlay history ensure failed")
+
+
+async def _recover_external_camera_runtime_after_startup() -> None:
+    await asyncio.sleep(1.5)
+    try:
+        result = await asyncio.to_thread(get_external_camera_bridge_service().startup_recover)
+        logger.info("External camera runtime bootstrap finished: %s", result)
+    except Exception:
+        logger.exception("External camera runtime bootstrap failed")
+
+
+async def _mobile_safe_startup_supervisor(app: FastAPI) -> None:
+    """Start optional workers only after the API is already responsive.
+
+    On Windows, serial collectors, demo backfill, camera recovery, and pose
+    subprocess startup can be slow. If they run directly in lifespan, the
+    socket may be open while /healthz and the phone settings page still time
+    out. The phone must be able to reconnect first; heavier workers can follow.
+    """
+    tasks: list[asyncio.Task] = app.state.background_tasks
+    await asyncio.sleep(5.0)
+
+    # Do not auto-start serial, MQTT, pose, fall, demo history, or external
+    # camera probing from lifespan. In practice these workers can be CPU-heavy
+    # or spawn child processes on Windows; starting them automatically made the
+    # API become unresponsive shortly after /healthz first succeeded. The UI
+    # and explicit API controls start detection/runtime work on demand instead.
+    if settings.mock_runtime_enabled:
+        tasks.append(asyncio.create_task(_mock_stream_loop()))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     # 启动即保证虚拟设备至少有 24h 可分析历史
-    ensure_demo_overlay_history_window(hours=24, step_minutes=10)
     tasks: list[asyncio.Task] = []
-    if settings.mock_runtime_enabled:
-        tasks.append(asyncio.create_task(_mock_stream_loop()))
-    elif settings.enable_mock_overlay:
-        tasks.append(asyncio.create_task(_demo_overlay_stream_loop()))
-    if settings.serial_runtime_enabled:
-        tasks.append(asyncio.create_task(_serial_stream_loop()))
-    if settings.data_mode == "mqtt" and settings.mqtt_enabled:
-        tasks.append(asyncio.create_task(_mqtt_stream_loop()))
     uses_backend_camera_stream = getattr(settings, "camera_source_mode", "auto") != "local"
     camera_stream_keep_warm = bool(getattr(settings, "camera_stream_keep_warm", True))
     if camera_stream_keep_warm and uses_backend_camera_stream:
-        await get_camera_frame_hub().start_keep_warm()
-    if uses_backend_camera_stream:
-        if bool(getattr(settings, "fall_detection_enabled", False)):
-            tasks.append(asyncio.create_task(_start_fall_detection_after_startup()))
-        if bool(getattr(settings, "pose_detection_enabled", False)):
-            tasks.append(asyncio.create_task(_start_pose_detection_after_startup()))
-    if bool(getattr(settings, "target_user_vision_warmup_enabled", False)):
-        tasks.append(asyncio.create_task(_warmup_target_user_vision_after_startup()))
+        # Keep only the raw active source warm. Processed/pose/fall streams are
+        # comparatively expensive because they can trigger overlay inference;
+        # starting them eagerly was starving the 8000 API layer and making the
+        # mobile snapshot/stream proxy appear much slower than the 8090 runtime.
+        await get_camera_source_frame_hub("active").start_keep_warm()
     app.state.background_tasks = tasks
+    tasks.append(asyncio.create_task(_mobile_safe_startup_supervisor(app)))
     try:
         yield
     finally:
         await get_fall_detection_service().stop()
         await get_pose_detection_service().stop()
         await get_camera_audio_hub().shutdown()
-        await shutdown_camera_source_hubs()
         if camera_stream_keep_warm and uses_backend_camera_stream:
+            await get_camera_source_frame_hub("active").stop_keep_warm()
             await get_camera_frame_hub().stop_keep_warm()
+            await get_camera_processed_frame_hub().stop_keep_warm()
         await get_camera_detection_frame_hub().stop_keep_warm()
         await get_camera_pose_frame_hub().stop_keep_warm()
+        await shutdown_camera_source_hubs()
         for task in tasks:
             task.cancel()
             with suppress(asyncio.CancelledError):
@@ -301,11 +334,15 @@ async def alarm_stream(websocket: WebSocket) -> None:
         return
 
     visible_device_macs = resolve_alarm_visible_device_macs(session_user) if session_user else None
+    visible_family_ids = resolve_alarm_visible_family_ids(session_user) if session_user else None
+    visible_elder_ids = resolve_alarm_visible_elder_ids(session_user) if session_user else None
     allow_all = session_user is None or session_user.role.value in {"community", "admin"}
     await manager.connect_alarm(
         websocket,
         allow_all=allow_all,
         visible_device_macs=visible_device_macs,
+        visible_family_ids=visible_family_ids,
+        visible_elder_ids=visible_elder_ids,
     )
     try:
         initial_payload = {
@@ -317,6 +354,8 @@ async def alarm_stream(websocket: WebSocket) -> None:
             initial_payload,
             allow_all=allow_all,
             visible_device_macs=visible_device_macs,
+            visible_family_ids=visible_family_ids,
+            visible_elder_ids=visible_elder_ids,
         )
         if scoped_initial_payload is not None:
             await websocket.send_json(scoped_initial_payload)
@@ -341,7 +380,7 @@ async def camera_frame_stream(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/camera/processed")
 async def camera_processed_frame_stream(websocket: WebSocket) -> None:
-    hub = get_camera_pose_frame_hub()
+    hub = get_camera_processed_frame_hub()
     await hub.connect(websocket)
     try:
         while True:
@@ -354,7 +393,15 @@ async def camera_processed_frame_stream(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/camera/pose")
 async def camera_pose_frame_stream(websocket: WebSocket) -> None:
-    await camera_processed_frame_stream(websocket)
+    hub = get_camera_pose_frame_hub()
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
 
 
 @app.websocket("/ws/camera/detection")
@@ -456,11 +503,11 @@ async def _demo_overlay_stream_loop() -> None:
                 sample = generator.sample_for_device(mac, now=now)
                 await ingest_sample(sample)
 
-        publish_next_demo_overlay_sample()
+        await asyncio.to_thread(publish_next_demo_overlay_sample)
         now_monotonic = asyncio.get_running_loop().time()
         # 每小时补齐一次，保证数据库中始终有至少一天 mock 历史
         if now_monotonic - last_history_ensure >= 3600:
-            ensure_demo_overlay_history_window(hours=24, step_minutes=10)
+            await asyncio.to_thread(ensure_demo_overlay_history_window, hours=24, step_minutes=10)
             last_history_ensure = now_monotonic
         await asyncio.sleep(settings.mock_push_interval_seconds)
 

@@ -13,6 +13,8 @@ class AlarmSubscription:
     websocket: WebSocket
     allow_all: bool = True
     visible_device_macs: set[str] | None = None
+    visible_family_ids: set[str] | None = None
+    visible_elder_ids: set[str] | None = None
 
 
 class WebSocketManager:
@@ -47,6 +49,8 @@ class WebSocketManager:
         *,
         allow_all: bool = True,
         visible_device_macs: set[str] | None = None,
+        visible_family_ids: set[str] | None = None,
+        visible_elder_ids: set[str] | None = None,
     ) -> None:
         await websocket.accept()
         async with self._lock:
@@ -55,10 +59,22 @@ class WebSocketManager:
                 for device_mac in (visible_device_macs or set())
                 if device_mac
             }
+            normalized_family_ids = {
+                str(family_id).strip()
+                for family_id in (visible_family_ids or set())
+                if str(family_id).strip()
+            }
+            normalized_elder_ids = {
+                str(elder_id).strip()
+                for elder_id in (visible_elder_ids or set())
+                if str(elder_id).strip()
+            }
             self._alarm_channels[websocket] = AlarmSubscription(
                 websocket=websocket,
                 allow_all=allow_all,
                 visible_device_macs=normalized_macs,
+                visible_family_ids=normalized_family_ids,
+                visible_elder_ids=normalized_elder_ids,
             )
 
     async def disconnect_alarm(self, websocket: WebSocket) -> None:
@@ -108,17 +124,31 @@ class WebSocketManager:
         *,
         allow_all: bool,
         visible_device_macs: set[str] | None,
+        visible_family_ids: set[str] | None = None,
+        visible_elder_ids: set[str] | None = None,
     ) -> dict[str, Any] | None:
         normalized_macs = {
             self._normalize_mac(device_mac)
             for device_mac in (visible_device_macs or set())
             if device_mac
         }
+        normalized_family_ids = {
+            str(family_id).strip()
+            for family_id in (visible_family_ids or set())
+            if str(family_id).strip()
+        }
+        normalized_elder_ids = {
+            str(elder_id).strip()
+            for elder_id in (visible_elder_ids or set())
+            if str(elder_id).strip()
+        }
         return self._scope_alarm_payload(
             AlarmSubscription(
                 websocket=None,  # type: ignore[arg-type]
                 allow_all=allow_all,
                 visible_device_macs=normalized_macs,
+                visible_family_ids=normalized_family_ids,
+                visible_elder_ids=normalized_elder_ids,
             ),
             payload,
         )
@@ -132,7 +162,10 @@ class WebSocketManager:
             return payload
 
         visible_device_macs = subscription.visible_device_macs or set()
-        if not visible_device_macs:
+        visible_family_ids = subscription.visible_family_ids or set()
+        visible_elder_ids = subscription.visible_elder_ids or set()
+        has_scope = bool(visible_device_macs or visible_family_ids or visible_elder_ids)
+        if not has_scope:
             return payload if payload.get("type") == "alarm_queue" else None
 
         if payload.get("type") == "alarm_queue":
@@ -142,7 +175,12 @@ class WebSocketManager:
             filtered_queue = [
                 item
                 for item in raw_queue
-                if self._queue_item_visible(item, visible_device_macs)
+                if self._queue_item_visible(
+                    item,
+                    visible_device_macs=visible_device_macs,
+                    visible_family_ids=visible_family_ids,
+                    visible_elder_ids=visible_elder_ids,
+                )
             ]
             scoped_payload = dict(payload)
             scoped_payload["queue"] = filtered_queue
@@ -163,21 +201,69 @@ class WebSocketManager:
                 scoped_payload["snapshot"] = scoped_snapshot
             return scoped_payload
 
-        device_mac = payload.get("device_mac")
-        if isinstance(device_mac, str) and self._normalize_mac(device_mac) in visible_device_macs:
+        if self._alarm_payload_visible(
+            payload,
+            visible_device_macs=visible_device_macs,
+            visible_family_ids=visible_family_ids,
+            visible_elder_ids=visible_elder_ids,
+        ):
             return payload
         return None
 
-    def _queue_item_visible(self, item: Any, visible_device_macs: set[str]) -> bool:
+    def _queue_item_visible(
+        self,
+        item: Any,
+        *,
+        visible_device_macs: set[str],
+        visible_family_ids: set[str],
+        visible_elder_ids: set[str],
+    ) -> bool:
         if not isinstance(item, dict):
             return False
         alarm = item.get("alarm")
         if not isinstance(alarm, dict):
             return False
-        device_mac = alarm.get("device_mac")
-        if not isinstance(device_mac, str):
+        return self._alarm_payload_visible(
+            alarm,
+            visible_device_macs=visible_device_macs,
+            visible_family_ids=visible_family_ids,
+            visible_elder_ids=visible_elder_ids,
+        )
+
+    def _alarm_payload_visible(
+        self,
+        payload: dict[str, Any],
+        *,
+        visible_device_macs: set[str],
+        visible_family_ids: set[str],
+        visible_elder_ids: set[str],
+    ) -> bool:
+        device_mac = payload.get("device_mac")
+        if isinstance(device_mac, str) and self._normalize_mac(device_mac) in visible_device_macs:
+            return True
+
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
             return False
-        return self._normalize_mac(device_mac) in visible_device_macs
+
+        elder_id = metadata.get("elder_id")
+        if isinstance(elder_id, str) and elder_id.strip() and elder_id.strip() in visible_elder_ids:
+            return True
+
+        family_ids = metadata.get("family_ids")
+        if isinstance(family_ids, list):
+            for family_id in family_ids:
+                normalized = str(family_id).strip()
+                if normalized and normalized in visible_family_ids:
+                    return True
+
+        event = metadata.get("event")
+        if isinstance(event, dict):
+            event_elder_id = event.get("elder_id")
+            if isinstance(event_elder_id, str) and event_elder_id.strip() and event_elder_id.strip() in visible_elder_ids:
+                return True
+
+        return False
 
     async def _send_many(self, sockets: list[WebSocket], payload: dict[str, Any]) -> list[WebSocket]:
         async def send(socket: WebSocket) -> WebSocket | None:

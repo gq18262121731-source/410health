@@ -1,5 +1,5 @@
 param(
-    [string]$BackendEnv = "health",
+    [string]$BackendEnv = "helth",
     [string]$FrontendHost = "0.0.0.0",
     [int]$FrontendPort = 5173,
     [string]$TuningEnv = "llamafactory",

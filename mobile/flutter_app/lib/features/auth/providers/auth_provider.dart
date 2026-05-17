@@ -12,9 +12,9 @@ enum AuthStatus { initial, authenticating, authenticated, unauthenticated, error
 enum RegisterStatus { idle, submitting, success, error }
 
 class AuthProvider extends ChangeNotifier {
-  final AuthRepository _repository;
-  final SessionManager _sessionManager;
-  final MobileDeviceRegistrationService _mobileDeviceRegistrationService;
+  AuthRepository _repository;
+  SessionManager _sessionManager;
+  MobileDeviceRegistrationService _mobileDeviceRegistrationService;
 
   AuthStatus _status = AuthStatus.initial;
   RegisterStatus _registerStatus = RegisterStatus.idle;
@@ -22,6 +22,7 @@ class AuthProvider extends ChangeNotifier {
   String? _errorMessage;
   String? _registerError;
   RegisterResponse? _lastRegistered;
+  bool _disposed = false;
 
   AuthProvider(this._repository, this._sessionManager, this._mobileDeviceRegistrationService);
 
@@ -32,10 +33,26 @@ class AuthProvider extends ChangeNotifier {
   String? get registerError => _registerError;
   RegisterResponse? get lastRegistered => _lastRegistered;
 
+  void updateDependencies(
+    AuthRepository repository,
+    SessionManager sessionManager,
+    MobileDeviceRegistrationService mobileDeviceRegistrationService,
+  ) {
+    _repository = repository;
+    _sessionManager = sessionManager;
+    _mobileDeviceRegistrationService = mobileDeviceRegistrationService;
+  }
+
+  void _notifyIfAlive() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
   Future<void> checkSession() async {
     if (!_sessionManager.isAuthenticated) {
       _status = AuthStatus.unauthenticated;
-      notifyListeners();
+      _notifyIfAlive();
       return;
     }
 
@@ -46,13 +63,13 @@ class AuthProvider extends ChangeNotifier {
       _status = AuthStatus.unauthenticated;
       await _sessionManager.clearSession();
     }
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> login(String username, String password) async {
     _status = AuthStatus.authenticating;
     _errorMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       final response = await _repository.login(username, password);
@@ -63,7 +80,7 @@ class AuthProvider extends ChangeNotifier {
       _status = AuthStatus.error;
       _errorMessage = _humanizeLoginError(e.toString());
     }
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> logout() async {
@@ -71,20 +88,20 @@ class AuthProvider extends ChangeNotifier {
     await _sessionManager.clearSession();
     _user = null;
     _status = AuthStatus.unauthenticated;
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   void handleUnauthorized() {
     _user = null;
     _status = AuthStatus.unauthenticated;
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   void resetRegisterState() {
     _registerStatus = RegisterStatus.idle;
     _registerError = null;
     _lastRegistered = null;
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<bool> registerElder(ElderRegisterRequest request) async {
@@ -102,18 +119,24 @@ class AuthProvider extends ChangeNotifier {
   Future<bool> _doRegister(Future<RegisterResponse> Function() call) async {
     _registerStatus = RegisterStatus.submitting;
     _registerError = null;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       _lastRegistered = await call();
       _registerStatus = RegisterStatus.success;
-      notifyListeners();
+      _notifyIfAlive();
       return true;
     } catch (e) {
       _registerStatus = RegisterStatus.error;
       _registerError = _humanizeRegisterError(e.toString());
-      notifyListeners();
+      _notifyIfAlive();
       return false;
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 
   static String _humanizeLoginError(String raw) {

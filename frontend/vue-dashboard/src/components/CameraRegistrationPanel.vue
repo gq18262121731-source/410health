@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { Camera, Laptop, Plus, RefreshCw, Router, ShieldCheck } from "lucide-vue-next";
-import { api, type CameraSourceRegistrationResponse } from "../api/client";
+import { Camera, Laptop, Plus, RefreshCw, Router, ShieldCheck, Radar, Activity, RotateCcw } from "lucide-vue-next";
+import {
+  api,
+  type CameraSourceRegistrationResponse,
+  type ExternalCameraConfigResponse,
+  type ExternalCameraHealthResponse,
+} from "../api/client";
 
 const emit = defineEmits<{
   sourceChange: [];
 }>();
 
 const registry = ref<CameraSourceRegistrationResponse | null>(null);
+const externalConfig = ref<ExternalCameraConfigResponse | null>(null);
+const externalHealth = ref<ExternalCameraHealthResponse | null>(null);
 const deviceId = ref("");
 const displayName = ref("");
 const busy = ref(false);
@@ -25,13 +32,35 @@ const activeLabel = computed(() => {
   return activeSource.value.name || activeSource.value.device_id || "外接摄像头";
 });
 
-async function refreshRegistry() {
+const runtimeTruth = computed(() => externalConfig.value?.truth ?? null);
+const runtimeStatusLabel = computed(() => {
+  const status = String(externalHealth.value?.bridge_status || "").trim();
+  if (status === "ok") return "运行正常";
+  if (status === "rtsp_unreachable") return "RTSP 不可达";
+  if (status === "frame_stale") return "帧已过期";
+  if (status === "runtime_no_frame") return "运行时无帧";
+  if (status === "runtime_not_running") return "运行时未启动";
+  return "待检查";
+});
+
+async function refreshAll() {
   try {
-    registry.value = await api.getCameraSourceRegistration();
+    const [registryPayload, configPayload, healthPayload] = await Promise.all([
+      api.getCameraSourceRegistration(),
+      api.getExternalCameraConfig(),
+      api.getExternalCameraHealth(),
+    ]);
+    registry.value = registryPayload;
+    externalConfig.value = configPayload;
+    externalHealth.value = healthPayload;
     errorMessage.value = "";
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "摄像头注册状态读取失败";
+    errorMessage.value = error instanceof Error ? error.message : "摄像头状态读取失败";
   }
+}
+
+async function refreshRegistry() {
+  await refreshAll();
 }
 
 async function selectLocal() {
@@ -40,6 +69,7 @@ async function selectLocal() {
     registry.value = await api.selectLocalCameraSource();
     message.value = "已切换到本地摄像头。";
     errorMessage.value = "";
+    await refreshAll();
     emit("sourceChange");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "本地摄像头切换失败";
@@ -65,6 +95,7 @@ async function registerExternal() {
     errorMessage.value = "";
     deviceId.value = "";
     displayName.value = "";
+    await refreshAll();
     emit("sourceChange");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "外接摄像头注册失败";
@@ -79,6 +110,7 @@ async function selectSource(cameraId: string) {
     registry.value = await api.selectCameraSource(cameraId);
     message.value = "摄像头来源已切换。";
     errorMessage.value = "";
+    await refreshAll();
     emit("sourceChange");
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "摄像头切换失败";
@@ -87,8 +119,38 @@ async function selectSource(cameraId: string) {
   }
 }
 
+async function bootstrapExternalRuntime() {
+  busy.value = true;
+  try {
+    const result = await api.bootstrapExternalCamera();
+    message.value = result.ok
+      ? "外部摄像头运行时已完成自动恢复。"
+      : "外部摄像头已尝试自动恢复，但现场链路仍未打通。";
+    await refreshAll();
+    emit("sourceChange");
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "外部摄像头自动恢复失败";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function refreshExternalRuntime(stream?: string) {
+  busy.value = true;
+  try {
+    await api.refreshExternalCameraRuntime(stream);
+    message.value = stream ? `已请求切换到 ${stream} 并刷新运行时。` : "已请求刷新外部摄像头运行时。";
+    await refreshAll();
+    emit("sourceChange");
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "外部摄像头刷新失败";
+  } finally {
+    busy.value = false;
+  }
+}
+
 onMounted(() => {
-  void refreshRegistry();
+  void refreshAll();
 });
 </script>
 
@@ -100,8 +162,8 @@ onMounted(() => {
       </div>
       <div>
         <p class="section-eyebrow">CAMERA ACCESS</p>
-        <h3>摄像头接入</h3>
-        <p>本地摄像头可直接启用；外接摄像头填写设备 ID 后注册，视频流仍由后端统一转发。</p>
+        <h3>摄像头接入与事实源</h3>
+        <p>统一管理本地摄像头、外接摄像头、external runtime 事实源和自动恢复入口。</p>
       </div>
       <button type="button" class="camera-registration-panel__refresh" :disabled="busy" @click="refreshRegistry">
         <RefreshCw :size="15" />
@@ -119,7 +181,7 @@ onMounted(() => {
       >
         <Laptop :size="20" />
         <span>本地摄像头</span>
-        <small>无需注册，直接调用电脑摄像头。</small>
+        <small>无需注册，直接使用电脑摄像头作为备用链路。</small>
       </button>
 
       <form class="camera-registration-panel__form" @submit.prevent="registerExternal">
@@ -156,6 +218,57 @@ onMounted(() => {
         {{ source.name || source.device_id || source.camera_id }}
       </button>
     </div>
+
+    <article class="camera-runtime-panel">
+      <div class="camera-runtime-panel__header">
+        <div>
+          <p class="section-eyebrow">RUNTIME</p>
+          <h4>外部摄像头运行时状态</h4>
+        </div>
+        <span class="camera-runtime-panel__badge" :class="`is-${String(externalHealth?.bridge_status || 'unknown')}`">
+          <Activity :size="14" />
+          {{ runtimeStatusLabel }}
+        </span>
+      </div>
+
+      <div class="camera-runtime-panel__truth">
+        <div>
+          <label>事实源</label>
+          <strong>{{ runtimeTruth?.source_of_truth || "camera_runtime_external" }}</strong>
+        </div>
+        <div>
+          <label>当前地址</label>
+          <strong>{{ runtimeTruth?.host || externalHealth?.rtsp_host || "未确认" }}</strong>
+        </div>
+        <div>
+          <label>当前流</label>
+          <strong>{{ runtimeTruth?.transport || "tcp" }}/{{ runtimeTruth?.stream || externalHealth?.rtsp_stream || "av0_1" }}</strong>
+        </div>
+        <div>
+          <label>最近验证</label>
+          <strong>{{ runtimeTruth?.verified_status || "unknown" }}</strong>
+        </div>
+      </div>
+
+      <div class="camera-runtime-panel__actions">
+        <button type="button" :disabled="busy" @click="bootstrapExternalRuntime">
+          <Radar :size="15" />
+          自动恢复与选源
+        </button>
+        <button type="button" :disabled="busy" @click="refreshExternalRuntime('av0_1')">
+          <RotateCcw :size="15" />
+          切子码流
+        </button>
+        <button type="button" :disabled="busy" @click="refreshExternalRuntime('av0_0')">
+          <RotateCcw :size="15" />
+          切主码流
+        </button>
+      </div>
+
+      <p class="camera-runtime-panel__detail">
+        {{ externalHealth?.last_error || "当前尚未返回运行时错误。" }}
+      </p>
+    </article>
 
     <p v-if="message" class="camera-registration-panel__message">{{ message }}</p>
     <p v-if="errorMessage" class="camera-registration-panel__error">{{ errorMessage }}</p>
@@ -208,7 +321,8 @@ onMounted(() => {
 .camera-registration-panel__refresh,
 .camera-registration-panel__form button,
 .camera-registration-panel__chip,
-.camera-source-tile {
+.camera-source-tile,
+.camera-runtime-panel__actions button {
   border: 0;
   cursor: pointer;
   transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
@@ -269,7 +383,8 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.7);
 }
 
-.camera-registration-panel__form label {
+.camera-registration-panel__form label,
+.camera-runtime-panel__truth label {
   display: block;
   margin-bottom: 7px;
   color: #46636b;
@@ -293,7 +408,8 @@ onMounted(() => {
   box-shadow: 0 0 0 4px rgba(14, 133, 122, 0.1);
 }
 
-.camera-registration-panel__form button {
+.camera-registration-panel__form button,
+.camera-runtime-panel__actions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -324,6 +440,81 @@ onMounted(() => {
   font-weight: 800;
 }
 
+.camera-runtime-panel {
+  margin-top: 18px;
+  border-radius: 22px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(15, 140, 128, 0.12);
+}
+
+.camera-runtime-panel__header,
+.camera-runtime-panel__truth,
+.camera-runtime-panel__actions {
+  display: flex;
+  gap: 12px;
+}
+
+.camera-runtime-panel__header {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.camera-runtime-panel__header h4 {
+  margin: 2px 0 0;
+  color: #102d35;
+  font-size: 18px;
+}
+
+.camera-runtime-panel__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(226, 232, 240, 0.7);
+  color: #334155;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.camera-runtime-panel__badge.is-ok {
+  background: rgba(110, 231, 183, 0.25);
+  color: #047857;
+}
+
+.camera-runtime-panel__badge.is-rtsp_unreachable,
+.camera-runtime-panel__badge.is-runtime_no_frame,
+.camera-runtime-panel__badge.is-runtime_not_running,
+.camera-runtime-panel__badge.is-frame_stale {
+  background: rgba(254, 202, 202, 0.35);
+  color: #b42318;
+}
+
+.camera-runtime-panel__truth {
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.camera-runtime-panel__truth > div {
+  min-width: 180px;
+}
+
+.camera-runtime-panel__truth strong {
+  color: #163940;
+}
+
+.camera-runtime-panel__actions {
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.camera-runtime-panel__detail {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
 .camera-registration-panel__message,
 .camera-registration-panel__error {
   margin-top: 12px;
@@ -347,10 +538,13 @@ button:not(:disabled):hover {
   transform: translateY(-1px);
 }
 
-@media (max-width: 820px) {
+@media (max-width: 900px) {
   .camera-registration-panel__intro,
   .camera-registration-panel__grid,
-  .camera-registration-panel__form {
+  .camera-registration-panel__form,
+  .camera-runtime-panel__header,
+  .camera-runtime-panel__truth,
+  .camera-runtime-panel__actions {
     display: grid;
   }
 

@@ -93,6 +93,7 @@ class CameraSetupConfigService:
             encoding="utf-8",
         )
         self._apply_runtime_updates(updates)
+        self._sync_runtime_truth(updates)
         if self._settings.camera_source_mode == "local":
             self._registry.select_local()
         elif self._settings.camera_source_mode == "rtsp":
@@ -138,3 +139,36 @@ class CameraSetupConfigService:
             if not attr:
                 continue
             setattr(self._settings, attr, self._coerce_runtime_value(key, value))
+
+    def _sync_runtime_truth(self, updates: dict[str, str]) -> None:
+        camera_keys = {
+            "CAMERA_IP",
+            "CAMERA_USER",
+            "CAMERA_PASSWORD",
+            "CAMERA_RTSP_PORT",
+            "CAMERA_RTSP_PATH",
+            "CAMERA_STREAM_RTSP_PATH",
+            "CAMERA_AUDIO_RTSP_PATH",
+            "CAMERA_ONVIF_PORT",
+        }
+        if not any(key in updates for key in camera_keys):
+            return
+        try:
+            runtime_source = self._registry.get_source("camera2")
+        except KeyError:
+            return
+        # Only update the registry-backed runtime truth when the operator edits
+        # the global camera values that camera1/camera2 historically inherit.
+        payload = self._registry._load_registry()  # noqa: SLF001
+        payload.setdefault("camera_truth_overrides", {})
+        payload["camera_truth_overrides"].update(
+            {
+                "host": self._settings.camera_ip.strip() or runtime_source.ip,
+                "username": self._settings.camera_user.strip() or runtime_source.user,
+                "password": self._settings.camera_password or runtime_source.password,
+                "rtsp_port": self._settings.camera_rtsp_port or runtime_source.rtsp_port,
+                "stream": self._settings.camera_stream_rtsp_path.strip().split("/")[-1] if self._settings.camera_stream_rtsp_path.strip() else runtime_source.stream_rtsp_path.strip().split("/")[-1],
+                "transport": self._settings.camera_stream_rtsp_path.strip().split("/")[1] if self._settings.camera_stream_rtsp_path.strip().startswith("/") and len(self._settings.camera_stream_rtsp_path.strip().split("/")) >= 3 else "tcp",
+            }
+        )
+        self._registry._save_registry(payload)  # noqa: SLF001

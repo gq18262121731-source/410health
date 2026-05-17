@@ -42,7 +42,7 @@ from backend.services.alarm_service import AlarmService
 from backend.services.camera_audio_hub import CameraAudioHub
 from backend.services.camera_setup_config_service import CameraSetupConfigService
 from backend.services.camera_source_registry import CameraSourceRegistry
-from backend.services.camera_stream_hub import CameraDetectionFrameHub, CameraFrameHub, CameraPoseFrameHub
+from backend.services.camera_stream_hub import CameraDetectionFrameHub, CameraFrameHub, CameraPoseFrameHub, CombinedProcessedFrameHub
 from backend.services.community_insight_service import CommunityInsightService
 from backend.services.care_service import CareService
 from backend.services.device_service import DeviceService
@@ -111,13 +111,21 @@ _camera_detection_frame_hub = CameraDetectionFrameHub(
     event_provider=lambda: (
         _fall_detection_service.status().get("last_event")
         if "_fall_detection_service" in globals()
-        else None
+        else (_single_frame_fall_state if isinstance(_single_frame_fall_state, dict) else None)
     ),
+    fallback_analyzer=lambda frame: _analyze_fall_frame_for_overlay(frame),
 )
 _pose_state_service = PoseStateService()
 _pose_detection_config_service = PoseDetectionConfigService(_settings)
+_single_frame_pose_state: dict[str, object] | None = None
+_single_frame_fall_state: dict[str, object] | None = None
 def _latest_pose_overlay_payload() -> dict[str, object] | None:
     payload = _pose_detection_service.latest()
+    if isinstance(payload, dict) and payload.get('tracks'):
+        _pose_state_service.update(payload)
+        return payload
+    if isinstance(_single_frame_pose_state, dict) and _single_frame_pose_state.get('tracks'):
+        return _single_frame_pose_state
     if payload is not None:
         _pose_state_service.update(payload)
         return payload
@@ -138,6 +146,233 @@ _camera_pose_frame_hub = CameraPoseFrameHub(
         }
     ),
     payload_provider=_latest_pose_overlay_payload,
+    fallback_analyzer=lambda frame: _analyze_pose_frame_for_overlay(frame),
+)
+
+
+def _latest_fall_overlay_payload() -> dict[str, object] | None:
+    global _single_frame_fall_state
+    event = _fall_detection_service.status().get("last_event") if "_fall_detection_service" in globals() else None
+    if isinstance(event, dict):
+        return event
+    if isinstance(_single_frame_fall_state, dict):
+        return _single_frame_fall_state
+    hub_payload = _camera_detection_frame_hub.current_overlay_payload()
+    return hub_payload if isinstance(hub_payload, dict) else None
+
+
+def _latest_combined_pose_payload() -> dict[str, object] | None:
+    payload = _latest_pose_overlay_payload()
+    if isinstance(payload, dict) and payload.get("tracks"):
+        return payload
+    if isinstance(_single_frame_pose_state, dict) and _single_frame_pose_state.get("tracks"):
+        return _single_frame_pose_state
+    hub_payload = _camera_pose_frame_hub.current_overlay_payload()
+    if isinstance(hub_payload, dict) and hub_payload.get("tracks"):
+        return hub_payload
+    return _single_frame_pose_state if isinstance(_single_frame_pose_state, dict) else payload
+
+
+def _analyze_pose_frame_for_overlay(frame_bytes: bytes) -> dict[str, object] | None:
+    import cv2, numpy as np
+    frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return None
+    result = _target_pose_service.estimate_pose(frame, session_id="overlay-runtime")
+    pose = result.get("pose") if isinstance(result, dict) else None
+    if not isinstance(pose, dict):
+        return _person_detection_payload_for_overlay(frame, reason="pose_unavailable")
+    raw_points = pose.get("points")
+    if not isinstance(raw_points, list) or not raw_points:
+        return _person_detection_payload_for_overlay(frame, reason=str(result.get("error") or "pose_empty"))
+    keypoints = []
+    for point in raw_points:
+        if not isinstance(point, dict):
+            continue
+        keypoints.append([
+            float(point.get("x") or 0),
+            float(point.get("y") or 0),
+            float(point.get("score") or 0),
+        ])
+    if not keypoints:
+        return _person_detection_payload_for_overlay(frame, reason="pose_no_keypoints")
+    xs = [p[0] for p in keypoints if p[2] >= 0.15]
+    ys = [p[1] for p in keypoints if p[2] >= 0.15]
+    bbox = []
+    if len(xs) >= 4 and len(ys) >= 4:
+        pad_x = max(20.0, (max(xs) - min(xs)) * 0.22)
+        pad_y = max(28.0, (max(ys) - min(ys)) * 0.24)
+        bbox = [min(xs) - pad_x, min(ys) - pad_y, max(xs) + pad_x, max(ys) + pad_y]
+    posture = pose.get("posture") if isinstance(pose.get("posture"), dict) else {}
+    quality = pose.get("quality") if isinstance(pose.get("quality"), dict) else {}
+    return {
+        "backend": "overlay_fallback",
+        "profile": "runtime_overlay",
+        "frame_width": int(frame.shape[1]),
+        "frame_height": int(frame.shape[0]),
+        "_observed_at": __import__("time").time(),
+        "tracks": [{
+            "track_id": 1,
+            "bbox": bbox,
+            "pose_score": float(quality.get("mean_score") or 0.0),
+            "state_label": str(posture.get("label") or "unknown"),
+            "posture_label": str(posture.get("label") or "unknown"),
+            "state_score": float(posture.get("confidence") or 0.0),
+            "posture_score": float(posture.get("confidence") or 0.0),
+            "keypoints": keypoints,
+            "features": {"quality": quality},
+        }],
+    }
+
+
+def _person_detection_payload_for_overlay(frame, *, reason: str = "pose_empty") -> dict[str, object] | None:
+    """Fallback overlay when pose keypoints are unavailable.
+
+    The camera angle can be very low and far away, so pose can legitimately fail
+    even while a person is visible. In that case, draw a target/person box so the
+    processed stream remains visibly processed and diagnosable.
+    """
+    try:
+        boxes = _target_user_service._collect_person_boxes(  # type: ignore[attr-defined]
+            frame,
+            _target_user_service.fallback_person_model,  # type: ignore[attr-defined]
+            allowed_labels={"person", "fall", "fallen", "sitting", "lying", "bending"},
+            conf=0.12,
+            imgsz=416,
+        )
+    except Exception:
+        boxes = []
+    if not boxes:
+        return None
+    h, w = frame.shape[:2]
+    best = max(boxes, key=lambda item: float(item[1] or 0.0))
+    bbox, score, label = best
+    try:
+        x1, y1, x2, y2 = [float(value) for value in bbox[:4]]
+    except Exception:
+        return None
+    x1 = max(0.0, min(float(w - 1), x1))
+    y1 = max(0.0, min(float(h - 1), y1))
+    x2 = max(x1 + 1.0, min(float(w), x2))
+    y2 = max(y1 + 1.0, min(float(h), y2))
+    return {
+        "backend": "person_box_fallback",
+        "profile": "runtime_overlay",
+        "status": reason,
+        "frame_width": int(w),
+        "frame_height": int(h),
+        "_observed_at": __import__("time").time(),
+        "tracks": [{
+            "track_id": 1,
+            "bbox": [x1, y1, x2, y2],
+            "pose_score": float(score or 0.0),
+            "state_label": str(label or "person"),
+            "posture_label": str(label or "person"),
+            "state_score": float(score or 0.0),
+            "posture_score": float(score or 0.0),
+            "keypoints": [],
+            "features": {"fallback_reason": reason},
+        }],
+    }
+
+
+def _analyze_fall_frame_for_overlay(frame_bytes: bytes) -> dict[str, object] | None:
+    import cv2, numpy as np
+
+    frame_image = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    frame_width = int(frame_image.shape[1]) if frame_image is not None else 0
+    frame_height = int(frame_image.shape[0]) if frame_image is not None else 0
+    result = _target_user_fall_service.detect(
+        frame_bytes,
+        include_annotated_image=False,
+        target_only=False,
+        session_id="overlay-runtime",
+    )
+    if not isinstance(result, dict):
+        return None
+    fall_result = result.get("fall_result") if isinstance(result.get("fall_result"), dict) else None
+    if not isinstance(fall_result, dict):
+        return None
+    detections = fall_result.get("detections") if isinstance(fall_result.get("detections"), list) else []
+    bbox = _fall_overlay_bbox_from_detections(detections)
+    fall_score = result.get("fall_score") if isinstance(result.get("fall_score"), (int, float)) else fall_result.get("fall_score")
+    payload = {
+        "_observed_at": __import__("time").time(),
+        "status": str(result.get("status") or fall_result.get("status") or "normal"),
+        "state": str(result.get("status") or fall_result.get("status") or "normal"),
+        "fall_score": float(fall_score or 0.0),
+        "fall_detected": bool(fall_result.get("fall_detected")),
+        "detections": detections,
+    }
+    frame = fall_result.get("frame") if isinstance(fall_result.get("frame"), dict) else None
+    if isinstance(frame, dict):
+        payload["frame_width"] = frame.get("width")
+        payload["frame_height"] = frame.get("height")
+    elif frame_width > 0 and frame_height > 0:
+        payload["frame_width"] = frame_width
+        payload["frame_height"] = frame_height
+    if bbox is not None:
+        payload["bbox"] = bbox
+    elif frame_image is not None:
+        person_payload = _person_detection_payload_for_overlay(frame_image, reason="fall_no_bbox")
+        tracks = person_payload.get("tracks") if isinstance(person_payload, dict) else None
+        if isinstance(tracks, list) and tracks:
+            track = tracks[0]
+            if isinstance(track, dict) and isinstance(track.get("bbox"), list):
+                payload["bbox"] = track["bbox"]
+                payload["status"] = "tracked"
+                payload["state"] = "tracked"
+    return payload
+
+
+def _fall_overlay_bbox_from_detections(detections: object) -> list[float] | None:
+    if not isinstance(detections, list):
+        return None
+    best: tuple[float, list[float]] | None = None
+    for item in detections:
+        if not isinstance(item, dict):
+            continue
+        raw_bbox = item.get("bbox")
+        if not isinstance(raw_bbox, list) or len(raw_bbox) < 4:
+            continue
+        try:
+            bbox = [float(value) for value in raw_bbox[:4]]
+        except (TypeError, ValueError):
+            continue
+        label = str(item.get("label") or item.get("class_name") or "").lower()
+        score = item.get("score")
+        try:
+            confidence = float(score if score is not None else item.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if "person" in label:
+            confidence += 1.0
+        if best is None or confidence > best[0]:
+            best = (confidence, bbox)
+    return best[1] if best is not None else None
+
+
+_camera_processed_frame_hub = CombinedProcessedFrameHub(
+    _settings.model_copy(
+        update={
+            "camera_stream_profile": "smooth",
+            "camera_stream_rtsp_path": "/tcp/av0_1",
+            "camera_stream_quality_path": "/udp/av0_0",
+            "camera_stream_smooth_path": "/tcp/av0_1",
+            "camera_stream_fps": 8.0,
+            "camera_stream_width": 768,
+            "camera_stream_jpeg_quality": 7,
+            "camera_stream_send_timeout_seconds": 1.2,
+            "camera_stream_keep_warm": False,
+        }
+    ),
+    pose_payload_provider=_latest_combined_pose_payload,
+    fall_payload_provider=_latest_fall_overlay_payload,
+    fall_alarm_callback=lambda payload: promote_processed_fall_payload_to_alarm(payload),
+    pose_fallback_analyzer=lambda frame: _analyze_pose_frame_for_overlay(frame),
+    fall_fallback_analyzer=lambda frame: _analyze_fall_frame_for_overlay(frame),
+    max_payload_age_seconds=10.0,
+    fallback_min_interval_seconds=3.0,
 )
 _camera_audio_hub = CameraAudioHub(_settings)
 _camera_source_registry = CameraSourceRegistry(_settings)
@@ -178,7 +413,7 @@ _pose_frame_analysis_worker_service = FrameAnalysisWorkerService(
 )
 _fall_frame_analysis_worker_service = FrameAnalysisWorkerService(
     project_root=Path(__file__).resolve().parents[1],
-    timeout_seconds=8.0,
+    timeout_seconds=18.0,
     task="fall",
     log_name="fall_frame_worker_stderr.log",
 )
@@ -279,6 +514,134 @@ _fall_alarm_seen_keys: dict[str, float] = {}
 _fall_alarm_dedupe_ttl_seconds = 90.0
 
 
+def _update_fall_debug_state(
+    *,
+    event: dict[str, object],
+    track_state: _FallTrackState | None,
+    now_monotonic: float,
+    suppress_reasons: list[str] | None = None,
+    admitted: bool = False,
+    deduped: bool = False,
+    dedupe_key: str | None = None,
+    status_label: str | None = None,
+) -> None:
+    suppress_reasons = suppress_reasons or []
+    confirmed_hits = 0
+    track_age_seconds = 0.0
+    if track_state is not None:
+        confirmed_hits = len(track_state.confirmed_hits)
+        track_age_seconds = max(0.0, now_monotonic - track_state.first_seen_monotonic)
+    injury = event.get("injury") if isinstance(event.get("injury"), dict) else {}
+    _fall_debug_state.update(
+        {
+            "updated_at": time.time(),
+            "source": event.get("source"),
+            "track_id": event.get("track_id"),
+            "state": event.get("state"),
+            "event_type": event.get("event_type"),
+            "fall_score": _coerce_float(event.get("fall_score"), default=0.0),
+            "severity": event.get("severity"),
+            "injury_level": str(injury.get("level") or "").strip() if isinstance(injury, dict) else "",
+            "confirmed_hits": confirmed_hits,
+            "min_confirmed_hits": max(1, int(_settings.fall_detection_min_confirmed_hits or 1)),
+            "track_age_seconds": round(track_age_seconds, 3),
+            "min_track_age_seconds": max(0.0, float(_settings.fall_detection_min_track_age_seconds or 0.0)),
+            "down_seconds": round(_fall_event_down_seconds(event), 3),
+            "min_down_seconds": max(0.0, float(_settings.fall_detection_min_down_seconds or 0.0)),
+            "high_confidence": _fall_event_is_high_confidence(event),
+            "admitted": admitted,
+            "suppressed": bool(suppress_reasons),
+            "suppress_reasons": list(suppress_reasons),
+            "deduped": deduped,
+            "dedupe_key": dedupe_key,
+            "incident_id": event.get("incident_id") or (track_state.active_incident_id if track_state else None),
+            "status_label": status_label
+            or (
+                "admitted"
+                if admitted
+                else ("deduped" if deduped else ("suppressed" if suppress_reasons else "observing"))
+            ),
+        }
+    )
+
+
+def get_latest_fall_decision_debug() -> dict[str, object]:
+    return dict(_fall_debug_state)
+
+
+async def promote_processed_fall_payload_to_alarm(payload: dict[str, object]) -> None:
+    """Promote processed-stream fall payloads into the normal alarm pipeline.
+
+    The family mobile page should not depend on an explicit prime call to turn a
+    visible fall-like overlay into a formal alarm. This helper keeps the
+    promotion rules close to the shared dependency graph so both API-triggered
+    and stream-triggered fall detections converge on the same alarm flow.
+    """
+    state = str(payload.get("state") or payload.get("status") or "").strip().lower()
+    status = str(payload.get("status") or state).strip().lower()
+    try:
+        fall_score = float(payload.get("fall_score") or 0.0)
+    except (TypeError, ValueError):
+        fall_score = 0.0
+    fall_detected = bool(payload.get("fall_detected"))
+
+    alarm_like_states = {
+        "fall",
+        "fallen",
+        "confirmed_fall",
+        "suspected_fall",
+        "possible_fall",
+        "fall_detected",
+        "abnormal_recovery",
+        "needs_assistance",
+        "emergency",
+        "lying",
+    }
+    if (
+        not fall_detected
+        and state not in alarm_like_states
+        and status not in alarm_like_states
+        and fall_score < 0.28
+    ):
+        return
+
+    event_state = state
+    if event_state in {"fall", "fallen", "fall_detected"} or fall_detected or fall_score >= 0.58:
+        event_state = "confirmed_fall"
+    elif event_state in {"lying"} or fall_score >= 0.28:
+        event_state = "suspected_fall"
+    if event_state in {"normal", "tracked", ""}:
+        event_state = "suspected_fall"
+
+    bbox = payload.get("bbox")
+    bbox_key = ""
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        try:
+            bbox_key = ",".join(str(int(float(value) // 24)) for value in bbox[:4])
+        except (TypeError, ValueError):
+            bbox_key = ""
+
+    event: dict[str, object] = {
+        "source": "camera_processed_stream",
+        "state": event_state,
+        "status": status or event_state,
+        "event_type": "fall_detected",
+        "fall_detected": fall_detected or event_state == "confirmed_fall",
+        "fall_score": fall_score,
+        "track_id": f"processed-stream-{bbox_key or 'track'}",
+        "bbox": bbox,
+        "frame_width": payload.get("frame_width"),
+        "frame_height": payload.get("frame_height"),
+        "detections": payload.get("detections") if isinstance(payload.get("detections"), list) else [],
+        "injury": {
+            "level": "I2" if event_state == "confirmed_fall" else "I1",
+            "advice": "请立刻查看家庭摄像头画面，并确认老人是否跌倒或需要协助。",
+        },
+    }
+    event["severity"] = "L2" if event_state == "confirmed_fall" else "L1"
+    await ingest_fall_detection_event(event)
+
+
 @dataclass
 class _FallTrackState:
     first_seen_monotonic: float
@@ -290,6 +653,30 @@ class _FallTrackState:
 
 
 _fall_track_states: dict[str, _FallTrackState] = {}
+_fall_debug_state: dict[str, object] = {
+    "updated_at": None,
+    "source": None,
+    "track_id": None,
+    "state": None,
+    "event_type": None,
+    "fall_score": 0.0,
+    "severity": None,
+    "injury_level": None,
+    "confirmed_hits": 0,
+    "min_confirmed_hits": max(1, int(_settings.fall_detection_min_confirmed_hits or 1)),
+    "track_age_seconds": 0.0,
+    "min_track_age_seconds": max(0.0, float(_settings.fall_detection_min_track_age_seconds or 0.0)),
+    "down_seconds": 0.0,
+    "min_down_seconds": max(0.0, float(_settings.fall_detection_min_down_seconds or 0.0)),
+    "high_confidence": False,
+    "admitted": False,
+    "suppressed": False,
+    "suppress_reasons": [],
+    "deduped": False,
+    "dedupe_key": None,
+    "incident_id": None,
+    "status_label": "idle",
+}
 
 
 def _fall_target_device_mac() -> str:
@@ -445,7 +832,110 @@ def _fall_event_is_alarm_candidate(event: dict[str, object]) -> bool:
     return _fall_event_is_suspected_candidate(event)
 
 
+def _normalize_fall_detection_event(event: dict[str, object]) -> dict[str, object]:
+    """Normalize different fall-model payload shapes into the alarm contract.
+
+    The realtime detector, single-frame fallback, and demo tooling do not always
+    use the same keys.  The alarm layer, however, needs stable `state`,
+    `event_type`, `severity`, `fall_score`, and `injury.level` fields so that it
+    can select the correct catalog entry and family-facing guidance.
+    """
+    normalized = dict(event)
+    scores = normalized.get("scores") if isinstance(normalized.get("scores"), dict) else {}
+    status = str(
+        normalized.get("state")
+        or normalized.get("status")
+        or normalized.get("fall_status")
+        or ""
+    ).strip().lower()
+    event_type = str(normalized.get("event_type") or "").strip().lower()
+    fall_detected = normalized.get("fall_detected") is True
+
+    fall_score = _coerce_float(normalized.get("fall_score"), default=-1.0)
+    if fall_score < 0:
+        fall_score = max(
+            _coerce_float(scores.get("fall"), default=0.0),
+            _coerce_float(scores.get("detector"), default=0.0),
+            _coerce_float(scores.get("posture"), default=0.0),
+        )
+    normalized["fall_score"] = max(0.0, min(1.0, fall_score))
+
+    confirmed_statuses = {
+        "fall",
+        "fallen",
+        "confirmed",
+        "confirmed_fall",
+        "fall_confirmed",
+        "emergency",
+        "needs_assistance",
+        "abnormal_recovery",
+    }
+    suspected_statuses = {
+        "suspected",
+        "suspected_fall",
+        "possible_fall",
+        "fall_risk",
+        "floor_risk",
+        "fall_like",
+    }
+    monitoring_statuses = {"post_fall_monitoring", "injury_watch", "recovery_watch"}
+
+    if not str(normalized.get("state") or "").strip():
+        if fall_detected or status in confirmed_statuses or event_type == "fall_confirmed":
+            normalized["state"] = "confirmed_fall"
+        elif status in monitoring_statuses:
+            normalized["state"] = status
+        elif status in suspected_statuses or normalized["fall_score"] >= max(0.18, float(_settings.fall_detection_min_alert_score or 0.0)):
+            normalized["state"] = "suspected_fall"
+        elif status:
+            normalized["state"] = status
+
+    state = str(normalized.get("state") or "").strip().lower()
+    if not event_type:
+        if state == "confirmed_fall" or fall_detected:
+            normalized["event_type"] = "fall_confirmed"
+        elif state in {"suspected_fall", "possible_fall"}:
+            normalized["event_type"] = "fall_suspected"
+        elif state in monitoring_statuses:
+            normalized["event_type"] = "fall_followup"
+
+    if not str(normalized.get("severity") or "").strip():
+        score = float(normalized.get("fall_score") or 0.0)
+        if state in {"emergency", "needs_assistance", "abnormal_recovery"} or score >= 0.82:
+            normalized["severity"] = "L3"
+        elif state == "confirmed_fall" or score >= 0.58:
+            normalized["severity"] = "L2"
+        elif state in {"suspected_fall", "possible_fall"} or score >= 0.2:
+            normalized["severity"] = "L1"
+        else:
+            normalized["severity"] = "NONE"
+
+    injury = normalized.get("injury") if isinstance(normalized.get("injury"), dict) else {}
+    injury = dict(injury)
+    if not str(injury.get("level") or "").strip():
+        severity = str(normalized.get("severity") or "").strip().upper()
+        if state in {"emergency", "needs_assistance", "abnormal_recovery"} or severity in {"L3", "L4", "L5"}:
+            injury["level"] = "I3"
+        elif state == "confirmed_fall" or severity == "L2":
+            injury["level"] = "I2"
+        elif state in {"suspected_fall", "possible_fall"} or severity == "L1":
+            injury["level"] = "I1"
+        else:
+            injury["level"] = "I0"
+    if "down_seconds" not in injury and "down_seconds" in normalized:
+        injury["down_seconds"] = normalized.get("down_seconds")
+    if "advice" not in injury:
+        injury["advice"] = "请尽快查看现场画面并人工确认老人状态。"
+    normalized["injury"] = injury
+
+    if not str(normalized.get("track_id") or "").strip():
+        normalized["track_id"] = "fall-model-track"
+    normalized.setdefault("source", "fall_detection_model")
+    return normalized
+
+
 async def _handle_fall_detection_event(event: dict[str, object]) -> None:
+    event = _normalize_fall_detection_event(event)
     track_state, now_monotonic = _record_fall_track_activity(event)
     event_type = str(event.get("event_type") or "")
     state = str(event.get("state") or "")
@@ -460,6 +950,14 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
         now_monotonic=now_monotonic,
     )
     if filter_reasons:
+        _update_fall_debug_state(
+            event=event,
+            track_state=track_state,
+            now_monotonic=now_monotonic,
+            suppress_reasons=filter_reasons,
+            admitted=False,
+            status_label="observing",
+        )
         logger.info(
             "Fall event suppressed before alarm creation: track=%s event=%s state=%s reasons=%s score=%s source=%s",
             event.get("track_id"),
@@ -489,6 +987,15 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
     for key in expired_keys:
         _fall_alarm_seen_keys.pop(key, None)
     if dedupe_key in _fall_alarm_seen_keys:
+        _update_fall_debug_state(
+            event=event,
+            track_state=track_state,
+            now_monotonic=now_monotonic,
+            admitted=False,
+            deduped=True,
+            dedupe_key=dedupe_key,
+            status_label="deduped",
+        )
         logger.info(
             "Fall event suppressed by dedupe: track=%s event=%s state=%s injury=%s",
             track_id,
@@ -545,6 +1052,15 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
     )
     alarms = _alarm_service.evaluate_alarm_records([enrich_alarm_context(alarm)])
     if not alarms:
+        _update_fall_debug_state(
+            event=event,
+            track_state=track_state,
+            now_monotonic=now_monotonic,
+            suppress_reasons=["alarm_service"],
+            admitted=False,
+            dedupe_key=dedupe_key,
+            status_label="suppressed_by_alarm_service",
+        )
         logger.info(
             "Fall event produced no active alarm after evaluation: track=%s event=%s state=%s injury=%s score=%.3f",
             track_id,
@@ -554,6 +1070,14 @@ async def _handle_fall_detection_event(event: dict[str, object]) -> None:
             fall_score,
         )
         return
+    _update_fall_debug_state(
+        event=event,
+        track_state=track_state,
+        now_monotonic=now_monotonic,
+        admitted=True,
+        dedupe_key=dedupe_key,
+        status_label="admitted",
+    )
     _health_data_repository.persist_alerts(alarms)
     for item in alarms:
         await _websocket_manager.broadcast_alarm(item.model_dump(mode="json"))
@@ -687,6 +1211,12 @@ def _fall_event_filter_reasons(
 
 
 def _fall_event_passes_score_filter(event: dict[str, object]) -> bool:
+    state = str(event.get("state") or "").strip().lower()
+    if state in {"abnormal_recovery", "needs_assistance", "emergency"}:
+        return True
+    if _fall_event_is_suspected_candidate(event):
+        return True
+
     threshold = max(0.0, min(1.0, float(_settings.fall_detection_min_alert_score or 0.0)))
     if threshold <= 0:
         return True
@@ -829,6 +1359,13 @@ def _fall_event_passes_temporal_filter(
     hybrid = _coerce_float(scores.get("hybrid"), default=0.0)
     semantic = _coerce_float(scores.get("semantic"), default=0.0)
     explicit_confirmation = event_type == "fall_confirmed" or state == "confirmed_fall"
+    if state in {"abnormal_recovery", "needs_assistance", "emergency"} and (
+        high_confidence
+        or severity in {"L2", "L3", "L4", "L5"}
+        or injury_level in {"I2", "I3", "I4", "I5"}
+    ):
+        return True
+
     if (
         explicit_confirmation
         and confirmed_hits >= 1
@@ -1315,6 +1852,10 @@ def get_camera_pose_frame_hub() -> CameraFrameHub:
     return _camera_pose_frame_hub
 
 
+def get_camera_processed_frame_hub() -> CameraFrameHub:
+    return _camera_processed_frame_hub
+
+
 def get_camera_audio_hub() -> CameraAudioHub:
     return _camera_audio_hub
 
@@ -1429,6 +1970,20 @@ async def shutdown_camera_source_hubs() -> None:
     for hub in list(_camera_source_frame_hubs.values()):
         await hub.stop_keep_warm()
     _camera_source_frame_hubs.clear()
+
+
+def get_single_frame_pose_state() -> dict[str, object]:
+    global _single_frame_pose_state
+    if _single_frame_pose_state is None:
+        _single_frame_pose_state = {}
+    return _single_frame_pose_state
+
+
+def get_single_frame_fall_state() -> dict[str, object]:
+    global _single_frame_fall_state
+    if _single_frame_fall_state is None:
+        _single_frame_fall_state = {}
+    return _single_frame_fall_state
 
 
 def get_external_camera_bridge_service() -> ExternalCameraBridgeService:
@@ -1677,6 +2232,49 @@ def resolve_alarm_visible_device_macs(user: SessionUser) -> set[str] | None:
     return set()
 
 
+def resolve_alarm_visible_family_ids(user: SessionUser | None) -> set[str] | None:
+    if user is None or user.role in {UserRole.COMMUNITY, UserRole.ADMIN}:
+        return None
+
+    visible_family_ids: set[str] = set()
+    if user.role == UserRole.FAMILY:
+        family_id = (user.family_id or user.id or "").strip()
+        if family_id:
+            visible_family_ids.add(family_id)
+    return visible_family_ids
+
+
+def resolve_alarm_visible_elder_ids(user: SessionUser | None) -> set[str] | None:
+    if user is None or user.role in {UserRole.COMMUNITY, UserRole.ADMIN}:
+        return None
+
+    if user.role == UserRole.ELDER:
+        elder_id = user.id.strip()
+        return {elder_id} if elder_id else set()
+
+    if user.role == UserRole.FAMILY:
+        elder_ids = {
+            elder_id.strip()
+            for elder_id in _care_service.resolve_family_elder_ids(user.id)
+            if elder_id and elder_id.strip()
+        }
+        if elder_ids:
+            return elder_ids
+
+        demo_family_id = user.family_id or user.id
+        demo_directory = _care_service.get_demo_directory()
+        demo_family = next((family for family in demo_directory.families if family.id == demo_family_id), None)
+        if demo_family is not None:
+            elder_ids.update(
+                elder_id.strip()
+                for elder_id in demo_family.elder_ids
+                if elder_id and elder_id.strip()
+            )
+        return elder_ids
+
+    return set()
+
+
 def _find_directory_elder_for_device(
     directory,
     normalized_mac: str,
@@ -1794,9 +2392,37 @@ def filter_alarm_records_for_user(
     if user is None:
         return alarms
     visible_device_macs = resolve_alarm_visible_device_macs(user)
-    if visible_device_macs is None:
+    visible_family_ids = resolve_alarm_visible_family_ids(user)
+    visible_elder_ids = resolve_alarm_visible_elder_ids(user)
+    if visible_device_macs is None and visible_family_ids is None and visible_elder_ids is None:
         return alarms
-    return [alarm for alarm in alarms if alarm.device_mac.upper() in visible_device_macs]
+    scoped: list[AlarmRecord] = []
+    for alarm in alarms:
+        metadata = alarm.metadata or {}
+        if visible_device_macs is not None and alarm.device_mac.upper() in visible_device_macs:
+            scoped.append(alarm)
+            continue
+        elder_id = str(metadata.get("elder_id") or "").strip()
+        if visible_elder_ids and elder_id and elder_id in visible_elder_ids:
+            scoped.append(alarm)
+            continue
+        family_ids = metadata.get("family_ids")
+        if isinstance(family_ids, list):
+            normalized_family_ids = {
+                str(family_id).strip()
+                for family_id in family_ids
+                if str(family_id).strip()
+            }
+            if visible_family_ids and normalized_family_ids.intersection(visible_family_ids):
+                scoped.append(alarm)
+                continue
+        event = metadata.get("event")
+        if isinstance(event, dict):
+            event_elder_id = str(event.get("elder_id") or "").strip()
+            if visible_elder_ids and event_elder_id and event_elder_id in visible_elder_ids:
+                scoped.append(alarm)
+                continue
+    return scoped
 
 
 def filter_alarm_queue_items_for_user(
@@ -1806,9 +2432,19 @@ def filter_alarm_queue_items_for_user(
     if user is None:
         return items
     visible_device_macs = resolve_alarm_visible_device_macs(user)
-    if visible_device_macs is None:
+    visible_family_ids = resolve_alarm_visible_family_ids(user)
+    visible_elder_ids = resolve_alarm_visible_elder_ids(user)
+    if visible_device_macs is None and visible_family_ids is None and visible_elder_ids is None:
         return items
-    return [item for item in items if item.alarm.device_mac.upper() in visible_device_macs]
+    filtered: list = []
+    for item in items:
+        alarm = getattr(item, "alarm", None)
+        if alarm is None:
+            continue
+        scoped = filter_alarm_records_for_user([alarm], user)
+        if scoped:
+            filtered.append(item)
+    return filtered
 
 
 def get_data_analysis_service() -> HealthDataAnalysisService:

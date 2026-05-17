@@ -1,11 +1,12 @@
 param(
     [string]$CondaEnv = "llamafactory",
     [int]$Port = 7860,
-    [string]$Host = "127.0.0.1",
+    [string]$ProbeHost = "127.0.0.1",
     [string]$LLaMAFactoryRoot = "D:\Program\LLaMA-Factory"
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = Split-Path $PSScriptRoot -Parent
 
 if (!(Test-Path $LLaMAFactoryRoot)) {
     throw "LLaMA-Factory root not found: $LLaMAFactoryRoot"
@@ -34,7 +35,7 @@ $existingPids = @(
 )
 
 if ($existingPids.Count -gt 0) {
-    if (Test-TuningConsoleReady -ProbeHost $Host -ProbePort $Port) {
+    if (Test-TuningConsoleReady -ProbeHost $ProbeHost -ProbePort $Port) {
         Write-Host "Model tuning console already running on port $Port."
         exit 0
     }
@@ -46,7 +47,8 @@ $env:GRADIO_SERVER_PORT = "$Port"
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 $env:LLAMA_FACTORY_ROOT = $LLaMAFactoryRoot
+$env:DISABLE_VERSION_CHECK = "1"
 
 Set-Location $LLaMAFactoryRoot
-& $python (Join-Path $root "scripts\model_tuning_console_entry.py")
+& $python (Join-Path $repoRoot "scripts\model_tuning_console_entry.py")
 exit $LASTEXITCODE

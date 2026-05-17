@@ -158,6 +158,9 @@ class FallDetectionService:
 
     def _resolve_source_url(self) -> str:
         service = CameraService(self._settings)
+        runtime = service.runtime_health()
+        if runtime and runtime.get("running"):
+            return "http://127.0.0.1:8090/api/v1/camera/stream.mjpg"
         if service.resolved_source_mode() == "rtsp":
             urls = service.stream_rtsp_urls
             if urls:

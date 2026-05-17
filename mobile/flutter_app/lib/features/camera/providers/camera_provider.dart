@@ -8,7 +8,7 @@ import '../models/camera_models.dart';
 import '../repositories/camera_repository.dart';
 
 class CameraProvider extends ChangeNotifier {
-  final CameraRepository _repository;
+  CameraRepository _repository;
 
   CameraStatus? status;
   CameraStreamStatus? streamStatus;
@@ -37,6 +37,7 @@ class CameraProvider extends ChangeNotifier {
   String? audioNotice;
   String? setupMessage;
   String? activeDirection;
+  String? processedOverlayMessage;
   bool autoRefresh = false;
   bool isConnecting = false;
   bool audioListening = false;
@@ -49,11 +50,15 @@ class CameraProvider extends ChangeNotifier {
   bool singleFrameFallEnabled = true;
   bool fallDetectionUpdating = false;
   bool poseDetectionUpdating = false;
+  bool simulatingFallAlarm = false;
   DateTime? lastAiAnalysisAt;
   String? lastAiAnalysisError;
   DateTime? _lastAnalysisStartedAt;
   DateTime? _lastFallAnalysisStartedAt;
   DateTime? _lastWorkerStatusRefreshAt;
+  DateTime? _lastProcessedOverlayPrimeAt;
+  DateTime? _lastFrameReceivedAt;
+  bool _processedOverlayPrimeInFlight = false;
   int audioLevel = 0;
 
   WebSocketChannel? _frameChannel;
@@ -63,9 +68,12 @@ class CameraProvider extends ChangeNotifier {
   StreamSubscription<double>? _audioLevelSubscription;
   Timer? _statusTimer;
   Timer? _reconnectTimer;
+  Timer? _snapshotFallbackTimer;
   bool _poseAnalysisInFlight = false;
   bool _fallAnalysisInFlight = false;
+  bool _snapshotFallbackInFlight = false;
   int _fpsFrames = 0;
+  bool _disposed = false;
   DateTime _fpsStartedAt = DateTime.now();
   double clientFps = 0;
   late final CameraAudioPlayer _audioPlayer;
@@ -74,8 +82,34 @@ class CameraProvider extends ChangeNotifier {
     _audioPlayer = createCameraAudioPlayer();
     _audioLevelSubscription = _audioPlayer.levels.listen((level) {
       audioLevel = level.round().clamp(0, 100);
-      notifyListeners();
+      _notifyIfAlive();
     });
+  }
+
+  void updateRepository(CameraRepository repository) {
+    if (identical(_repository, repository) || _disposed) {
+      return;
+    }
+    _repository = repository;
+    if (!autoRefresh) {
+      return;
+    }
+    _closeFrameStream(clearFrame: true);
+    if (setupConfig.sourceMode != 'local') {
+      if (showingProcessedVideo) {
+        unawaited(_prepareProcessedVideoAndStartStream());
+      } else {
+        _startFrameStream();
+      }
+      _ensureSnapshotFallbackTimer();
+    }
+    unawaited(refreshDiagnostics());
+  }
+
+  void _notifyIfAlive() {
+    if (!_disposed) {
+      notifyListeners();
+    }
   }
 
   bool get hasFrame => frameBytes != null;
@@ -102,7 +136,34 @@ class CameraProvider extends ChangeNotifier {
     return '暂无画面';
   }
 
+  String get processedOverlayNotice {
+    if (!showingProcessedVideo) return '';
+    final overlay = streamStatus?.processedOverlay;
+    if (processedOverlayMessage != null &&
+        (overlay == null || !overlay.hasRenderableOverlay)) {
+      return processedOverlayMessage!;
+    }
+    if (overlay?.hasRenderableOverlay == true) {
+      return overlay!.label;
+    }
+    if (overlay?.poseFallbackRunning == true ||
+        overlay?.fallFallbackRunning == true ||
+        _processedOverlayPrimeInFlight) {
+      return '正在基于当前画面生成目标框和姿态骨架';
+    }
+    return '处理后视频使用同源画面；未检测到人体时会显示原画面并持续重试';
+  }
+
   String get endpointLabel => status?.endpoint ?? '等待后端摄像头配置';
+
+  String get fallDecisionNotice {
+    final fall = fallDetectionStatus;
+    if (fall == null) return '';
+    final lead = fall.decisionStatusLabel;
+    final reason = fall.decisionReasonLabel;
+    if (reason.isEmpty) return lead;
+    return '$lead\n$reason';
+  }
 
   String get audioLabel {
     if (audioConnecting) return '音频连接中';
@@ -133,12 +194,12 @@ class CameraProvider extends ChangeNotifier {
     } catch (error) {
       errorMessage = _formatError(error, fallback: '摄像头状态加载失败');
     }
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> loadSetupConfig() async {
     setupLoading = true;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       setupConfig = await _repository.getSetupConfig();
       setupMessage = null;
@@ -146,28 +207,28 @@ class CameraProvider extends ChangeNotifier {
       setupMessage = _formatError(error, fallback: '摄像头配置加载失败');
     } finally {
       setupLoading = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
   void updateSetupConfig(CameraSetupConfig nextConfig) {
     setupConfig = nextConfig;
     setupMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> testSetupSnapshot() async {
     if (setupConfig.sourceMode == 'local') {
       setupSnapshotBytes = null;
       setupMessage = '本地摄像头由浏览器直接预览和抽帧，不再通过后端 OpenCV 测试快照';
-      notifyListeners();
+      _notifyIfAlive();
       return;
     }
 
     setupTesting = true;
     setupMessage = null;
     setupSnapshotBytes = null;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       setupSnapshotBytes = await _repository.testSetupSnapshot(setupConfig);
       setupMessage = '测试快照成功';
@@ -175,14 +236,14 @@ class CameraProvider extends ChangeNotifier {
       setupMessage = _formatError(error, fallback: '测试快照失败');
     } finally {
       setupTesting = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
   Future<void> saveSetupConfig() async {
     setupSaving = true;
     setupMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       setupConfig = await _repository.saveSetupConfig(setupConfig);
       setupMessage = '摄像头配置已保存';
@@ -191,16 +252,20 @@ class CameraProvider extends ChangeNotifier {
         _closeFrameStream(clearFrame: true);
         if (setupConfig.sourceMode != 'local') {
           if (showingProcessedVideo) {
-            unawaited(_ensureProcessedVideoModels());
+            unawaited(_prepareProcessedVideoAndStartStream());
+          } else {
+            _startFrameStream();
           }
-          _startFrameStream();
+          _ensureSnapshotFallbackTimer();
+        } else {
+          _stopSnapshotFallbackTimer();
         }
       }
     } catch (error) {
       setupMessage = _formatError(error, fallback: '摄像头配置保存失败');
     } finally {
       setupSaving = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -232,7 +297,7 @@ class CameraProvider extends ChangeNotifier {
           talkSupported: false,
           source: 'browser_local_preview',
         );
-        notifyListeners();
+        _notifyIfAlive();
         return;
       }
       final results = await Future.wait<Object>([
@@ -255,14 +320,14 @@ class CameraProvider extends ChangeNotifier {
     } catch (_) {
       // Keep the last known diagnostics so the video panel stays usable.
     }
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> setFallDetectionEnabled(bool enabled) async {
     fallDetectionUpdating = true;
     singleFrameFallEnabled = enabled;
     lastAiAnalysisError = null;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       if (setupConfig.sourceMode != 'local') {
         fallDetectionStatus =
@@ -280,7 +345,7 @@ class CameraProvider extends ChangeNotifier {
       errorMessage = _formatError(error, fallback: '跌倒检测模型切换失败');
     } finally {
       fallDetectionUpdating = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -297,7 +362,7 @@ class CameraProvider extends ChangeNotifier {
       );
     }
     lastAiAnalysisError = null;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       if (setupConfig.sourceMode != 'local') {
         poseDetectionStatus =
@@ -315,7 +380,7 @@ class CameraProvider extends ChangeNotifier {
       errorMessage = _formatError(error, fallback: '姿态检测模型切换失败');
     } finally {
       poseDetectionUpdating = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -324,12 +389,48 @@ class CameraProvider extends ChangeNotifier {
     autoRefresh = true;
     if (setupConfig.sourceMode != 'local') {
       if (showingProcessedVideo) {
-        unawaited(_ensureProcessedVideoModels());
+        unawaited(_prepareProcessedVideoAndStartStream());
+      } else {
+        _startFrameStream();
       }
-      _startFrameStream();
+      _ensureSnapshotFallbackTimer();
     }
     refreshDiagnostics();
-    notifyListeners();
+    _notifyIfAlive();
+  }
+
+  Future<void> simulateFallAlarm({
+    String scenario = 'critical',
+  }) async {
+    if (simulatingFallAlarm) return;
+    simulatingFallAlarm = true;
+    errorMessage = null;
+    _notifyIfAlive();
+    try {
+      await _repository.simulateFallDetection(
+        scenario: scenario,
+        trackId: 'family-mobile-demo',
+      );
+      await refreshDiagnostics();
+    } catch (error) {
+      errorMessage = _formatError(error, fallback: '模拟跌倒告警失败');
+    } finally {
+      simulatingFallAlarm = false;
+      _notifyIfAlive();
+    }
+  }
+
+  void stopFrameRefresh({bool clearFrame = false}) {
+    if (!autoRefresh && !isConnecting) {
+      return;
+    }
+    autoRefresh = false;
+    isConnecting = false;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _stopSnapshotFallbackTimer();
+    _closeFrameStream(clearFrame: clearFrame);
+    _notifyIfAlive();
   }
 
   Future<void> setVideoMode(CameraVideoMode mode) async {
@@ -342,11 +443,21 @@ class CameraProvider extends ChangeNotifier {
     if (autoRefresh && setupConfig.sourceMode != 'local') {
       _closeFrameStream(clearFrame: true);
       if (showingProcessedVideo) {
-        unawaited(_ensureProcessedVideoModels());
+        unawaited(_prepareProcessedVideoAndStartStream());
+      } else {
+        _startFrameStream();
       }
+      _ensureSnapshotFallbackTimer();
+    }
+    _notifyIfAlive();
+  }
+
+  Future<void> _prepareProcessedVideoAndStartStream() async {
+    await _ensureProcessedVideoModels();
+    if (autoRefresh && setupConfig.sourceMode != 'local') {
       _startFrameStream();
     }
-    notifyListeners();
+    unawaited(_primeProcessedOverlayIfNeeded(force: true));
   }
 
   Future<void> _ensureProcessedVideoModels() async {
@@ -358,10 +469,50 @@ class CameraProvider extends ChangeNotifier {
       poseDetectionStatus = statuses['pose_detection'];
       fallDetectionStatus = statuses['fall_detection'];
       errorMessage = null;
-      notifyListeners();
+      _notifyIfAlive();
     } catch (error) {
       errorMessage = _formatError(error, fallback: '处理后视频模型启动失败');
-      notifyListeners();
+      _notifyIfAlive();
+    }
+  }
+
+  Future<void> _primeProcessedOverlayIfNeeded({bool force = false}) async {
+    if (!showingProcessedVideo ||
+        setupConfig.sourceMode == 'local' ||
+        _processedOverlayPrimeInFlight) {
+      return;
+    }
+    final now = DateTime.now();
+    final lastPrime = _lastProcessedOverlayPrimeAt;
+    if (!force &&
+        lastPrime != null &&
+        now.difference(lastPrime).inSeconds < 8) {
+      return;
+    }
+    _processedOverlayPrimeInFlight = true;
+    processedOverlayMessage = '正在生成处理后标注...';
+    _notifyIfAlive();
+    try {
+      final result = await _repository.primeProcessedOverlay(includeFall: true);
+      _lastProcessedOverlayPrimeAt = DateTime.now();
+      final tracks = result['pose_tracks'];
+      final poseTracks = tracks is num ? tracks.toInt() : 0;
+      final poseSeeded = result['pose_seeded'] == true;
+      final fallSeeded = result['fall_seeded'] == true;
+      if (poseSeeded || fallSeeded) {
+        processedOverlayMessage = poseSeeded
+            ? '处理后标注已生成：骨架 $poseTracks 个'
+            : '处理后标注已生成：跌倒框';
+      } else {
+        processedOverlayMessage = '当前帧未检测到可绘制目标，处理流会继续刷新';
+      }
+      errorMessage = null;
+      await refreshDiagnostics();
+    } catch (error) {
+      processedOverlayMessage = _formatError(error, fallback: '处理后标注预热失败');
+    } finally {
+      _processedOverlayPrimeInFlight = false;
+      _notifyIfAlive();
     }
   }
 
@@ -419,7 +570,7 @@ class CameraProvider extends ChangeNotifier {
     } finally {
       _poseAnalysisInFlight = false;
       await _refreshFrameAnalysisStatusIfNeeded();
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -450,7 +601,7 @@ class CameraProvider extends ChangeNotifier {
     } finally {
       _fallAnalysisInFlight = false;
       await _refreshFrameAnalysisStatusIfNeeded();
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -474,24 +625,24 @@ class CameraProvider extends ChangeNotifier {
 
   Future<void> startPtz(String direction) async {
     activeDirection = direction;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       await _repository.moveCamera(direction);
     } catch (error) {
       errorMessage = _formatError(error, fallback: '云台控制失败');
       activeDirection = null;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
   Future<void> stopPtz() async {
     activeDirection = null;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       await _repository.moveCamera('stop');
     } catch (error) {
       errorMessage = _formatError(error, fallback: '云台停止失败');
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -506,7 +657,7 @@ class CameraProvider extends ChangeNotifier {
   Future<void> startAudioListen() async {
     audioConnecting = true;
     audioNotice = '正在连接摄像头环境音...';
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       final latestStatus = await _repository.getAudioStatus();
@@ -539,11 +690,11 @@ class CameraProvider extends ChangeNotifier {
       final codec = latestStatus.audioCodec ?? 'PCM';
       final rate = latestStatus.sampleRate ?? 8000;
       audioNotice = '音频监听中：$codec / ${rate}Hz';
-      notifyListeners();
+      _notifyIfAlive();
     } catch (error) {
       audioNotice = _formatError(error, fallback: '音频监听启动失败');
       await stopAudioListen();
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -559,10 +710,13 @@ class CameraProvider extends ChangeNotifier {
     if (notice != null) {
       audioNotice = notice;
     }
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   void _startFrameStream() {
+    if (_disposed) {
+      return;
+    }
     if (!autoRefresh ||
         setupConfig.sourceMode == 'local' ||
         _frameChannel != null) {
@@ -570,7 +724,7 @@ class CameraProvider extends ChangeNotifier {
     }
     isConnecting = true;
     errorMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       _frameChannel = _repository.connectFrameStream(mode: videoMode);
@@ -600,10 +754,59 @@ class CameraProvider extends ChangeNotifier {
       return;
     }
     frameBytes = bytes;
+    _lastFrameReceivedAt = DateTime.now();
     isConnecting = false;
     errorMessage = null;
+    if (showingProcessedVideo) {
+      unawaited(_primeProcessedOverlayIfNeeded());
+    }
     _recordFrame();
-    notifyListeners();
+    _notifyIfAlive();
+  }
+
+  void _ensureSnapshotFallbackTimer() {
+    if (_snapshotFallbackTimer != null || setupConfig.sourceMode == 'local') {
+      return;
+    }
+    _snapshotFallbackTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_refreshSnapshotFallbackIfNeeded()),
+    );
+  }
+
+  Future<void> _refreshSnapshotFallbackIfNeeded({bool force = false}) async {
+    if (!autoRefresh ||
+        setupConfig.sourceMode == 'local' ||
+        _snapshotFallbackInFlight) {
+      return;
+    }
+    final now = DateTime.now();
+    final lastFrame = _lastFrameReceivedAt;
+    final secondsSinceFrame =
+        lastFrame == null ? 999 : now.difference(lastFrame).inSeconds;
+    final streamFps = streamStatus?.displayFps ?? 0;
+    final shouldRefresh =
+        force || secondsSinceFrame >= 5 || clientFps < 1.0 || streamFps < 2.0;
+    if (!shouldRefresh) return;
+
+    _snapshotFallbackInFlight = true;
+    try {
+      final bytes = await _repository.getCurrentFrameSnapshot(mode: videoMode);
+      if (bytes.isEmpty) return;
+      frameBytes = bytes;
+      _lastFrameReceivedAt = DateTime.now();
+      isConnecting = false;
+      errorMessage = null;
+      _recordFrame();
+      _notifyIfAlive();
+    } catch (error) {
+      if (lastFrame == null || secondsSinceFrame >= 10) {
+        errorMessage = _formatError(error, fallback: '摄像头自动刷新失败');
+        _notifyIfAlive();
+      }
+    } finally {
+      _snapshotFallbackInFlight = false;
+    }
   }
 
   void _handleAudioFrame(dynamic data) {
@@ -631,12 +834,15 @@ class CameraProvider extends ChangeNotifier {
   }
 
   void _scheduleReconnect() {
+    if (_disposed) {
+      return;
+    }
     _closeFrameStream(clearFrame: false);
     if (!autoRefresh || setupConfig.sourceMode == 'local') {
       return;
     }
     isConnecting = true;
-    notifyListeners();
+    _notifyIfAlive();
     _reconnectTimer?.cancel();
     _reconnectTimer =
         Timer(const Duration(milliseconds: 1200), _startFrameStream);
@@ -655,6 +861,12 @@ class CameraProvider extends ChangeNotifier {
     }
   }
 
+  void _stopSnapshotFallbackTimer() {
+    _snapshotFallbackTimer?.cancel();
+    _snapshotFallbackTimer = null;
+    _snapshotFallbackInFlight = false;
+  }
+
   String _formatError(Object error, {required String fallback}) {
     final message = error.toString().trim();
     if (message.isEmpty) return fallback;
@@ -670,6 +882,7 @@ class CameraProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _statusTimer?.cancel();
     _audioLevelSubscription?.cancel();
     if (activeDirection != null) {
@@ -678,6 +891,7 @@ class CameraProvider extends ChangeNotifier {
     _audioSubscription?.cancel();
     _audioChannel?.sink.close();
     _audioPlayer.dispose();
+    _stopSnapshotFallbackTimer();
     _closeFrameStream();
     super.dispose();
   }

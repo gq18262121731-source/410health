@@ -332,6 +332,9 @@ function mergeAlarmReviewFinalized(message: FallReviewFinalizedMessage) {
     if (message.presentation && typeof message.presentation === "object") {
       nextMetadata.presentation = message.presentation;
     }
+    if (message.family_guidance && typeof message.family_guidance === "object") {
+      nextMetadata.family_guidance = message.family_guidance;
+    }
     return {
       ...alarm,
       metadata: nextMetadata,

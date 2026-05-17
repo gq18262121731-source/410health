@@ -19,6 +19,7 @@ class HealthProvider extends ChangeNotifier {
   String? _errorMessage;
   bool _isWsConnected = false;
   bool _isInitializing = false;
+  bool _disposed = false;
 
   WebSocketChannel? _channel;
   StreamSubscription? _subscription;
@@ -34,8 +35,14 @@ class HealthProvider extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   bool get isWsConnected => _isWsConnected;
 
+  void _notifyIfAlive() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
   Future<void> init() async {
-    if (_isInitializing) return;
+    if (_disposed || _isInitializing) return;
     _isInitializing = true;
 
     _reconnectTimer?.cancel();
@@ -44,7 +51,7 @@ class HealthProvider extends ChangeNotifier {
 
     _status = HealthStatus.loading;
     _errorMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       HealthData? snapshot;
@@ -62,20 +69,22 @@ class HealthProvider extends ChangeNotifier {
         trend = const [];
       }
 
+      if (_disposed) return;
       if (snapshot == null && trend.isEmpty) {
         throw StateError('no realtime data');
       }
 
       _seedHistory(trend, snapshot: snapshot);
       _status = HealthStatus.loaded;
-      notifyListeners();
+      _notifyIfAlive();
 
       _connectWebSocket();
       _startPollingFallback();
     } catch (_) {
+      if (_disposed) return;
       _status = HealthStatus.error;
       _errorMessage = '无法获取实时数据';
-      notifyListeners();
+      _notifyIfAlive();
     } finally {
       _isInitializing = false;
     }
@@ -131,6 +140,8 @@ class HealthProvider extends ChangeNotifier {
   }
 
   void _storeIncomingSample(HealthData incoming, {bool notify = true}) {
+    if (_disposed) return;
+
     final merged = _data == null ? incoming : _data!.mergeWith(incoming);
     _data = merged;
     _upsertHistoryPoint(_historyBuffer, merged);
@@ -144,11 +155,12 @@ class HealthProvider extends ChangeNotifier {
     }
 
     if (notify) {
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
   void _connectWebSocket() {
+    if (_disposed) return;
     _closeWebSocket();
 
     try {
@@ -165,16 +177,19 @@ class HealthProvider extends ChangeNotifier {
       _handleWsDisconnect();
     }
 
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> _pollSnapshot({bool includeTrend = false}) async {
+    if (_disposed) return;
     try {
       final snapshot = await _repository.getRealtimeSnapshot(_deviceMac);
+      if (_disposed) return;
       _storeIncomingSample(snapshot, notify: false);
 
       if (includeTrend) {
         final trend = await _repository.getRealtimeTrend(_deviceMac);
+        if (_disposed) return;
         _seedHistory(trend, snapshot: snapshot);
       }
 
@@ -182,21 +197,25 @@ class HealthProvider extends ChangeNotifier {
         _status = HealthStatus.loaded;
       }
 
-      notifyListeners();
+      _notifyIfAlive();
     } catch (_) {
       // Keep the last valid sample on screen when polling fails.
     }
   }
 
   void _startPollingFallback() {
+    if (_disposed) return;
     _pollingTimer?.cancel();
     _pollingTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      unawaited(_pollSnapshot(
-          includeTrend: _historyBuffer.length < 2 || !_isWsConnected));
+      if (!_disposed) {
+        unawaited(_pollSnapshot(
+            includeTrend: _historyBuffer.length < 2 || !_isWsConnected));
+      }
     });
   }
 
   void _handleWsMessage(dynamic message) {
+    if (_disposed) return;
     try {
       final json = jsonDecode(message as String) as Map<String, dynamic>;
       final incoming = HealthData.fromJson(json);
@@ -207,14 +226,17 @@ class HealthProvider extends ChangeNotifier {
   }
 
   void _handleWsDisconnect() {
+    if (_disposed) return;
     _isWsConnected = false;
-    notifyListeners();
+    _notifyIfAlive();
 
     _reconnectTimer?.cancel();
     final delay = Duration(seconds: (1 << _reconnectAttempts).clamp(1, 30));
     _reconnectTimer = Timer(delay, () {
-      _reconnectAttempts++;
-      _connectWebSocket();
+      if (!_disposed) {
+        _reconnectAttempts++;
+        _connectWebSocket();
+      }
     });
 
     unawaited(_pollSnapshot(includeTrend: _historyBuffer.length < 2));
@@ -230,6 +252,7 @@ class HealthProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _reconnectTimer?.cancel();
     _pollingTimer?.cancel();
     _closeWebSocket();

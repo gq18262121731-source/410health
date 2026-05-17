@@ -31,6 +31,10 @@ class ExternalCameraProbeRequest(ExternalCameraConfigUpdate):
     apply_success: bool = True
 
 
+class ExternalCameraBootstrapRequest(BaseModel):
+    force: bool = False
+
+
 @router.get("", response_model=list[TargetUserRecord])
 async def list_target_users() -> list[TargetUserRecord]:
     return await asyncio.to_thread(get_target_user_service().list_users)
@@ -133,6 +137,7 @@ async def external_camera_config() -> dict:
     return await asyncio.to_thread(
         lambda: {
             "config": bridge.get_runtime_config(),
+            "truth": bridge.get_camera_source_of_truth(),
             "camera_health": bridge.health(),
             **bridge._camera_source(),
         }
@@ -187,6 +192,11 @@ async def external_camera_refresh(prefer_stream: str | None = None) -> dict:
         get_external_camera_bridge_service().refresh_stream,
         prefer_stream=prefer_stream,
     )
+
+
+@router.post("/external-camera/bootstrap")
+async def external_camera_bootstrap(payload: ExternalCameraBootstrapRequest) -> dict:
+    return await asyncio.to_thread(get_external_camera_bridge_service().startup_recover)
 
 
 @router.post("/external-camera/fall-detect")

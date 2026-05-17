@@ -12,7 +12,7 @@ from backend.config import BASE_DIR, Settings
 
 @dataclass(frozen=True, slots=True)
 class CameraSourceConfig:
-    """A neutral camera source. Business consumers decide how to use it."""
+    """Neutral camera source record shared by UI, runtime, and algorithms."""
 
     camera_id: str
     name: str
@@ -28,10 +28,15 @@ class CameraSourceConfig:
     source_mode: str = "rtsp"
     device_id: str = ""
     enabled: bool = True
+    runtime_managed: bool = False
+    runtime_health_url: str = ""
+    runtime_snapshot_url: str = ""
+    runtime_mjpeg_url: str = ""
+    source_of_truth: str = "settings"
 
 
 class CameraSourceRegistry:
-    """Build camera sources from runtime registration plus safe env fallbacks."""
+    """Build camera sources from runtime config, registry state, and env fallbacks."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -64,12 +69,18 @@ class CameraSourceRegistry:
                 return self.get_source(active_camera_id)
             except KeyError:
                 pass
-        try:
-            preferred_preview = self.get_source("camera2")
-            if preferred_preview.enabled and preferred_preview.ip:
-                return preferred_preview
-        except KeyError:
-            pass
+
+        # Prefer the runtime-managed network camera when available because it is
+        # the only source that can be shared by family/community pages and the
+        # external target/fall pipeline consistently.
+        for preferred_id in ("camera2", "camera1"):
+            try:
+                preferred = self.get_source(preferred_id)
+            except KeyError:
+                continue
+            if preferred.enabled and preferred.ip:
+                return preferred
+
         for source in self.list_sources():
             if source.camera_id != "local":
                 return source
@@ -87,6 +98,7 @@ class CameraSourceRegistry:
                     "camera_audio_rtsp_path": "",
                 }
             )
+
         return self._settings.model_copy(
             update={
                 "camera_ip": source.ip,
@@ -119,6 +131,11 @@ class CameraSourceRegistry:
             "has_password": bool(source.password),
             "source_mode": source.source_mode,
             "device_id": source.device_id,
+            "runtime_managed": source.runtime_managed,
+            "runtime_health_url": source.runtime_health_url,
+            "runtime_snapshot_url": source.runtime_snapshot_url,
+            "runtime_mjpeg_url": source.runtime_mjpeg_url,
+            "source_of_truth": source.source_of_truth,
         }
 
     def registration_status(self) -> dict[str, Any]:
@@ -171,7 +188,11 @@ class CameraSourceRegistry:
         if normalized == "local":
             raise ValueError("LOCAL_CAMERA_CANNOT_BE_DELETED")
         payload = self._load_registry()
-        devices = [item for item in list(payload.get("external_devices") or []) if str(item.get("camera_id") or "").lower() != normalized]
+        devices = [
+            item
+            for item in list(payload.get("external_devices") or [])
+            if str(item.get("camera_id") or "").lower() != normalized
+        ]
         payload["external_devices"] = devices
         if str(payload.get("active_camera_id") or "").lower() == normalized:
             payload["active_camera_id"] = "local"
@@ -193,31 +214,37 @@ class CameraSourceRegistry:
             source="built-in-local",
             source_mode="local",
             enabled=True,
+            source_of_truth="local_device",
         )
 
     def _registered_external_sources(self) -> list[CameraSourceConfig]:
         sources: list[CameraSourceConfig] = []
+        runtime_base = self._camera2()
         for record in list(self._load_registry().get("external_devices") or []):
             device_id = str(record.get("device_id") or "").strip()
             if not device_id:
                 continue
-            base = self._camera1()
             sources.append(
                 CameraSourceConfig(
                     camera_id=str(record.get("camera_id") or self._external_camera_id(device_id)).strip().lower(),
                     name=str(record.get("name") or f"外接摄像头 {device_id}").strip(),
-                    ip=base.ip,
-                    user=base.user,
-                    password=base.password,
-                    rtsp_port=base.rtsp_port,
-                    onvif_port=base.onvif_port,
-                    rtsp_path=base.rtsp_path,
-                    stream_rtsp_path=base.stream_rtsp_path,
-                    audio_rtsp_path=base.audio_rtsp_path,
+                    ip=runtime_base.ip,
+                    user=runtime_base.user,
+                    password=runtime_base.password,
+                    rtsp_port=runtime_base.rtsp_port,
+                    onvif_port=runtime_base.onvif_port,
+                    rtsp_path=runtime_base.rtsp_path,
+                    stream_rtsp_path=runtime_base.stream_rtsp_path,
+                    audio_rtsp_path=runtime_base.audio_rtsp_path,
                     source="registered-external",
                     source_mode="rtsp",
                     device_id=device_id,
-                    enabled=bool(base.ip),
+                    enabled=bool(runtime_base.ip),
+                    runtime_managed=runtime_base.runtime_managed,
+                    runtime_health_url=runtime_base.runtime_health_url,
+                    runtime_snapshot_url=runtime_base.runtime_snapshot_url,
+                    runtime_mjpeg_url=runtime_base.runtime_mjpeg_url,
+                    source_of_truth=runtime_base.source_of_truth,
                 )
             )
         return sources
@@ -235,20 +262,40 @@ class CameraSourceRegistry:
             rtsp_port=settings.camera1_rtsp_port or settings.camera_rtsp_port,
             onvif_port=settings.camera1_onvif_port or settings.camera_onvif_port,
             rtsp_path=self._path_or_default(settings.camera1_rtsp_path, default_rtsp_path),
-            stream_rtsp_path=self._path_or_default(settings.camera1_stream_rtsp_path, settings.camera_stream_rtsp_path),
-            audio_rtsp_path=self._path_or_default(settings.camera1_audio_rtsp_path, settings.camera_audio_rtsp_path),
+            stream_rtsp_path=self._path_or_default(
+                settings.camera1_stream_rtsp_path,
+                settings.camera_stream_rtsp_path or default_rtsp_path,
+            ),
+            audio_rtsp_path=self._path_or_default(
+                settings.camera1_audio_rtsp_path,
+                settings.camera_audio_rtsp_path or settings.camera_stream_rtsp_path or default_rtsp_path,
+            ),
             source="legacy-env" if not settings.camera1_ip.strip() else "camera1-env",
             enabled=bool(ip),
+            source_of_truth=".env",
         )
 
     def _camera2(self) -> CameraSourceConfig:
         settings = self._settings
         external = self._load_external_runtime_camera()
-        ip = settings.camera2_ip.strip() or str(external.get("host") or "").strip()
-        user = settings.camera2_user.strip() or str(external.get("username") or "").strip() or "admin"
-        password = settings.camera2_password or str(external.get("password") or "")
-        rtsp_port = settings.camera2_rtsp_port or int(external.get("rtsp_port") or 10554)
-        fallback_path = self._external_runtime_path(external)
+        overrides = self._load_runtime_truth_overrides()
+        host = overrides.get("host") or external.get("host") or ""
+        username = overrides.get("username") or external.get("username") or "admin"
+        password_value = overrides.get("password")
+        rtsp_port_value = overrides.get("rtsp_port")
+        transport_value = overrides.get("transport")
+        stream_value = overrides.get("stream")
+
+        ip = settings.camera2_ip.strip() or str(host).strip()
+        user = settings.camera2_user.strip() or str(username).strip() or "admin"
+        password = settings.camera2_password or str(password_value or external.get("password") or "")
+        rtsp_port = settings.camera2_rtsp_port or int(rtsp_port_value or external.get("rtsp_port") or 554)
+        fallback_path = self._external_runtime_path(
+            {
+                "transport": transport_value or external.get("transport"),
+                "stream": stream_value or external.get("stream"),
+            }
+        )
         return CameraSourceConfig(
             camera_id="camera2",
             name=settings.camera2_name.strip() or "camera2",
@@ -258,14 +305,30 @@ class CameraSourceRegistry:
             rtsp_port=rtsp_port,
             onvif_port=settings.camera2_onvif_port or 10080,
             rtsp_path=self._path_or_default(settings.camera2_rtsp_path, fallback_path),
-            stream_rtsp_path=self._path_or_default(settings.camera2_stream_rtsp_path, fallback_path),
-            audio_rtsp_path=self._path_or_default(settings.camera2_audio_rtsp_path, fallback_path),
+            stream_rtsp_path=self._path_or_default(
+                settings.camera2_stream_rtsp_path,
+                settings.camera2_stream_rtsp_path or fallback_path,
+            ),
+            audio_rtsp_path=self._path_or_default(
+                settings.camera2_audio_rtsp_path,
+                settings.camera2_audio_rtsp_path or fallback_path,
+            ),
             source="camera2-env" if settings.camera2_ip.strip() else "external-runtime-config",
             enabled=bool(ip),
+            runtime_managed=True,
+            runtime_health_url="http://127.0.0.1:8090/api/v1/camera/health",
+            runtime_snapshot_url="http://127.0.0.1:8090/api/v1/camera/snapshot",
+            runtime_mjpeg_url="http://127.0.0.1:8090/api/v1/camera/stream.mjpg",
+            source_of_truth="camera_runtime_external/camera_live_config*.json",
         )
 
+    def _load_runtime_truth_overrides(self) -> dict[str, Any]:
+        payload = self._load_registry()
+        overrides = payload.get("camera_truth_overrides")
+        return overrides if isinstance(overrides, dict) else {}
+
     def _load_external_runtime_camera(self) -> dict[str, Any]:
-        for filename in ["camera_live_config.runtime.json", "camera_live_config.json"]:
+        for filename in ("camera_live_config.runtime.json", "camera_live_config.json"):
             path = BASE_DIR / "camera_runtime_external" / filename
             if not path.is_file():
                 continue

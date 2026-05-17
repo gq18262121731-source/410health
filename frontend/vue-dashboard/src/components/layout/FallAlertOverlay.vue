@@ -20,6 +20,7 @@ const eventPayload = computed(() => asRecord(props.alarm?.metadata?.event));
 const injuryPayload = computed(() => asRecord(eventPayload.value?.injury));
 const multimodalReview = computed(() => asRecord(eventPayload.value?.multimodal_review));
 const presentation = computed(() => asRecord(props.alarm?.metadata?.presentation) ?? asRecord(eventPayload.value?.presentation));
+const familyGuidance = computed(() => asRecord(props.alarm?.metadata?.family_guidance));
 
 const triggeredAt = computed(() => {
   if (!props.alarm?.created_at) return "--";
@@ -42,6 +43,10 @@ const severity = computed(() => {
 });
 
 const advice = computed(() => {
+  const guidanceActions = familyGuidance.value?.immediate_actions;
+  if (Array.isArray(guidanceActions) && guidanceActions.length > 0) {
+    return guidanceActions.filter((item) => typeof item === "string" && item.trim()).slice(0, 3).join("；");
+  }
   const actions = presentation.value?.recommended_actions;
   if (Array.isArray(actions) && actions.length > 0) {
     return actions.filter((item) => typeof item === "string" && item.trim()).slice(0, 2).join("；");
@@ -51,6 +56,28 @@ const advice = computed(() => {
     ? value
     : "请立即查看现场视频，并尽快确认老人状态。";
 });
+
+const guidanceActions = computed(() => {
+  const actions = familyGuidance.value?.immediate_actions;
+  return Array.isArray(actions) ? actions.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+});
+
+const contraindications = computed(() => {
+  const items = familyGuidance.value?.contraindications;
+  return Array.isArray(items) ? items.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+});
+
+const severityLabel = computed(() => {
+  const label = familyGuidance.value?.severity_label;
+  return typeof label === "string" && label.trim() ? label : "";
+});
+
+const familyMessage = computed(() => {
+  const value = familyGuidance.value?.family_message;
+  return typeof value === "string" && value.trim() ? value : "";
+});
+
+const shouldCallEmergency = computed(() => familyGuidance.value?.call_emergency === true);
 
 const snapshotUrl = computed(() => {
   const path = eventPayload.value?.snapshot_path;
@@ -221,11 +248,25 @@ const acknowledgeLabel = computed(() => {
             </article>
             <article>
               <span>Severity</span>
-              <strong>{{ severity }} / {{ injuryLevel }}</strong>
+              <strong>{{ severityLabel || `${severity} / ${injuryLevel}` }}</strong>
             </article>
           </div>
 
           <p class="fall-overlay__advice">{{ advice }}</p>
+          <div v-if="guidanceActions.length" class="fall-overlay__guidance">
+            <strong>家属应对措施</strong>
+            <ul>
+              <li v-for="item in guidanceActions" :key="item">{{ item }}</li>
+            </ul>
+          </div>
+          <div v-if="contraindications.length" class="fall-overlay__guidance fall-overlay__guidance--warn">
+            <strong>注意事项</strong>
+            <ul>
+              <li v-for="item in contraindications" :key="item">{{ item }}</li>
+            </ul>
+          </div>
+          <p v-if="familyMessage" class="fall-overlay__family-message">{{ familyMessage }}</p>
+          <p v-if="shouldCallEmergency" class="fall-overlay__emergency">建议立即准备急救或医疗支援。</p>
 
           <div class="fall-overlay__review" :class="`fall-overlay__review--${reviewTone}`">
             <div class="fall-overlay__review-head">
@@ -341,6 +382,47 @@ const acknowledgeLabel = computed(() => {
   border: 1px solid rgba(239, 68, 68, 0.22);
   background: rgba(254, 242, 242, 0.82);
   color: #7f1d1d;
+}
+
+.fall-overlay__guidance {
+  margin: 14px 0 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 18px;
+  background: rgba(127, 29, 29, 0.18);
+  color: #fee2e2;
+}
+
+.fall-overlay__guidance--warn {
+  background: rgba(120, 53, 15, 0.22);
+  border-color: rgba(251, 191, 36, 0.34);
+}
+
+.fall-overlay__guidance strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.fall-overlay__guidance ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.fall-overlay__guidance li {
+  margin: 5px 0;
+  line-height: 1.45;
+}
+
+.fall-overlay__family-message,
+.fall-overlay__emergency {
+  margin: 12px 0 0;
+  color: #fecaca;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.fall-overlay__emergency {
+  color: #fff1f2;
 }
 
 .fall-overlay__review {

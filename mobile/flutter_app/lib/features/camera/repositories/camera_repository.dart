@@ -84,6 +84,23 @@ class CameraRepository {
     return statuses['pose_detection']!;
   }
 
+  Future<Map<String, dynamic>> simulateFallDetection({
+    String scenario = 'critical',
+    double? fallScore,
+    String trackId = 'family-mobile-demo',
+  }) async {
+    final response = await _apiClient.post(
+      'camera/fall-detection/simulate',
+      data: <String, dynamic>{
+        'scenario': scenario,
+        if (fallScore != null) 'fall_score': fallScore,
+        'track_id': trackId,
+      },
+      options: Options(receiveTimeout: const Duration(seconds: 20)),
+    );
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
   Future<PoseDetectionLatest> getPoseDetectionLatest() async {
     final response = await _apiClient.get('camera/pose-detection/latest');
     return PoseDetectionLatest.fromJson(
@@ -153,6 +170,41 @@ class CameraRepository {
       options: Options(receiveTimeout: const Duration(seconds: 9)),
     );
     return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> primeProcessedOverlay({
+    bool includeFall = false,
+  }) async {
+    final response = await _apiClient.post(
+      'camera/processed-overlay/prime?include_fall=$includeFall',
+      options: Options(receiveTimeout: const Duration(seconds: 22)),
+    );
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> getProcessedOverlayStatus() async {
+    final response = await _apiClient.get('camera/processed-overlay/status');
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Uint8List> getCurrentFrameSnapshot({
+    CameraVideoMode mode = CameraVideoMode.raw,
+  }) async {
+    final path = switch (mode) {
+      CameraVideoMode.processed => 'camera/processed-snapshot',
+      CameraVideoMode.raw => 'camera/snapshot',
+    };
+    final response = await _apiClient.get(
+      path,
+      options: Options(
+        responseType: ResponseType.bytes,
+        receiveTimeout: const Duration(seconds: 5),
+      ),
+    );
+    final data = response.data;
+    if (data is Uint8List) return data;
+    if (data is List<int>) return Uint8List.fromList(data);
+    throw Exception('摄像头快照数据格式异常');
   }
 
   Future<CameraSetupConfig> getSetupConfig() async {

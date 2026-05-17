@@ -44,6 +44,46 @@ class ExternalCameraBridgeService:
         self._project_root = Path(__file__).resolve().parents[2]
         self._runtime_root = self._resolve_runtime_root()
         self._runtime_config_path = self._runtime_root / "camera_live_config.json"
+        self._runtime_config_runtime_path = self._runtime_root / "camera_live_config.runtime.json"
+        self._camera_truth_path = self._data_root / "camera_source_of_truth.json"
+
+    def startup_recover(self) -> dict[str, Any]:
+        """Attempt to recover the external runtime into the best available source."""
+        started = time.perf_counter()
+        truth = self.get_camera_source_of_truth()
+        health_before = self.health()
+        if self._has_fresh_frame(health_before):
+            result = {
+                "ok": True,
+                "status": "already_ready",
+                "camera_health": health_before,
+                "truth": truth,
+            }
+            result["bridge_latency_ms"] = int((time.perf_counter() - started) * 1000)
+            return result
+
+        probe = self.probe_runtime_candidates(
+            host=truth.get("preferred_host") or truth.get("host"),
+            username=truth.get("username"),
+            password=truth.get("password"),
+            rtsp_port=truth.get("rtsp_port"),
+            transport=truth.get("transport"),
+            stream=truth.get("stream"),
+            apply_success=True,
+        )
+        applied_result = probe.get("applied_result")
+        if not isinstance(applied_result, dict):
+            applied_result = {}
+        health_after = applied_result.get("camera_health") or self.health()
+        result = {
+            "ok": bool(probe.get("applied")),
+            "status": "probe_applied" if probe.get("applied") else "probe_failed",
+            "camera_health": health_after,
+            "probe": probe,
+            "truth": self.get_camera_source_of_truth(),
+        }
+        result["bridge_latency_ms"] = int((time.perf_counter() - started) * 1000)
+        return result
 
     def health(self) -> dict[str, Any]:
         started = time.perf_counter()
@@ -51,7 +91,7 @@ class ExternalCameraBridgeService:
             response = self._session.get(self._endpoints.health_url, timeout=3)
             response.raise_for_status()
             payload = response.json()
-            payload["bridge_status"] = "ok"
+            payload["bridge_status"] = self._classify_bridge_status(payload)
         except (requests.RequestException, ValueError) as exc:
             payload = {
                 "running": False,
@@ -62,11 +102,68 @@ class ExternalCameraBridgeService:
                 "last_error": str(exc),
                 "bridge_status": "camera_unavailable",
             }
+        payload["fresh_frame"] = self._has_fresh_frame(payload)
+        payload["candidate_runtime"] = self.get_runtime_config()
+        payload["truth"] = self.get_camera_source_of_truth()
         payload["bridge_latency_ms"] = int((time.perf_counter() - started) * 1000)
         payload.update(self._camera_source())
         return payload
 
-    def get_runtime_config(self) -> dict[str, Any]:
+    def get_camera_source_of_truth(self) -> dict[str, Any]:
+        runtime = self.get_runtime_config(include_secret=True)
+        truth = self._read_truth()
+        truth.setdefault("camera_id", "camera2")
+        truth.setdefault("preferred_host", runtime.get("host"))
+        truth.setdefault("host", runtime.get("host"))
+        truth.setdefault("username", runtime.get("username"))
+        truth.setdefault("password", runtime.get("password"))
+        truth.setdefault("rtsp_port", runtime.get("rtsp_port"))
+        truth.setdefault("transport", runtime.get("transport"))
+        truth.setdefault("stream", runtime.get("stream"))
+        truth.setdefault("source_of_truth", "camera_runtime_external")
+        truth.setdefault("verified_at", None)
+        truth.setdefault("verified_status", "unknown")
+        truth.setdefault("fallback_order", [
+            {"host": truth.get("host"), "rtsp_port": truth.get("rtsp_port"), "transport": "tcp", "stream": "av0_1"},
+            {"host": truth.get("host"), "rtsp_port": truth.get("rtsp_port"), "transport": "tcp", "stream": "av0_0"},
+            {"host": truth.get("host"), "rtsp_port": 10554, "transport": "tcp", "stream": "av0_1"},
+            {"host": truth.get("host"), "rtsp_port": 10554, "transport": "tcp", "stream": "av0_0"},
+        ])
+        return truth
+
+    def persist_camera_source_of_truth(
+        self,
+        *,
+        host: str,
+        username: str,
+        password: str,
+        rtsp_port: int,
+        transport: str,
+        stream: str,
+        verified_status: str,
+        verification_reason: str | None = None,
+    ) -> dict[str, Any]:
+        truth = self.get_camera_source_of_truth()
+        truth.update(
+            {
+                "camera_id": "camera2",
+                "preferred_host": host,
+                "host": host,
+                "username": username,
+                "password": password,
+                "rtsp_port": rtsp_port,
+                "transport": transport,
+                "stream": stream,
+                "verified_at": datetime.now(timezone.utc).isoformat(),
+                "verified_status": verified_status,
+                "verification_reason": verification_reason,
+                "source_of_truth": "camera_runtime_external",
+            }
+        )
+        self._write_truth(truth)
+        return truth
+
+    def get_runtime_config(self, *, include_secret: bool = False) -> dict[str, Any]:
         raw = self._read_runtime_config()
         camera = raw.get("camera", {}) if isinstance(raw.get("camera"), dict) else {}
         password = str(camera.get("password") or "")
@@ -79,6 +176,8 @@ class ExternalCameraBridgeService:
             "password_set": bool(password),
             "password_length": len(password),
         }
+        if include_secret:
+            config["password"] = password
         config["source"] = self._public_probe_config({**config, "password": password})["source"]
         return config
 
@@ -127,12 +226,25 @@ class ExternalCameraBridgeService:
         )
         camera_health = self._wait_for_fresh_camera_frame(timeout_seconds=1.5)
         camera_available = self._has_fresh_frame(camera_health)
+        verified_status = "reachable" if camera_available else "unreachable"
+        verified_reason = None if camera_available else str(camera_health.get("last_error") or "NO_FRESH_FRAME")
+        truth = self.persist_camera_source_of_truth(
+            host=config["host"],
+            username=config["username"],
+            password=str(camera.get("password") or ""),
+            rtsp_port=int(config["rtsp_port"]),
+            transport=config["transport"],
+            stream=config["stream"],
+            verified_status=verified_status,
+            verification_reason=verified_reason,
+        )
         return {
             "ok": restart["ok"] and camera_available,
             "camera_available": camera_available,
             "config": config,
             "restart": restart,
             "camera_health": camera_health,
+            "truth": truth,
             "bridge_latency_ms": int((time.perf_counter() - started) * 1000),
             **self._camera_source(),
         }
@@ -337,6 +449,9 @@ class ExternalCameraBridgeService:
         for known_ip in ("192.168.8.254", "192.168.8.248"):
             if known_ip not in ips:
                 ips.insert(0, known_ip)
+        preferred = str(self.get_camera_source_of_truth().get("preferred_host") or "").strip()
+        if preferred and preferred not in ips:
+            ips.insert(0, preferred)
         ports = (80, 554, 10554, 10080, 8080)
         port_map: dict[str, list[int]] = {}
         with ThreadPoolExecutor(max_workers=64) as executor:
@@ -437,6 +552,10 @@ class ExternalCameraBridgeService:
 
     def _has_fresh_frame(self, health: dict[str, Any]) -> bool:
         age = health.get("frame_age_seconds")
+        if not isinstance(age, (int, float)):
+            latest_frame_at = health.get("latest_frame_at")
+            if isinstance(latest_frame_at, (int, float)):
+                age = max(0.0, time.time() - latest_frame_at)
         return bool(
             health.get("has_frame")
             and isinstance(age, (int, float))
@@ -480,16 +599,18 @@ class ExternalCameraBridgeService:
             return False
 
     def _read_runtime_config(self) -> dict[str, Any]:
-        if not self._runtime_config_path.exists():
-            return {"camera": {}, "viewer": {}}
-        return json.loads(self._runtime_config_path.read_text(encoding="utf-8-sig"))
+        for path in (self._runtime_config_runtime_path, self._runtime_config_path):
+            if not path.exists():
+                continue
+            return json.loads(path.read_text(encoding="utf-8-sig"))
+        return {"camera": {}, "viewer": {}}
 
     def _write_runtime_config(self, raw: dict[str, Any]) -> None:
         self._runtime_root.mkdir(parents=True, exist_ok=True)
         self._normalize_viewer_config(raw)
         body = json.dumps(raw, ensure_ascii=False, indent=2)
         self._runtime_config_path.write_text(body + "\n", encoding="utf-8-sig")
-        (self._runtime_root / "camera_live_config.runtime.json").write_text(body + "\n", encoding="utf-8-sig")
+        self._runtime_config_runtime_path.write_text(body + "\n", encoding="utf-8-sig")
 
     def _resolve_runtime_root(self) -> Path:
         local_runtime = self._project_root / "camera_runtime_external"
@@ -622,6 +743,34 @@ class ExternalCameraBridgeService:
             "rtsp_host": str(config.get("host") or ""),
             "rtsp_stream": str(config.get("stream") or ""),
         }
+
+    def _read_truth(self) -> dict[str, Any]:
+        if not self._camera_truth_path.exists():
+            return {}
+        try:
+            payload = json.loads(self._camera_truth_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_truth(self, payload: dict[str, Any]) -> None:
+        self._camera_truth_path.parent.mkdir(parents=True, exist_ok=True)
+        self._camera_truth_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def _classify_bridge_status(self, payload: dict[str, Any]) -> str:
+        if not payload.get("running"):
+            return "runtime_not_running"
+        if payload.get("has_frame") and self._has_fresh_frame(payload):
+            return "ok"
+        error_text = str(payload.get("last_error") or "").lower()
+        if "timed out" in error_text or "not reachable" in error_text or "connection" in error_text:
+            return "rtsp_unreachable"
+        if payload.get("has_frame") and not self._has_fresh_frame(payload):
+            return "frame_stale"
+        return "runtime_no_frame"
 
     def _build_probe_candidates(
         self,

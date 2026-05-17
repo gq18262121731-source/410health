@@ -1,5 +1,5 @@
 param(
-    [string]$CondaEnv = 'health',
+    [string]$CondaEnv = 'helth',
     [string]$ListenHost = '0.0.0.0',
     [int]$Port = 8000,
     [switch]$Reload
@@ -53,5 +53,20 @@ if ($Reload) {
 }
 
 $python = Resolve-EnvPython -CondaEnv $CondaEnv
+try {
+    $localIpv4 = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+        Where-Object {
+            $_.IPAddress -notlike '127.*' -and
+            $_.IPAddress -notlike '169.254*' -and
+            $_.ValidLifetime -gt 0
+    } |
+        Sort-Object -Property InterfaceMetric |
+        Select-Object -First 1 -ExpandProperty IPAddress
+    if ($localIpv4) {
+        Write-Host "Mobile app should use: http://${localIpv4}:${Port}"
+    }
+} catch {
+    # Ignore IP discovery failure; backend can still start.
+}
 & $python @args
 exit $LASTEXITCODE

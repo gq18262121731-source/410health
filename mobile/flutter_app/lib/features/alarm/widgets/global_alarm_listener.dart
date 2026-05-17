@@ -7,9 +7,8 @@ import 'package:provider/provider.dart';
 import '../../../core/services/app_notification_service.dart';
 import '../../../core/services/audio_service.dart';
 import '../../auth/providers/auth_provider.dart';
-import '../../camera/providers/camera_provider.dart';
-import '../../camera/repositories/camera_repository.dart';
-import '../../camera/screens/family_camera_screen.dart';
+import '../../camera/screens/family_camera_route.dart';
+import '../../care/providers/care_provider.dart';
 import '../models/alarm_model.dart';
 import '../providers/alarm_provider.dart';
 
@@ -36,6 +35,7 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
   final List<AlarmRecord> _pendingAlarms = <AlarmRecord>[];
 
   AlarmProvider? _alarmProvider;
+  CareProvider? _careProvider;
   AudioService? _audioService;
   AppNotificationService? _notificationService;
 
@@ -61,6 +61,12 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
       _alarmProvider = provider;
       _alarmProvider?.addListener(_onAlarmChanged);
     }
+    final careProvider = context.read<CareProvider>();
+    if (!identical(_careProvider, careProvider)) {
+      _careProvider?.removeListener(_onCareScopeChanged);
+      _careProvider = careProvider;
+      _careProvider?.addListener(_onCareScopeChanged);
+    }
     _audioService ??= context.read<AudioService>();
     _notificationService ??= context.read<AppNotificationService>();
   }
@@ -69,10 +75,19 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _alarmProvider?.removeListener(_onAlarmChanged);
+    _careProvider?.removeListener(_onCareScopeChanged);
     _stopAlarmToneLoop();
     _hideFloatingWarning();
     unawaited(_notificationService?.clearAllSosNotifications());
     super.dispose();
+  }
+
+  void _onCareScopeChanged() {
+    if (!mounted) return;
+    final provider = _alarmProvider;
+    if (provider != null) {
+      _syncAlarmToneState(provider);
+    }
   }
 
   @override
@@ -144,14 +159,17 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
       return false;
     }
     if (alarm.isSos) {
-      return !_shownAlarmIds.contains(alarm.id) && _isFreshAlarm(alarm);
+      return !_shownAlarmIds.contains(alarm.id) &&
+          _isFreshAlarm(alarm) &&
+          _alarmBelongsToCurrentFamily(alarm);
     }
     if (alarm.isFall) {
       final incidentId = alarm.incidentId;
       return incidentId != null &&
           incidentId.isNotEmpty &&
           !_shownFallIncidentIds.contains(incidentId) &&
-          alarm.showImmediatePopup;
+          alarm.showImmediatePopup &&
+          _alarmBelongsToCurrentFamily(alarm);
     }
     return false;
   }
@@ -161,14 +179,16 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
       return false;
     }
     if (alarm.isSos) {
-      return !_shownAlarmIds.contains(alarm.id);
+      return !_shownAlarmIds.contains(alarm.id) &&
+          _alarmBelongsToCurrentFamily(alarm);
     }
     if (alarm.isFall) {
       final incidentId = alarm.incidentId;
       return incidentId != null &&
           incidentId.isNotEmpty &&
           !_shownFallIncidentIds.contains(incidentId) &&
-          alarm.showImmediatePopup;
+          alarm.showImmediatePopup &&
+          _alarmBelongsToCurrentFamily(alarm);
     }
     return false;
   }
@@ -198,6 +218,7 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
     final hasAudibleAlarm = provider.alarms.any(
       (alarm) =>
           !alarm.acknowledged &&
+          _alarmBelongsToCurrentFamily(alarm) &&
           (alarm.isSos ||
               (alarm.isFall &&
                   alarm.showImmediatePopup &&
@@ -218,7 +239,12 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
     }
     unawaited(
       notificationService.syncActiveSosNotifications(
-        provider.alarms.where((alarm) => alarm.isSos && !alarm.acknowledged),
+        provider.alarms.where(
+          (alarm) =>
+              alarm.isSos &&
+              !alarm.acknowledged &&
+              _alarmBelongsToCurrentFamily(alarm),
+        ),
         appInForeground: _appInForeground,
       ),
     );
@@ -261,6 +287,108 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
   bool _isFamilyUser() {
     final role = context.read<AuthProvider>().user?.role.toLowerCase();
     return role == 'family';
+  }
+
+  bool _alarmBelongsToCurrentFamily(AlarmRecord alarm) {
+    final authUser = context.read<AuthProvider>().user;
+    if (authUser?.role.toLowerCase() != 'family') {
+      return false;
+    }
+
+    final metadataFamilyIds = _readMetadataStringList(alarm, 'family_ids');
+    final metadataElderId = _readMetadataString(alarm, 'elder_id');
+    final currentFamilyId = (authUser?.familyId ?? authUser?.id ?? '').trim();
+    if (currentFamilyId.isNotEmpty && metadataFamilyIds.contains(currentFamilyId)) {
+      return true;
+    }
+
+    final careProvider = _careProvider;
+    final profile = careProvider?.profile;
+    if (careProvider == null ||
+        careProvider.status != CareLoadStatus.loaded ||
+        profile == null) {
+      return metadataElderId != null && metadataElderId.isNotEmpty;
+    }
+
+    final allowedMacs = <String>{};
+    final allowedElderIds = <String>{};
+
+    for (final mac in profile.boundDeviceMacs) {
+      final normalized = _normalizeMac(mac);
+      if (normalized.isNotEmpty) allowedMacs.add(normalized);
+    }
+    for (final elderId in profile.relatedElderIds) {
+      final normalized = elderId.trim();
+      if (normalized.isNotEmpty) allowedElderIds.add(normalized);
+    }
+    for (final metric in profile.deviceMetrics) {
+      final mac = _normalizeMac(metric.deviceMac);
+      if (mac.isNotEmpty) allowedMacs.add(mac);
+      final elderId = metric.elderId?.trim();
+      if (elderId != null && elderId.isNotEmpty) {
+        allowedElderIds.add(elderId);
+      }
+    }
+    final directory = careProvider.familyDirectory;
+    if (directory != null) {
+      for (final elder in directory.elders) {
+        if (elder.id.trim().isNotEmpty) {
+          allowedElderIds.add(elder.id.trim());
+        }
+        for (final mac in <String>[elder.deviceMac, ...elder.deviceMacs]) {
+          final normalized = _normalizeMac(mac);
+          if (normalized.isNotEmpty) allowedMacs.add(normalized);
+        }
+      }
+    }
+
+    // No loaded elder/device scope means this family account has not selected
+    // or bound a care target yet. In that state we must not pop fall alarms for
+    // a generic camera scene because it may not belong to this family.
+    if (allowedMacs.isEmpty && allowedElderIds.isEmpty) {
+      return false;
+    }
+
+    final alarmMac = _normalizeMac(alarm.deviceMac);
+    if (alarmMac.isNotEmpty && allowedMacs.contains(alarmMac)) {
+      return true;
+    }
+
+    final alarmElderId = _readMetadataString(alarm, 'elder_id');
+    if (alarmElderId != null && allowedElderIds.contains(alarmElderId)) {
+      return true;
+    }
+
+    final event = alarm.metadata['event'];
+    if (event is Map) {
+      final eventElderId = event['elder_id']?.toString().trim();
+      if (eventElderId != null &&
+          eventElderId.isNotEmpty &&
+          allowedElderIds.contains(eventElderId)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  List<String> _readMetadataStringList(AlarmRecord alarm, String key) {
+    final raw = alarm.metadata[key];
+    if (raw is! List) return const <String>[];
+    return raw
+        .map((value) => value?.toString().trim() ?? '')
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  String _normalizeMac(String raw) =>
+      raw.replaceAll(RegExp(r'[^0-9A-Fa-f]'), '').toUpperCase();
+
+  String? _readMetadataString(AlarmRecord alarm, String key) {
+    final raw = alarm.metadata[key];
+    if (raw == null) return null;
+    final value = raw.toString().trim();
+    return value.isEmpty ? null : value;
   }
 
   String _resolveAlarmLead(AlarmRecord alarm) {
@@ -701,12 +829,7 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
     if (!mounted) return;
     Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute<void>(
-        builder: (BuildContext context) => ChangeNotifierProvider(
-          create: (BuildContext context) => CameraProvider(
-            context.read<CameraRepository>(),
-          )..start(),
-          child: const FamilyCameraScreen(),
-        ),
+        builder: (BuildContext context) => const FamilyCameraRoute(),
       ),
     );
   }

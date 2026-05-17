@@ -6,9 +6,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../widgets/logout_action.dart';
 import '../models/health_model.dart';
 import '../providers/health_provider.dart';
-import '../providers/history_provider.dart';
-import '../repositories/health_repository.dart';
-import 'history_screen.dart';
+import 'history_route.dart';
 
 class DeviceDetailScreen extends StatefulWidget {
   final String deviceMac;
@@ -42,14 +40,6 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
   }
 
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<HealthProvider>().init();
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     final healthProvider = context.watch<HealthProvider>();
 
@@ -69,12 +59,8 @@ class _DeviceDetailScreenState extends State<DeviceDetailScreen> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => ChangeNotifierProvider(
-                    create: (context) => HistoryProvider(
-                      context.read<HealthRepository>(),
-                      widget.deviceMac,
-                    ),
-                    child: HistoryScreen(deviceMac: widget.deviceMac),
+                  builder: (context) => HistoryRoute(
+                    deviceMac: widget.deviceMac,
                   ),
                 ),
               );

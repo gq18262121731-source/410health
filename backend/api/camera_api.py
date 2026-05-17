@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,20 +14,25 @@ from backend.dependencies import (
     enrich_alarm_context,
     get_alarm_service,
     get_camera_detection_frame_hub,
+    get_camera_processed_frame_hub,
     get_camera_pose_frame_hub,
     get_camera_setup_config_service,
     get_camera_source_audio_hub,
     get_camera_source_frame_hub,
     get_camera_source_registry,
     get_camera_source_settings,
+    get_target_user_service,
     get_fall_detection_service,
     get_fall_frame_analysis_worker_service,
     get_fall_multimodal_review_status,
+    get_latest_fall_decision_debug,
     get_frame_analysis_worker_service,
     get_health_data_repository,
     get_pose_detection_config_service,
     get_pose_detection_service,
     get_pose_frame_analysis_worker_service,
+    get_single_frame_fall_state,
+    get_single_frame_pose_state,
     get_websocket_manager,
     ingest_fall_detection_event,
     shutdown_camera_source_hubs,
@@ -36,6 +42,10 @@ from backend.services.camera_service import CameraService
 
 
 router = APIRouter(prefix="/camera", tags=["camera"])
+_processed_auto_prime_lock = asyncio.Lock()
+_last_processed_auto_prime_at = 0.0
+_last_overlay_fall_alarm_at = 0.0
+_last_overlay_fall_alarm_key = ""
 
 
 class CameraPtzRequest(BaseModel):
@@ -75,6 +85,12 @@ class DetectionModelsEnabledRequest(BaseModel):
     pose_detection_enabled: bool | None = None
 
 
+class FallSimulationRequest(BaseModel):
+    scenario: str = "critical"
+    fall_score: float | None = None
+    track_id: str = "demo-track-1"
+
+
 def _persist_env_value(key: str, value: str) -> None:
     env_path = Path(__file__).resolve().parents[2] / ".env"
     lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
@@ -99,6 +115,7 @@ def _camera_detection_models_status() -> dict[str, object]:
     fall_status = get_fall_detection_service().status()
     fall_status["multimodal_review"] = get_fall_multimodal_review_status()
     fall_status["resolved_target_device_mac"] = get_settings().resolved_fall_detection_target_device_mac
+    fall_status["decision_debug"] = get_latest_fall_decision_debug()
     return {
         "ok": True,
         "fall_detection": fall_status,
@@ -130,7 +147,393 @@ async def camera_status() -> dict[str, object]:
 @router.get("/stream-status")
 async def camera_stream_status() -> dict[str, object]:
     active = get_camera_source_registry().active_source()
-    return {"camera_id": active.camera_id, **get_camera_source_frame_hub("active").status()}
+    raw = get_camera_source_frame_hub("active").status()
+    processed_hub = get_camera_processed_frame_hub()
+    pose_hub = get_camera_pose_frame_hub()
+    detection_hub = get_camera_detection_frame_hub()
+    return {
+        "camera_id": active.camera_id,
+        **raw,
+        "processed": processed_hub.status(),
+        "processed_overlay": processed_hub.overlay_status() if hasattr(processed_hub, "overlay_status") else {},
+        "pose_overlay": pose_hub.overlay_status() if hasattr(pose_hub, "overlay_status") else {},
+        "fall_overlay": detection_hub.overlay_status() if hasattr(detection_hub, "overlay_status") else {},
+        "fall_decision_debug": get_latest_fall_decision_debug(),
+    }
+
+
+@router.get("/processed-overlay/status")
+async def camera_processed_overlay_status() -> dict[str, object]:
+    processed_hub = get_camera_processed_frame_hub()
+    pose_hub = get_camera_pose_frame_hub()
+    detection_hub = get_camera_detection_frame_hub()
+    return {
+        "ok": True,
+        "processed": processed_hub.status(),
+        "processed_overlay": processed_hub.overlay_status() if hasattr(processed_hub, "overlay_status") else {},
+        "pose_overlay": pose_hub.overlay_status() if hasattr(pose_hub, "overlay_status") else {},
+        "fall_overlay": detection_hub.overlay_status() if hasattr(detection_hub, "overlay_status") else {},
+        "fall_decision_debug": get_latest_fall_decision_debug(),
+        "frame_analysis": get_frame_analysis_worker_service().status(),
+        "pose_worker": get_pose_frame_analysis_worker_service().status(),
+        "fall_worker": get_fall_frame_analysis_worker_service().status(),
+    }
+
+
+async def _latest_camera_frame_for_overlay() -> bytes:
+    frame = get_camera_source_frame_hub("active").latest_frame()
+    if frame is None:
+        frame = get_camera_processed_frame_hub().latest_frame()
+    if frame is None:
+        try:
+            service = CameraService(get_camera_source_settings("active"))
+            if service.uses_runtime_managed_source():
+                frame, _headers = await asyncio.to_thread(
+                    service.capture_runtime_jpeg_fast,
+                    timeout_seconds=0.8,
+                )
+            else:
+                frame, _headers = await asyncio.to_thread(service.capture_jpeg)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=f"CAMERA_FRAME_UNAVAILABLE: {exc}") from exc
+    if not frame or len(frame) < 100:
+        raise HTTPException(status_code=503, detail="CAMERA_FRAME_UNAVAILABLE")
+    return frame
+
+
+async def _prime_processed_overlay_if_needed(*, include_fall: bool = False) -> None:
+    global _last_processed_auto_prime_at
+    processed_hub = get_camera_processed_frame_hub()
+    if not hasattr(processed_hub, "overlay_status") or not hasattr(processed_hub, "prime_overlay"):
+        return
+    try:
+        overlay_status = processed_hub.overlay_status()
+    except Exception:
+        overlay_status = {}
+    if isinstance(overlay_status, dict) and overlay_status.get("has_renderable_overlay"):
+        return
+    now = time.monotonic()
+    if now - _last_processed_auto_prime_at < 6.0:
+        return
+
+    async with _processed_auto_prime_lock:
+        now = time.monotonic()
+        if now - _last_processed_auto_prime_at < 6.0:
+            return
+        _last_processed_auto_prime_at = now
+        try:
+            overlay_status = processed_hub.overlay_status()
+        except Exception:
+            overlay_status = {}
+        if isinstance(overlay_status, dict) and overlay_status.get("has_renderable_overlay"):
+            return
+
+    try:
+        frame = await _latest_camera_frame_for_overlay()
+        now = time.time()
+        pose_result = await get_pose_frame_analysis_worker_service().analyze_pose(
+            frame,
+            session_id="processed-overlay-auto-prime",
+        )
+        pose_payload: dict[str, object] | None = None
+        pose_latest = pose_result.get("pose_latest")
+        if isinstance(pose_latest, dict):
+            holder = get_single_frame_pose_state()
+            holder.clear()
+            holder.update(pose_latest)
+            holder["_observed_at"] = now
+            tracks = pose_latest.get("tracks")
+            if isinstance(tracks, list) and tracks:
+                pose_payload = dict(holder)
+
+        fall_payload: dict[str, object] | None = None
+        if include_fall:
+            fall_result = await get_fall_frame_analysis_worker_service().analyze_fall(
+                frame,
+                session_id="processed-overlay-auto-prime",
+            )
+            raw_fall = fall_result.get("fall") if isinstance(fall_result.get("fall"), dict) else None
+            if isinstance(raw_fall, dict):
+                normalized = _fall_payload_for_overlay(raw_fall, frame)
+                if normalized:
+                    holder = get_single_frame_fall_state()
+                    holder.clear()
+                    holder.update(normalized)
+                    holder["_observed_at"] = now
+                    fall_payload = dict(holder)
+
+        processed_hub.prime_overlay(
+            pose_payload=pose_payload,
+            fall_payload=fall_payload,
+        )
+    except Exception:
+        # Stream endpoints must remain responsive. A failed prime only means the
+        # processed stream will show its diagnostic overlay until the next frame
+        # analysis succeeds.
+        return
+
+
+@router.post("/processed-overlay/prime")
+async def camera_processed_overlay_prime(include_fall: bool = False) -> dict[str, object]:
+    """Analyze the latest camera frame once and seed the combined overlay state.
+
+    This endpoint is intentionally explicit: realtime pose/fall services can be
+    empty while the camera is still visible. Priming lets the UI validate the
+    server-side combined stream with the current frame without waiting for a
+    long-running realtime process to publish tracks.
+    """
+    frame = await _latest_camera_frame_for_overlay()
+
+    now = time.time()
+    pose_result = await get_pose_frame_analysis_worker_service().analyze_pose(
+        frame,
+        session_id="processed-overlay-prime",
+    )
+    pose_latest = pose_result.get("pose_latest")
+    pose_tracks = 0
+    pose_seeded = False
+    pose_overlay_payload: dict[str, object] | None = None
+    if isinstance(pose_latest, dict):
+        holder = get_single_frame_pose_state()
+        holder.clear()
+        holder.update(pose_latest)
+        holder["_observed_at"] = now
+        tracks = pose_latest.get("tracks")
+        pose_tracks = len(tracks) if isinstance(tracks, list) else 0
+        pose_seeded = pose_tracks > 0
+        pose_overlay_payload = dict(holder)
+
+    fall_result: dict[str, object] = {"ok": False, "status": "skipped", "error": None}
+    if include_fall:
+        try:
+            fall_result = await get_fall_frame_analysis_worker_service().analyze_fall(
+                frame,
+                session_id="processed-overlay-prime",
+            )
+        except Exception as exc:
+            fall_result = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+    fall_payload = fall_result.get("fall") if isinstance(fall_result.get("fall"), dict) else None
+    fall_seeded = False
+    normalized: dict[str, object] | None = None
+    if isinstance(fall_payload, dict):
+        normalized = _fall_payload_for_overlay(fall_payload, frame)
+        if normalized:
+            holder = get_single_frame_fall_state()
+            holder.clear()
+            holder.update(normalized)
+            holder["_observed_at"] = now
+            fall_seeded = bool(normalized.get("bbox"))
+            await _maybe_ingest_overlay_fall_alarm(normalized, source="processed-overlay-prime")
+
+    processed_hub = get_camera_processed_frame_hub()
+    if hasattr(processed_hub, "prime_overlay"):
+        processed_hub.prime_overlay(
+            pose_payload=pose_overlay_payload,
+            fall_payload=normalized if isinstance(fall_payload, dict) else None,
+        )
+    # Let async fallback futures settle if a stream consumer already triggered them.
+    processed_overlay = processed_hub.overlay_status() if hasattr(processed_hub, "overlay_status") else {}
+    return {
+        "ok": True,
+        "frame_size": len(frame),
+        "pose_seeded": pose_seeded,
+        "pose_tracks": pose_tracks,
+        "fall_seeded": fall_seeded,
+        "pose_result": {
+            "ok": pose_result.get("ok"),
+            "error": pose_result.get("error"),
+        },
+        "fall_result": {
+            "ok": fall_payload.get("ok") if isinstance(fall_payload, dict) else fall_result.get("ok"),
+            "status": fall_payload.get("status") if isinstance(fall_payload, dict) else None,
+            "error": fall_payload.get("error") if isinstance(fall_payload, dict) else fall_result.get("error"),
+        },
+        "processed_overlay": processed_overlay,
+    }
+
+
+async def _maybe_ingest_overlay_fall_alarm(
+    payload: dict[str, object],
+    *,
+    source: str,
+) -> AlarmRecord | None:
+    """Promote a processed-overlay fall payload into the normal alarm pipeline.
+
+    The combined overlay stream already runs the model against the same camera
+    frame the family sees. Without this bridge the UI can draw fall-like boxes
+    while the family alarm websocket never receives an event. Keep the gate
+    narrow so normal tracking boxes do not create false alarms.
+    """
+    global _last_overlay_fall_alarm_at, _last_overlay_fall_alarm_key
+
+    state = str(payload.get("state") or payload.get("status") or "").strip().lower()
+    status = str(payload.get("status") or state).strip().lower()
+    try:
+        fall_score = float(payload.get("fall_score") or 0.0)
+    except (TypeError, ValueError):
+        fall_score = 0.0
+    fall_detected = bool(payload.get("fall_detected"))
+
+    alarm_like_states = {
+        "fall",
+        "fallen",
+        "confirmed_fall",
+        "suspected_fall",
+        "possible_fall",
+        "fall_detected",
+        "abnormal_recovery",
+        "needs_assistance",
+        "emergency",
+        "lying",
+    }
+    if (
+        not fall_detected
+        and state not in alarm_like_states
+        and status not in alarm_like_states
+        and fall_score < 0.18
+    ):
+        return None
+
+    now = time.monotonic()
+    bbox = payload.get("bbox")
+    bbox_key = ""
+    if isinstance(bbox, list) and len(bbox) >= 4:
+        try:
+            bbox_key = ",".join(str(int(float(value) // 16)) for value in bbox[:4])
+        except (TypeError, ValueError):
+            bbox_key = ""
+    dedupe_key = f"{source}:{state}:{status}:{round(fall_score, 2)}:{bbox_key}"
+    if dedupe_key == _last_overlay_fall_alarm_key and now - _last_overlay_fall_alarm_at < 12:
+        return None
+    _last_overlay_fall_alarm_key = dedupe_key
+    _last_overlay_fall_alarm_at = now
+
+    event_state = state
+    if event_state in {"fall", "fallen", "fall_detected"} or fall_detected or fall_score >= 0.55:
+        event_state = "confirmed_fall"
+    elif event_state in {"lying"} or fall_score >= 0.18:
+        event_state = "suspected_fall"
+    if event_state in {"normal", "tracked", ""}:
+        event_state = "suspected_fall"
+
+    event: dict[str, object] = {
+        "source": source,
+        "state": event_state,
+        "status": status or event_state,
+        "event_type": "fall_detected",
+        "fall_detected": fall_detected or event_state == "confirmed_fall",
+        "fall_score": fall_score,
+        "track_id": "overlay-fall-track",
+        "bbox": bbox,
+        "frame_width": payload.get("frame_width"),
+        "frame_height": payload.get("frame_height"),
+        "detections": payload.get("detections") if isinstance(payload.get("detections"), list) else [],
+        "injury": {
+            "level": "I2" if event_state == "confirmed_fall" else "I1",
+            "advice": "请立即查看家庭摄像头画面，并确认老人是否跌倒或需要帮助。",
+        },
+    }
+    if event_state == "confirmed_fall":
+        event["severity"] = "L2"
+    else:
+        event["severity"] = "L1"
+    return await ingest_fall_detection_event(event)
+
+
+def _fall_payload_for_overlay(fall_payload: dict[str, object], frame_bytes: bytes) -> dict[str, object] | None:
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        cv2 = None
+        np = None
+
+    frame_width = 0
+    frame_height = 0
+    image = None
+    if cv2 is not None and np is not None:
+        image = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if image is not None:
+            frame_height, frame_width = image.shape[:2]
+
+    fall_result = fall_payload.get("fall_result") if isinstance(fall_payload.get("fall_result"), dict) else fall_payload
+    if not isinstance(fall_result, dict):
+        return None
+    detections = fall_result.get("detections") if isinstance(fall_result.get("detections"), list) else []
+    bbox = _fallback_bbox_from_detections(detections)
+    frame_meta = fall_result.get("frame") if isinstance(fall_result.get("frame"), dict) else {}
+    frame_width = int(frame_meta.get("width") or frame_width or 0)
+    frame_height = int(frame_meta.get("height") or frame_height or 0)
+    score = fall_result.get("fall_score")
+    if not isinstance(score, (int, float)):
+        scores = fall_result.get("scores") if isinstance(fall_result.get("scores"), dict) else {}
+        score = scores.get("fall") if isinstance(scores.get("fall"), (int, float)) else 0.0
+    payload: dict[str, object] = {
+        "status": str(fall_result.get("status") or "normal"),
+        "state": str(fall_result.get("status") or "normal"),
+        "fall_detected": bool(fall_result.get("fall_detected")),
+        "fall_score": float(score or 0.0),
+        "detections": detections,
+    }
+    if frame_width > 0 and frame_height > 0:
+        payload["frame_width"] = frame_width
+        payload["frame_height"] = frame_height
+    if bbox is None and image is not None:
+        bbox = _person_bbox_for_overlay(image)
+        if bbox is not None and payload["state"] == "normal":
+            payload["state"] = "tracked"
+            payload["status"] = "tracked"
+    if bbox is not None:
+        payload["bbox"] = bbox
+    return payload
+
+
+def _person_bbox_for_overlay(image) -> list[float] | None:
+    try:
+        target_user_service = get_target_user_service()
+        boxes = target_user_service._collect_person_boxes(  # type: ignore[attr-defined]
+            image,
+            target_user_service._fallback_person_model,  # type: ignore[attr-defined]
+            allowed_labels={"person", "fall", "fallen", "sitting", "lying", "bending"},
+            conf=0.12,
+            imgsz=416,
+        )
+    except Exception:
+        boxes = []
+    if not boxes:
+        return None
+    bbox, score, label = max(boxes, key=lambda item: float(item[1] or 0.0))
+    try:
+        return [float(value) for value in bbox[:4]]
+    except Exception:
+        return None
+
+
+def _fallback_bbox_from_detections(detections: object) -> list[float] | None:
+    if not isinstance(detections, list):
+        return None
+    best: tuple[float, list[float]] | None = None
+    for item in detections:
+        if not isinstance(item, dict):
+            continue
+        raw_bbox = item.get("bbox")
+        if not isinstance(raw_bbox, list) or len(raw_bbox) < 4:
+            continue
+        try:
+            bbox = [float(value) for value in raw_bbox[:4]]
+        except (TypeError, ValueError):
+            continue
+        label = str(item.get("label") or item.get("class_name") or "").lower()
+        score = item.get("score")
+        try:
+            confidence = float(score if score is not None else item.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if "person" in label:
+            confidence += 1.0
+        if best is None or confidence > best[0]:
+            best = (confidence, bbox)
+    return best[1] if best is not None else None
 
 
 @router.get("/setup/config")
@@ -241,6 +644,7 @@ async def camera_fall_detection_status() -> dict[str, object]:
     payload = get_fall_detection_service().status()
     payload["multimodal_review"] = get_fall_multimodal_review_status()
     payload["resolved_target_device_mac"] = get_settings().resolved_fall_detection_target_device_mac
+    payload["decision_debug"] = get_latest_fall_decision_debug()
     return payload
 
 
@@ -328,10 +732,17 @@ async def camera_analyze_frame_pose(
         raise HTTPException(status_code=400, detail="FRAME_IMAGE_REQUIRED")
 
     try:
-        return await get_pose_frame_analysis_worker_service().analyze_pose(
+        result = await get_pose_frame_analysis_worker_service().analyze_pose(
             blob,
             session_id=session_id,
         )
+        latest = result.get("pose_latest")
+        if isinstance(latest, dict):
+            holder = get_single_frame_pose_state()
+            holder.clear()
+            holder.update(latest)
+            holder["_observed_at"] = __import__("time").time()
+        return result
     except RuntimeError as exc:
         return {
             "ok": False,
@@ -355,10 +766,19 @@ async def camera_analyze_frame_fall(
         raise HTTPException(status_code=400, detail="FRAME_IMAGE_REQUIRED")
 
     try:
-        return await get_fall_frame_analysis_worker_service().analyze_fall(
+        result = await get_fall_frame_analysis_worker_service().analyze_fall(
             blob,
             session_id=session_id,
         )
+        fall = result.get("fall")
+        if isinstance(fall, dict):
+            normalized = _fall_payload_for_overlay(fall, blob)
+            if isinstance(normalized, dict):
+                holder = get_single_frame_fall_state()
+                holder.clear()
+                holder.update(normalized)
+                holder["_observed_at"] = __import__("time").time()
+        return result
     except RuntimeError as exc:
         return {
             "ok": False,
@@ -418,11 +838,107 @@ async def camera_fall_detection_snapshot(path: str) -> FileResponse:
     )
 
 
+def _fall_simulation_event(
+    *,
+    scenario: str,
+    fall_score: float | None,
+    track_id: str,
+    snapshot_path: str | None,
+) -> dict[str, object]:
+    normalized = scenario.strip().lower().replace("-", "_")
+    now_slug = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    base: dict[str, object] = {
+        "track_id": track_id.strip() or "demo-track-1",
+        "incident_id": f"{track_id.strip() or 'demo-track-1'}-{normalized}-{now_slug}",
+        "snapshot_path": snapshot_path,
+        "source": "fall_detection_demo",
+        "demo": True,
+        "scores": {"detector": 0.66, "posture": 0.72, "semantic": 0.38, "hybrid": 0.74},
+    }
+    if normalized in {"critical", "high", "confirmed_critical", "confirmed_fall_critical"}:
+        base.update(
+            {
+                "event_type": "fall_confirmed",
+                "state": "confirmed_fall",
+                "severity": "L3",
+                "fall_score": fall_score if fall_score is not None else 0.87,
+                "injury": {
+                    "level": "I3",
+                    "reason": "demo_confirmed_fall_critical",
+                    "down_seconds": 4.2,
+                    "advice": "请立即查看现场并联系护理人员，必要时呼叫急救。",
+                },
+            }
+        )
+    elif normalized in {"warning", "confirmed", "confirmed_warning", "confirmed_fall_warning"}:
+        base.update(
+            {
+                "event_type": "fall_confirmed",
+                "state": "confirmed_fall",
+                "severity": "L2",
+                "fall_score": fall_score if fall_score is not None else 0.68,
+                "injury": {
+                    "level": "I2",
+                    "reason": "demo_confirmed_fall_warning",
+                    "down_seconds": 2.0,
+                    "advice": "请尽快查看现场视频，确认老人能否自主起身。",
+                },
+            }
+        )
+    elif normalized in {"notice", "suspected", "suspected_fall", "possible"}:
+        base.update(
+            {
+                "event_type": "fall_suspected",
+                "state": "suspected_fall",
+                "severity": "L1",
+                "fall_score": fall_score if fall_score is not None else 0.32,
+                "injury": {
+                    "level": "I1",
+                    "reason": "demo_suspected_fall",
+                    "down_seconds": 1.0,
+                    "advice": "请查看现场并等待系统复核结果。",
+                },
+            }
+        )
+    elif normalized in {"abnormal_recovery", "recovery", "emergency"}:
+        base.update(
+            {
+                "event_type": "fall_followup",
+                "state": "abnormal_recovery",
+                "severity": "L3",
+                "fall_score": fall_score if fall_score is not None else 0.76,
+                "injury": {
+                    "level": "I3",
+                    "reason": "demo_abnormal_recovery",
+                    "down_seconds": 8.0,
+                    "advice": "跌倒后恢复异常，请尽快人工确认并准备医疗支援。",
+                },
+            }
+        )
+    else:
+        base.update(
+            {
+                "event_type": "fall_suspected",
+                "state": "suspected_fall",
+                "severity": "L1",
+                "fall_score": fall_score if fall_score is not None else 0.24,
+                "injury": {
+                    "level": "I1",
+                    "reason": f"demo_{normalized or 'suspected_fall'}",
+                    "down_seconds": 0.9,
+                    "advice": "请查看现场并人工确认。",
+                },
+            }
+        )
+    return base
+
+
 @router.post("/fall-detection/simulate")
-async def camera_fall_detection_simulate() -> AlarmRecord:
+async def camera_fall_detection_simulate(payload: FallSimulationRequest | None = None) -> AlarmRecord:
     settings = get_settings()
     if not settings.debug and settings.environment != "development":
         raise HTTPException(status_code=404, detail="Not found")
+    payload = payload or FallSimulationRequest()
 
     snapshot_path: str | None = None
     snapshot_dir = Path(settings.fall_detection_snapshot_dir).resolve()
@@ -437,21 +953,12 @@ async def camera_fall_detection_simulate() -> AlarmRecord:
     except RuntimeError:
         snapshot_path = None
 
-    event = {
-        "event_type": "fall_confirmed",
-        "track_id": "demo-track-1",
-        "incident_id": f"demo-track-1-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
-        "state": "confirmed_fall",
-        "severity": "L3",
-        "fall_score": 0.87,
-        "injury": {
-            "level": "I3",
-            "reason": "demo_confirmed_fall",
-            "advice": "Please inspect the live view and contact on-site staff immediately.",
-        },
-        "snapshot_path": snapshot_path,
-        "demo": True,
-    }
+    event = _fall_simulation_event(
+        scenario=payload.scenario,
+        fall_score=payload.fall_score,
+        track_id=payload.track_id,
+        snapshot_path=snapshot_path,
+    )
     created = await ingest_fall_detection_event(event)
     if created is not None:
         return created
@@ -466,9 +973,9 @@ async def camera_fall_detection_simulate() -> AlarmRecord:
         metadata={
             "source": "fall_detection_demo",
             "event": event,
-            "severity": "L3",
-            "injury_level": "I3",
-            "track_id": "demo-track-1",
+            "severity": event.get("severity"),
+            "injury_level": (event.get("injury") or {}).get("level") if isinstance(event.get("injury"), dict) else None,
+            "track_id": event.get("track_id"),
             "incident_id": event["incident_id"],
             "is_demo": True,
         },
@@ -478,7 +985,8 @@ async def camera_fall_detection_simulate() -> AlarmRecord:
 
 @router.get("/snapshot")
 async def camera_snapshot() -> Response:
-    active_settings = get_camera_source_settings("active")
+    active = get_camera_source_registry().active_source()
+    active_settings = get_camera_source_settings(active.camera_id)
     if active_settings.camera_source_mode == "local":
         raise HTTPException(
             status_code=409,
@@ -488,8 +996,16 @@ async def camera_snapshot() -> Response:
                 "contention"
             ),
         )
+    service = CameraService(active_settings)
+    if service.uses_runtime_managed_source():
+        try:
+            image_bytes, headers = await asyncio.to_thread(service.capture_runtime_jpeg_fast)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"RUNTIME_SNAPSHOT_UNAVAILABLE: {exc}") from exc
+        return Response(content=image_bytes, media_type="image/jpeg", headers=headers)
+
     try:
-        image_bytes, headers = await asyncio.to_thread(CameraService(active_settings).capture_jpeg)
+        image_bytes, headers = await asyncio.to_thread(service.capture_jpeg)
     except RuntimeError as exc:
         code = str(exc)
         status_code = 503
@@ -498,6 +1014,30 @@ async def camera_snapshot() -> Response:
         raise HTTPException(status_code=status_code, detail=code) from exc
 
     return Response(content=image_bytes, media_type="image/jpeg", headers=headers)
+
+
+@router.get("/processed-snapshot")
+async def camera_processed_snapshot() -> Response:
+    asyncio.create_task(_prime_processed_overlay_if_needed(include_fall=False))
+    frame = get_camera_processed_frame_hub().latest_frame()
+    if frame is None:
+        frame = get_camera_source_frame_hub("active").latest_frame()
+    if frame is None:
+        try:
+            frame = await _latest_camera_frame_for_overlay()
+        except HTTPException as exc:
+            raise exc
+    if not frame or len(frame) < 100:
+        raise HTTPException(status_code=503, detail="PROCESSED_FRAME_UNAVAILABLE")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @router.get("/stream.mjpg")
@@ -541,6 +1081,21 @@ async def camera_detection_stream() -> StreamingResponse:
 async def camera_pose_stream() -> StreamingResponse:
     return StreamingResponse(
         get_camera_pose_frame_hub().mjpeg_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/stream.processed.mjpg")
+async def camera_processed_stream() -> StreamingResponse:
+    asyncio.create_task(_prime_processed_overlay_if_needed(include_fall=False))
+    return StreamingResponse(
+        get_camera_processed_frame_hub().mjpeg_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",

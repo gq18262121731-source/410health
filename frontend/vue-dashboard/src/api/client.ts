@@ -68,6 +68,8 @@ export interface FallReviewPendingMessage {
   lead: string;
   expected_seconds?: number;
   catalog_code?: string;
+  presentation?: Record<string, unknown>;
+  family_guidance?: Record<string, unknown>;
   event?: Record<string, unknown>;
 }
 
@@ -78,6 +80,7 @@ export interface FallReviewFinalizedMessage {
   track_id?: string;
   catalog_code?: string;
   presentation?: Record<string, unknown>;
+  family_guidance?: Record<string, unknown>;
   event?: Record<string, unknown>;
   review?: Record<string, unknown>;
 }
@@ -841,6 +844,43 @@ export interface CameraSourceRegistrationResponse {
   registry_path?: string;
 }
 
+export interface ExternalCameraTruthRecord {
+  camera_id?: string;
+  preferred_host?: string;
+  host?: string;
+  username?: string;
+  rtsp_port?: number;
+  transport?: string;
+  stream?: string;
+  verified_at?: string | null;
+  verified_status?: string;
+  verification_reason?: string | null;
+  source_of_truth?: string;
+  fallback_order?: Array<Record<string, unknown>>;
+}
+
+export interface ExternalCameraConfigResponse {
+  config: Record<string, unknown>;
+  truth?: ExternalCameraTruthRecord;
+  camera_health?: ExternalCameraHealthResponse;
+  viewer_url?: string;
+  snapshot_url?: string;
+  mjpeg_url?: string;
+  runtime_root?: string;
+  rtsp_source?: string;
+  rtsp_host?: string;
+  rtsp_stream?: string;
+}
+
+export interface ExternalCameraBootstrapResponse {
+  ok: boolean;
+  status: string;
+  camera_health?: ExternalCameraHealthResponse;
+  truth?: ExternalCameraTruthRecord;
+  probe?: Record<string, unknown>;
+  bridge_latency_ms?: number;
+}
+
 export type CameraPtzDirection =
   | "up"
   | "down"
@@ -1026,6 +1066,10 @@ export interface ExternalCameraHealthResponse {
   transport: string;
   rtsp_port: number;
   has_frame: boolean;
+  bridge_status?: string;
+  fresh_frame?: boolean;
+  stale_frame?: boolean;
+  frame_age_seconds?: number | null;
   latest_frame_at?: number | null;
   frame_count?: number;
   last_error?: string | null;
@@ -1034,6 +1078,10 @@ export interface ExternalCameraHealthResponse {
   consecutive_failures?: number;
   current_stream?: string | null;
   bridge_latency_ms?: number;
+  rtsp_host?: string;
+  rtsp_stream?: string;
+  truth?: ExternalCameraTruthRecord;
+  candidate_runtime?: Record<string, unknown>;
   viewer_url?: string;
   snapshot_url?: string;
   mjpeg_url?: string;
@@ -1408,6 +1456,7 @@ export const api = {
   getCameraStreamUrl: () => `${API_BASE}/camera/stream.mjpg?t=${Date.now()}`,
   getCameraDetectionStreamUrl: () => `${API_BASE}/camera/stream.detect.mjpg?t=${Date.now()}`,
   getCameraPoseStreamUrl: () => `${API_BASE}/camera/stream.pose.mjpg?t=${Date.now()}`,
+  getCameraProcessedStreamUrl: () => `${API_BASE}/camera/stream.processed.mjpg?t=${Date.now()}`,
   cameraFrameSocket: () => new WebSocket(`${WS_BASE}/ws/camera`),
   cameraAudioSocket: () => new WebSocket(`${WS_BASE}/ws/camera/audio/listen`),
   getCameraSourceRegistration: () =>
@@ -1487,6 +1536,48 @@ export const api = {
     }),
   getExternalCameraHealth: () =>
     requestJson<ExternalCameraHealthResponse>(`${API_BASE}/target-users/external-camera/health`),
+  getExternalCameraConfig: () =>
+    requestJson<ExternalCameraConfigResponse>(`${API_BASE}/target-users/external-camera/config`),
+  bootstrapExternalCamera: () =>
+    requestJson<ExternalCameraBootstrapResponse>(`${API_BASE}/target-users/external-camera/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: true }),
+    }),
+  probeExternalCameraRuntime: (payload: {
+    host?: string;
+    username?: string;
+    password?: string;
+    rtsp_port?: number;
+    transport?: string;
+    stream?: string;
+    apply_success?: boolean;
+  }) =>
+    requestJson<Record<string, unknown>>(`${API_BASE}/target-users/external-camera/probe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }, { timeoutMs: 40000 }),
+  discoverExternalCameraCandidates: (subnet?: string, limit = 64) => {
+    const params = new URLSearchParams();
+    if (subnet) params.set("subnet", subnet);
+    params.set("limit", String(limit));
+    return requestJson<Record<string, unknown>>(
+      `${API_BASE}/target-users/external-camera/discover?${params.toString()}`,
+      undefined,
+      { timeoutMs: 40000 },
+    );
+  },
+  refreshExternalCameraRuntime: (prefer_stream?: string) => {
+    const params = new URLSearchParams();
+    if (prefer_stream) params.set("prefer_stream", prefer_stream);
+    const suffix = params.toString();
+    return requestJson<Record<string, unknown>>(
+      `${API_BASE}/target-users/external-camera/refresh${suffix ? `?${suffix}` : ""}`,
+      { method: "POST" },
+      { timeoutMs: 20000 },
+    );
+  },
   runExternalCameraFallDetect: (payload?: {
     target_only?: boolean;
     session_id?: string;

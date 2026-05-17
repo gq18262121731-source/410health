@@ -21,6 +21,8 @@ class CareProvider extends ChangeNotifier {
   Timer? _refreshTimer;
   bool _isFetching = false;
   bool _isMutating = false;
+  bool _disposed = false;
+  int _autoRefreshEpoch = 0;
 
   CareProvider(this._repository, this._sessionManager);
 
@@ -30,13 +32,22 @@ class CareProvider extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   bool get isMutating => _isMutating;
 
+  void _notifyIfAlive() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
   void updateDependencies(
       CareRepository repository, SessionManager sessionManager) {
     _repository = repository;
     _sessionManager = sessionManager;
   }
 
-  Future<void> fetchProfile({bool silent = false}) async {
+  Future<void> fetchProfile({
+    bool silent = false,
+    bool notify = true,
+  }) async {
     if (_isFetching) return;
     if (!_sessionManager.isAuthenticated) {
       stopAutoRefresh();
@@ -44,7 +55,7 @@ class CareProvider extends ChangeNotifier {
       _familyDirectory = null;
       _status = CareLoadStatus.initial;
       _errorMessage = null;
-      notifyListeners();
+      if (notify) _notifyIfAlive();
       return;
     }
     _isFetching = true;
@@ -52,7 +63,7 @@ class CareProvider extends ChangeNotifier {
     final shouldShowLoading = !silent || _profile == null;
     if (shouldShowLoading) {
       _status = CareLoadStatus.loading;
-      notifyListeners();
+      if (notify) _notifyIfAlive();
     }
 
     try {
@@ -87,7 +98,7 @@ class CareProvider extends ChangeNotifier {
       _isFetching = false;
     }
 
-    notifyListeners();
+    if (notify) _notifyIfAlive();
   }
 
   Future<bool> bindSelfDevice(
@@ -95,42 +106,44 @@ class CareProvider extends ChangeNotifier {
     String? deviceName,
   }) async {
     if (_isMutating) return false;
+    stopAutoRefresh();
     _isMutating = true;
     _errorMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       await _repository.bindSelfDevice(
         macAddress: macAddress,
         deviceName: deviceName,
       );
-      await fetchProfile(silent: _profile != null);
+      await fetchProfile(silent: true, notify: false);
       return true;
     } catch (error) {
       _errorMessage = _extractApiErrorMessage(error, '绑定手环失败，请稍后重试');
       return false;
     } finally {
       _isMutating = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
   Future<bool> unbindSelfDevice() async {
     if (_isMutating) return false;
+    stopAutoRefresh();
     _isMutating = true;
     _errorMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       await _repository.unbindSelfDevice();
-      await fetchProfile(silent: _profile != null);
+      await fetchProfile(silent: true, notify: false);
       return true;
     } catch (error) {
       _errorMessage = _extractApiErrorMessage(error, '解绑设备失败，请稍后重试');
       return false;
     } finally {
       _isMutating = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
@@ -139,13 +152,21 @@ class CareProvider extends ChangeNotifier {
       return;
     }
     stopAutoRefresh();
-    Future.microtask(() => fetchProfile(silent: _profile != null));
+    final epoch = ++_autoRefreshEpoch;
+    Future.microtask(() {
+      if (!_disposed && _autoRefreshEpoch == epoch && _refreshTimer != null) {
+        fetchProfile(silent: _profile != null);
+      }
+    });
     _refreshTimer = Timer.periodic(interval, (_) {
-      fetchProfile(silent: true);
+      if (!_disposed && _autoRefreshEpoch == epoch) {
+        fetchProfile(silent: true);
+      }
     });
   }
 
   void stopAutoRefresh() {
+    _autoRefreshEpoch++;
     _refreshTimer?.cancel();
     _refreshTimer = null;
   }
@@ -250,6 +271,7 @@ class CareProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     stopAutoRefresh();
     super.dispose();
   }

@@ -165,11 +165,17 @@ async def camera_source_status(camera_id: str) -> dict[str, object]:
 @router.get("/{camera_id}/snapshot")
 async def camera_source_snapshot(camera_id: str) -> Response:
     try:
-        image_bytes, headers = await asyncio.to_thread(_service_for(camera_id).capture_jpeg)
+        service = _service_for(camera_id)
+        if service.uses_runtime_managed_source():
+            image_bytes, headers = await asyncio.to_thread(service.capture_runtime_jpeg_fast)
+        else:
+            image_bytes, headers = await asyncio.to_thread(service.capture_jpeg)
     except KeyError as exc:
         raise _camera_not_found(exc) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"CAMERA_SNAPSHOT_FAILED: {exc}") from exc
     return Response(content=image_bytes, media_type="image/jpeg", headers=headers)
 
 

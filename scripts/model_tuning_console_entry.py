@@ -11,6 +11,7 @@ def main() -> int:
     if not src_dir.is_dir():
         raise FileNotFoundError(f"LLaMA-Factory src not found: {src_dir}")
 
+    os.environ.setdefault("DISABLE_VERSION_CHECK", "1")
     sys.path.insert(0, str(src_dir))
 
     from llamafactory.extras.misc import fix_proxy, is_env_enabled
