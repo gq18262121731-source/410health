@@ -17,14 +17,6 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<HistoryProvider>().fetchHistory();
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     final historyProvider = context.watch<HistoryProvider>();
     final careProvider = context.watch<CareProvider>();

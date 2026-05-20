@@ -179,6 +179,16 @@ class CareService:
         ]
 
     def login(self, username: str, password: str) -> LoginResponse | None:
+        normalized_username = username.strip().lower()
+        demo_usernames = {record.username for record in self._build_demo_accounts()}
+
+        # Demo operators such as `community_admin` should enter the seeded demo
+        # workspace immediately instead of blocking on formal-user lookups.
+        if normalized_username in demo_usernames:
+            demo = self.login_demo(username, password)
+            if demo is not None:
+                return demo
+
         formal = self.login_formal(username, password)
         if formal is not None:
             return formal
@@ -274,18 +284,27 @@ class CareService:
         return CareDirectory(community=community, elders=elders, families=families)
 
     def _build_demo_accounts(self) -> list[AccountRecord]:
-        directory = self.get_demo_directory()
-        community_user = SessionUser(
-            id=directory.community.id,
-            username="community_admin",
-            name="社区管理员",
-            role=UserRole.COMMUNITY,
-            community_id=directory.community.id,
-            family_id=None,
-        )
-        records = [AccountRecord(username="community_admin", password=self._settings.seed_default_password, user=community_user)]
-        demo_elder_username_by_id = {seed.id: seed.login_username.lower() for seed in DEMO_ELDER_SEEDS}
-        for family in directory.families:
+        community = self._community_profile()
+        records = [
+            AccountRecord(
+                username="community_admin",
+                password=self._settings.seed_default_password,
+                user=SessionUser(
+                    id=community.id,
+                    username="community_admin",
+                    name="社区管理员",
+                    role=UserRole.COMMUNITY,
+                    community_id=community.id,
+                    family_id=None,
+                ),
+            )
+        ]
+
+        elders_by_family: dict[str, list[DemoElderSeed]] = {}
+        for elder_seed in DEMO_ELDER_SEEDS:
+            elders_by_family.setdefault(elder_seed.family_id, []).append(elder_seed)
+
+        for family in DEMO_FAMILY_SEEDS:
             records.append(
                 AccountRecord(
                     username=family.login_username.lower(),
@@ -295,26 +314,22 @@ class CareService:
                         username=family.login_username.lower(),
                         name=family.name,
                         role=UserRole.FAMILY,
-                        community_id=directory.community.id,
+                        community_id=community.id,
                         family_id=family.id,
                     ),
                 )
             )
-            for elder_id in family.elder_ids:
-                elder = next((item for item in directory.elders if item.id == elder_id), None)
-                if elder is None:
-                    continue
-                elder_username = demo_elder_username_by_id.get(elder.id, elder.id.lower())
+            for elder_seed in elders_by_family.get(family.id, []):
                 records.append(
                     AccountRecord(
-                        username=elder_username,
+                        username=elder_seed.login_username.lower(),
                         password=self._settings.seed_default_password,
                         user=SessionUser(
-                            id=elder.id,
-                            username=elder_username,
-                            name=elder.name,
+                            id=elder_seed.id,
+                            username=elder_seed.login_username.lower(),
+                            name=elder_seed.name,
                             role=UserRole.ELDER,
-                            community_id=directory.community.id,
+                            community_id=community.id,
                             family_id=family.id,
                         ),
                     )

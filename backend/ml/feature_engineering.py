@@ -4,6 +4,10 @@ from typing import Mapping
 
 import pandas as pd
 
+# Avoid pandas auto-selecting Arrow-backed string arrays on Windows, which
+# can crash this project runtime when pyarrow/native binaries are unstable.
+pd.options.mode.string_storage = "python"
+
 
 FEATURE_COLUMNS: list[str] = [
     "heart_rate",

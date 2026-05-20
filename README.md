@@ -11,13 +11,13 @@
 
 ## 环境规则
 
-本项目必须统一使用 `helth` conda 环境，不要混用裸 `python` 和裸 `pytest`。
+本项目必须统一使用 `health` conda 环境，不要混用裸 `python` 和裸 `pytest`。
 
 标准命令：
 
 ```powershell
-conda run -n helth python ...
-conda run -n helth pytest ...
+conda run -n health python ...
+conda run -n health pytest ...
 ```
 
 ## 项目结构
@@ -39,9 +39,9 @@ conda run -n helth pytest ...
 建议使用 Python 3.11：
 
 ```powershell
-conda create -n helth python=3.11 -y
+conda create -n health python=3.11 -y
 Copy-Item .env.example .env
-conda run -n helth python -m pip install -r requirements.txt
+conda run -n health python -m pip install -r requirements.txt
 ```
 
 初始化 `.env` 后，请至少补齐下面两项 Qwen 配置，智能体默认会直接使用它们：
@@ -54,17 +54,17 @@ QWEN_MODEL=qwen-plus
 
 ### GPU 推荐环境（本机演示建议）
 
-如果你的现场演示机器带 NVIDIA GPU，推荐把 `helth` 环境切到 PyTorch `2.2.2 + cu121`。仓库里的 `requirements.txt` 仍保持通用写法，便于 CPU/GPU 两种环境共存；本机演示环境建议额外执行：
+如果你的现场演示机器带 NVIDIA GPU，推荐把 `health` 环境切到 PyTorch `2.2.2 + cu121`。仓库里的 `requirements.txt` 仍保持通用写法，便于 CPU/GPU 两种环境共存；本机演示环境建议额外执行：
 
 ```powershell
-conda run -n helth python -m pip uninstall -y torch torchvision torchaudio
-conda run -n helth python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
+conda run -n health python -m pip uninstall -y torch torchvision torchaudio
+conda run -n health python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
 ```
 
 安装完成后建议验证：
 
 ```powershell
-conda run -n helth python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
+conda run -n health python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
 ```
 
 当前训练与推理代码已经支持 `MODEL_DEVICE=auto/cpu/cuda`：
@@ -168,23 +168,23 @@ STATIC_HEALTH_SHEET_NAME=
 使用默认配置训练：
 
 ```powershell
-conda run -n helth python .\scripts\train_static_model.py
+conda run -n health python .\scripts\train_static_model.py
 ```
 
 指定 Excel 路径训练：
 
 ```powershell
-conda run -n helth python .\scripts\train_static_model.py --data "data/raw/patients_data_with_alerts.xlsx"
+conda run -n health python .\scripts\train_static_model.py --data "data/raw/patients_data_with_alerts.xlsx"
 ```
 
 训练完成后会生成：
 
-- `data/artifacts/static_health/static_health_model.pt`
-- `data/artifacts/static_health/feature_scaler.joblib`
-- `data/artifacts/static_health/feature_columns.json`
-- `data/artifacts/static_health/label_mapping.json`
-- `data/artifacts/static_health/training_config.json`
-- `data/artifacts/static_health/metrics.json`
+- `backend/resources/static_health/static_health_model.pt`
+- `backend/resources/static_health/feature_scaler.joblib`
+- `backend/resources/static_health/feature_columns.json`
+- `backend/resources/static_health/label_mapping.json`
+- `backend/resources/static_health/training_config.json`
+- `backend/resources/static_health/metrics.json`
 - `data/processed/static_health_training_cleaned.csv`
 
 ## 启动服务
@@ -192,7 +192,7 @@ conda run -n helth python .\scripts\train_static_model.py --data "data/raw/patie
 推荐使用项目脚本：
 
 ```powershell
-conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_server.ps1
+conda run -n health powershell -ExecutionPolicy Bypass -File .\scripts\start_server.ps1
 ```
 
 当前脚本默认监听 `0.0.0.0:8000`，便于同一局域网内的手机或平板直接访问。
@@ -200,13 +200,13 @@ conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_serv
 或使用 Python 启动入口：
 
 ```powershell
-conda run -n helth python .\scripts\run_server.py
+conda run -n health python .\scripts\run_server.py
 ```
 
 如果还要启动前端：
 
 ```powershell
-conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1
+conda run -n health powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1
 ```
 
 服务健康检查：
@@ -383,7 +383,7 @@ POST /api/v1/agent/health/explain
 运行全部测试：
 
 ```powershell
-conda run -n helth pytest tests/test_rule_engine.py tests/test_inference.py tests/test_health_api.py
+conda run -n health pytest tests/test_rule_engine.py tests/test_inference.py tests/test_health_api.py
 ```
 
 这些测试覆盖：

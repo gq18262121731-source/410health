@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, toRef, ref } from "vue";
+import { computed, ref, toRef } from "vue";
 import { AlertTriangle } from "lucide-vue-next";
 
 import type { SessionUser } from "../api/client";
+import CameraMonitorCard from "../components/CameraMonitorCard.vue";
 import CommunityDeviceInspector from "../components/CommunityDeviceInspector.vue";
 import CommunityDeviceRail from "../components/CommunityDeviceRail.vue";
 import CommunityRealtimeVitalsPanel from "../components/CommunityRealtimeVitalsPanel.vue";
@@ -16,43 +17,31 @@ const props = defineProps<{
 
 const workspace = useCommunityWorkspace(toRef(props, "sessionUser"));
 const isSimulating = ref(false);
-
-// 模拟真实的告警数值波动（0-15之间）
 const simulatedAlarmCount = ref(Math.floor(Math.random() * 16));
 
-// 每隔一段时间更新告警数值，模拟真实波动
 setInterval(() => {
-  // 随机选择变化量：1、2、3或4
-  const changeAmount = Math.floor(Math.random() * 4) + 1; // 1到4
-  // 随机选择增加或减少
+  const changeAmount = Math.floor(Math.random() * 4) + 1;
   const change = Math.random() > 0.5 ? changeAmount : -changeAmount;
   let newValue = simulatedAlarmCount.value + change;
-  
-  // 确保在范围内
   if (newValue < 0) newValue = 0;
   if (newValue > 15) newValue = 15;
-  
   simulatedAlarmCount.value = newValue;
-}, 5000); // 每5秒更新一次
+}, 5000);
 
-// 模拟设备数据
 const mockDevices = [
   { mac: "AA:BB:CC:DD:EE:01", name: "T10-WATCH-001", elder: "张大爷" },
   { mac: "AA:BB:CC:DD:EE:02", name: "T10-WATCH-002", elder: "李奶奶" },
-  { mac: "AA:BB:CC:DD:EE:03", name: "T10-WATCH-003", elder: "王大妈" },
+  { mac: "AA:BB:CC:DD:EE:03", name: "T10-WATCH-003", elder: "王阿姨" },
 ];
 
 async function triggerSOSSimulation() {
   if (isSimulating.value) return;
-  
   isSimulating.value = true;
 
   try {
-    // 随机选择一个设备
     const randomDevice = mockDevices[Math.floor(Math.random() * mockDevices.length)];
     const randomTrigger = Math.random() > 0.5 ? "long_press" : "double_click";
 
-    // 创建模拟告警数据
     const mockAlarmData = {
       id: `sim_${Date.now()}`,
       device_mac: randomDevice.mac,
@@ -63,24 +52,21 @@ async function triggerSOSSimulation() {
       created_at: new Date().toISOString(),
       acknowledged: false,
       metadata: {
-        is_real_device: true, // 设置为true让现有系统认为是真实告警
+        is_real_device: true,
         device_name: randomDevice.name,
         elder_name: randomDevice.elder,
         sos_trigger: randomTrigger,
-        simulation_timestamp: Date.now()
-      }
+        simulation_timestamp: Date.now(),
+      },
     };
 
-    // 通过自定义事件触发告警
-    const event = new CustomEvent('sos-simulation', {
-      detail: mockAlarmData
+    const event = new CustomEvent("sos-simulation", {
+      detail: mockAlarmData,
     });
     window.dispatchEvent(event);
-    
   } catch (error) {
-    console.error('SOS模拟失败:', error);
+    console.error("SOS模拟失败:", error);
   } finally {
-    // 延迟重置状态，避免重复点击
     setTimeout(() => {
       isSimulating.value = false;
     }, 2000);
@@ -118,35 +104,12 @@ const pageMeta = computed(() => [
       :meta="pageMeta"
     >
       <template #actions>
-        <button type="button" class="modern-refresh-btn" @click="workspace.refreshDashboardData">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-          </svg>
-          刷新数据
-        </button>
-        
-        <!-- 方案B：低调的模拟告警按钮 -->
-        <button 
-          v-if="canAccessDebug"
-          type="button" 
-          class="modern-simulate-alarm-icon-btn"
-          :class="{ 'modern-simulate-alarm-icon-btn--active': isSimulating }"
-          :disabled="isSimulating"
-          :title="isSimulating ? '模拟中...' : '模拟告警（测试）'"
-          @click="triggerSOSSimulation"
-        >
-          <AlertTriangle :size="16" />
-        </button>
-      </template>
-      
-      <!-- 自定义未确认告警区域，包含SOS功能 -->
-      <template #extra>
         <div class="modern-alarm-section">
-          <div 
+          <div
             class="modern-alarm-badge"
-            :class="{ 
-              'modern-alarm-badge--active': workspace.metrics.value?.unacknowledged_alarm_count > 0,
-              'modern-alarm-badge--clickable': canAccessDebug 
+            :class="{
+              'modern-alarm-badge--active': (workspace.metrics.value?.unacknowledged_alarm_count ?? 0) > 0,
+              'modern-alarm-badge--clickable': canAccessDebug
             }"
             @click="canAccessDebug ? triggerSOSSimulation() : null"
             :title="canAccessDebug ? '点击模拟SOS告警' : ''"
@@ -159,6 +122,25 @@ const pageMeta = computed(() => [
             <span v-if="isSimulating" class="modern-alarm-simulating">模拟中...</span>
           </div>
         </div>
+
+        <button type="button" class="modern-refresh-btn" @click="workspace.refreshDashboardData">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+          </svg>
+          刷新数据
+        </button>
+
+        <button
+          v-if="canAccessDebug"
+          type="button"
+          class="modern-simulate-alarm-icon-btn"
+          :class="{ 'modern-simulate-alarm-icon-btn--active': isSimulating }"
+          :disabled="isSimulating"
+          :title="isSimulating ? '模拟中...' : '模拟告警（测试）'"
+          @click="triggerSOSSimulation"
+        >
+          <AlertTriangle :size="16" />
+        </button>
       </template>
     </PageHeader>
 
@@ -212,6 +194,8 @@ const pageMeta = computed(() => [
           </div>
         </article>
       </div>
+
+      <CameraMonitorCard class="overview-stage__camera-card" />
     </div>
   </section>
 </template>
@@ -227,6 +211,10 @@ const pageMeta = computed(() => [
 .overview-stage {
   width: 100%;
   align-content: start;
+}
+
+.overview-stage__camera-card {
+  width: 100%;
 }
 
 .overview-stage > * {
@@ -277,7 +265,6 @@ const pageMeta = computed(() => [
   color: var(--text-sub);
 }
 
-/* 现代化刷新按钮 */
 .modern-refresh-btn {
   display: inline-flex;
   align-items: center;
@@ -310,7 +297,6 @@ const pageMeta = computed(() => [
   transform: rotate(180deg);
 }
 
-/* 低调的模拟告警图标按钮（方案B） */
 .modern-simulate-alarm-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -318,8 +304,8 @@ const pageMeta = computed(() => [
   width: 36px;
   height: 36px;
   padding: 0;
-  border: 1px solid #fca5a5;
-  border-radius: 8px;
+  border: 1.5px solid #fca5a5;
+  border-radius: 12px;
   background: #ffffff;
   color: #ef4444;
   cursor: pointer;
@@ -330,158 +316,105 @@ const pageMeta = computed(() => [
   background: #fef2f2;
   border-color: #ef4444;
   transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.2);
-}
-
-.modern-simulate-alarm-icon-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 
 .modern-simulate-alarm-icon-btn--active {
-  background: #10b981;
-  border-color: #10b981;
-  color: #ffffff;
-  animation: pulse-simulate-icon 2s infinite;
+  background: #fef2f2;
+  color: #dc2626;
 }
 
-@keyframes pulse-simulate-icon {
-  0%, 100% {
-    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
-  }
-  50% {
-    box-shadow: 0 2px 12px rgba(16, 185, 129, 0.5);
-  }
+.modern-simulate-alarm-icon-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
-/* 现代化告警区域 */
 .modern-alarm-section {
-  display: flex;
-  justify-content: flex-start;
+  display: inline-flex;
+  align-items: center;
 }
 
 .modern-alarm-badge {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 20px;
-  border-radius: 14px;
-  background: #f8fafc;
-  border: 2px solid #e2e8f0;
-  transition: all 200ms ease;
+  padding: 16px 22px;
+  border-radius: 18px;
+  border: 2px solid #fecaca;
+  background: linear-gradient(135deg, #fff5f5 0%, #ffe4e6 100%);
+  color: #dc2626;
+  box-shadow: 0 10px 24px rgba(239, 68, 68, 0.12);
 }
 
 .modern-alarm-badge--active {
-  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
-  border-color: #fca5a5;
-  animation: pulse-alarm-badge 2s infinite;
+  border-color: #f87171;
+  box-shadow: 0 12px 28px rgba(239, 68, 68, 0.18);
 }
 
 .modern-alarm-badge--clickable {
   cursor: pointer;
+  transition: transform 200ms ease, box-shadow 200ms ease;
 }
 
 .modern-alarm-badge--clickable:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.2);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 32px rgba(239, 68, 68, 0.22);
 }
 
 .modern-alarm-icon {
-  color: #94a3b8;
   flex-shrink: 0;
 }
 
-.modern-alarm-badge--active .modern-alarm-icon {
-  color: #dc2626;
-  animation: pulse-icon 2s infinite;
-}
-
 .modern-alarm-content {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .modern-alarm-label {
   font-size: 0.95rem;
-  font-weight: 700;
-  color: #64748b;
-  white-space: nowrap;
-}
-
-.modern-alarm-badge--active .modern-alarm-label {
-  color: #dc2626;
+  font-weight: 800;
 }
 
 .modern-alarm-count {
+  min-width: 42px;
+  height: 42px;
+  padding: 0 12px;
+  border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 32px;
-  height: 32px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: #ffffff;
-  color: #64748b;
-  font-size: 0.95rem;
-  font-weight: 800;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-}
-
-.modern-alarm-badge--active .modern-alarm-count {
-  background: #ef4444;
+  background: linear-gradient(135deg, #ef4444 0%, #f43f5e 100%);
   color: #ffffff;
-  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
+  font-size: 1.15rem;
+  font-weight: 800;
+  box-shadow: 0 6px 18px rgba(239, 68, 68, 0.28);
 }
 
 .modern-alarm-simulating {
-  padding: 4px 10px;
-  border-radius: 8px;
-  background: #d1fae5;
-  color: #065f46;
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   font-weight: 700;
-  white-space: nowrap;
+  color: #b91c1c;
 }
 
-@keyframes pulse-alarm-badge {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
-  }
-}
-
-@keyframes pulse-icon {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.7;
-    transform: scale(1.1);
-  }
-}
-
-@media (max-width: 1180px) {
+@media (max-width: 1100px) {
   .overview-stage__detail-row {
     grid-template-columns: 1fr;
   }
 }
 
-@media (max-width: 760px) {
-  .alerts-panel__head {
-    flex-direction: column;
-  }
-  
-  .modern-alarm-section {
-    justify-content: stretch;
-  }
-  
+@media (max-width: 960px) {
   .modern-alarm-badge {
-    width: 100%;
-    justify-content: space-between;
+    padding: 12px 16px;
+  }
+
+  .modern-alarm-content {
+    gap: 10px;
+  }
+
+  .modern-alarm-count {
+    min-width: 36px;
+    height: 36px;
+    font-size: 1rem;
   }
 }
 </style>

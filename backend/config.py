@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -11,6 +13,7 @@ from backend.runtime_bootstrap import resolve_runtime_bootstrap
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+os.environ.setdefault("YOLO_CONFIG_DIR", str(BASE_DIR / "Ultralytics"))
 
 
 class Settings(BaseSettings):
@@ -54,6 +57,7 @@ class Settings(BaseSettings):
 
     qwen_api_base: str = ""
     qwen_api_key: str = ""
+    siliconflow_api_key: str = Field(default="", validation_alias="SILICONFLOW_API_KEY")
     dashscope_api_key_env: str = Field(default="", validation_alias="DASHSCOPE_API_KEY")
     qwen_model: str = ""
     qwen_embedding_model: str = ""
@@ -102,6 +106,9 @@ class Settings(BaseSettings):
     serial_enabled: bool = False
     serial_port: str = ""
     serial_baudrate: int = 115200
+    serial_dual_collector_enabled: bool = False
+    serial_broadcast_port: str = ""
+    serial_response_port: str = ""
     serial_collection_strategy: Literal["single_target", "static_filter"] = "single_target"
     serial_packet_type: int = 5
     serial_packet_merge_timeout_seconds: float = 5.0
@@ -127,6 +134,110 @@ class Settings(BaseSettings):
     mqtt_password: str = ""
     mqtt_keepalive_seconds: int = 60
 
+    camera_ip: str = ""
+    camera_user: str = "admin"
+    camera_password: str = ""
+    camera_source_mode: Literal["auto", "rtsp", "local"] = "auto"
+    camera_local_index: int = 0
+    camera_local_http_url: str = ""  # 独立摄像头服务URL，如 http://localhost:8001
+    camera_local_backend: Literal["auto", "dshow", "msmf", "any"] = "dshow"
+    camera_rtsp_path: str = "/tcp/av0_0"
+    camera_rtsp_port: int = 10554
+    camera_onvif_port: int = 10080
+    camera_stream_rtsp_path: str = "/tcp/av0_1"
+    camera_audio_rtsp_path: str = "/tcp/av0_1"
+    camera_audio_sample_rate: int = 16000
+    camera_audio_gateway_url: str = ""
+    camera_sdk_dll_dir: str = ""
+    camera_activex_clsid: str = ""
+    camera_probe_timeout_seconds: float = 3.0
+    camera_snapshot_timeout_seconds: float = 8.0
+    camera_stream_fps: float = 24.0
+    camera_stream_profile: Literal["smooth", "balanced", "quality"] = "balanced"
+    camera_stream_quality_path: str = "/tcp/av0_0"
+    camera_stream_smooth_path: str = "/tcp/av0_1"
+    camera_stream_jpeg_quality: int = 4
+    camera_stream_width: int = 0
+    camera_stream_send_timeout_seconds: float = 0.35
+    camera_stream_keep_warm: bool = False
+    target_user_vision_warmup_enabled: bool = False
+    camera_ptz_move_seconds: float = 0.35
+    camera_ptz_speed: float = 0.45
+    camera1_name: str = "camera1"
+    camera1_ip: str = ""
+    camera1_user: str = ""
+    camera1_password: str = ""
+    camera1_rtsp_port: int = 0
+    camera1_onvif_port: int = 0
+    camera1_rtsp_path: str = ""
+    camera1_stream_rtsp_path: str = ""
+    camera1_audio_rtsp_path: str = ""
+    camera2_name: str = "camera2"
+    camera2_ip: str = ""
+    camera2_user: str = ""
+    camera2_password: str = ""
+    camera2_rtsp_port: int = 0
+    camera2_onvif_port: int = 0
+    camera2_rtsp_path: str = ""
+    camera2_stream_rtsp_path: str = ""
+    camera2_audio_rtsp_path: str = ""
+    fall_detection_enabled: bool = False
+    fall_detection_model_root: str = str(BASE_DIR / "fall_detection_model_bundle")
+    fall_detection_model_registry_path: str = ""
+    fall_detection_python: str = sys.executable
+    fall_detection_event_log: str = str(BASE_DIR / "data" / "fall_events" / "camera_events.jsonl")
+    fall_detection_snapshot_dir: str = str(BASE_DIR / "data" / "fall_events" / "snapshots")
+    fall_detection_profile: str = "private_scene_fusion_v2"
+    fall_detection_speed_profile: Literal["accuracy", "balanced", "fast"] = "accuracy"
+    fall_detection_threshold_override: float = 0.0
+    fall_detection_process_every_override: int = 0
+    fall_detection_alert_rules_path: str = ""
+    fall_detection_injury_rules_path: str = ""
+    fall_detection_target_device_mac: str = "CAMERA-192.168.8.254"
+    fall_detection_target_elder_id: str = ""
+    fall_detection_target_family_ids: str = ""
+    fall_detection_status_log_interval_seconds: float = 2.0
+    fall_detection_restart_delay_seconds: float = 5.0
+    fall_detection_roi_enabled: bool = False
+    fall_detection_roi_rect: str = ""
+    fall_detection_roi_min_overlap: float = 0.5
+    fall_detection_confirmed_roi_bypass_score: float = 0.6
+    fall_detection_frame_width: float = 2304.0
+    fall_detection_frame_height: float = 1296.0
+    fall_detection_min_alert_score: float = 0.0
+    fall_detection_confirmation_window_seconds: float = 8.0
+    fall_detection_min_confirmed_hits: int = 2
+    fall_detection_min_track_age_seconds: float = 0.8
+    fall_detection_high_confidence_score: float = 0.72
+    fall_detection_min_down_seconds: float = 1.2
+    fall_detection_min_bbox_area_ratio: float = 0.008
+    fall_detection_edge_margin_ratio: float = 0.015
+    fall_detection_edge_partial_min_height_ratio: float = 0.22
+    fall_detection_track_state_ttl_seconds: float = 120.0
+    fall_detection_incident_reopen_seconds: float = 20.0
+    fall_detection_multimodal_enabled: bool = True
+    fall_detection_multimodal_provider: Literal["auto", "qwen_omni", "siliconflow_script", "disabled"] = "auto"
+    fall_detection_multimodal_min_score: float = 0.45
+    fall_detection_multimodal_timeout_seconds: int = 45
+    pose_detection_enabled: bool = False
+    pose_detection_model_root: str = str(BASE_DIR / "pose_detection_model_bundle")
+    pose_detection_python: str = sys.executable
+    pose_detection_event_log: str = str(BASE_DIR / "data" / "pose_events" / "pose_events.jsonl")
+    pose_detection_latest_json: str = str(BASE_DIR / "data" / "pose_events" / "latest_pose.json")
+    pose_detection_snapshot_dir: str = str(BASE_DIR / "data" / "pose_events" / "snapshots")
+    pose_detection_profile: str = "default"
+    pose_detection_process_every_override: int = 0
+    pose_detection_status_log_interval_seconds: float = 1.5
+    pose_detection_restart_delay_seconds: float = 5.0
+    pose_detection_pose_conf_threshold: float = 0.25
+    pose_detection_track_max_det: int = 8
+    pose_detection_analysis_width: int = 960
+    pose_detection_min_pose_score: float = 0.20
+    pose_detection_bed_roi_rect: str = ""
+    pose_detection_floor_roi_rect: str = ""
+    pose_detection_single_frame_model_path: str = ""
+    pose_detection_single_frame_imgsz: int = 320
+
     sos_broadcast_window_seconds: int = 15
     health_score_floor: int = 35
     stream_retention_points: int = 600
@@ -135,13 +246,13 @@ class Settings(BaseSettings):
     artifact_data_dir: str = str(BASE_DIR / "data" / "artifacts")
     static_health_data_path: str = str(BASE_DIR / "data" / "raw" / "patients_data_with_alerts.xlsx")
     static_health_sheet_name: str = ""
-    static_model_dir: str = str(BASE_DIR / "data" / "artifacts" / "static_health")
-    static_model_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "static_health_model.pt")
-    static_scaler_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "feature_scaler.joblib")
-    static_feature_columns_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "feature_columns.json")
-    static_label_mapping_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "label_mapping.json")
-    static_training_config_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "training_config.json")
-    static_metrics_path: str = str(BASE_DIR / "data" / "artifacts" / "static_health" / "metrics.json")
+    static_model_dir: str = str(BASE_DIR / "backend" / "resources" / "static_health")
+    static_model_path: str = str(BASE_DIR / "backend" / "resources" / "static_health" / "static_health_model.pt")
+    static_scaler_path: str = str(BASE_DIR / "backend" / "resources" / "static_health" / "feature_scaler.joblib")
+    static_feature_columns_path: str = str(BASE_DIR / "backend" / "resources" / "static_health" / "feature_columns.json")
+    static_label_mapping_path: str = str(BASE_DIR / "backend" / "resources" / "static_health" / "label_mapping.json")
+    static_training_config_path: str = str(BASE_DIR / "backend" / "resources" / "static_health" / "training_config.json")
+    static_metrics_path: str = str(BASE_DIR / "backend" / "resources" / "static_health" / "metrics.json")
     train_batch_size: int = 16
     train_epochs: int = 40
     train_learning_rate: float = 1e-3
@@ -250,6 +361,8 @@ class Settings(BaseSettings):
 
         if bootstrap.port:
             self.serial_port = bootstrap.port
+        if not self.serial_response_port and bootstrap.port:
+            self.serial_response_port = bootstrap.port
         if bootstrap.baudrate:
             self.serial_baudrate = bootstrap.baudrate
         if bootstrap.mac_address:
@@ -407,6 +520,19 @@ class Settings(BaseSettings):
     @property
     def mock_runtime_enabled(self) -> bool:
         return self.runtime_mode == "mock" and self.use_mock_data
+
+    @property
+    def resolved_fall_detection_target_device_mac(self) -> str:
+        configured = (self.fall_detection_target_device_mac or "").strip().upper()
+        legacy_default = "CAMERA-192.168.8.254"
+        if configured and configured != legacy_default:
+            return configured
+
+        camera_ip = self.camera_ip.strip() or self.camera2_ip.strip()
+        if camera_ip:
+            return f"CAMERA-{camera_ip}".upper()
+
+        return configured or legacy_default
 
 
 @lru_cache(maxsize=1)

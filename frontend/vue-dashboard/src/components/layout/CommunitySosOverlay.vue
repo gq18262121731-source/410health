@@ -26,7 +26,12 @@ const deviceName = computed(() => {
 
 const elderName = computed(() => {
   const value = props.alarm?.metadata?.elder_name;
-  return typeof value === "string" && value.trim() ? value : "未归属设备";
+  return typeof value === "string" && value.trim() ? value : "未绑定老人";
+});
+
+const apartment = computed(() => {
+  const value = props.alarm?.metadata?.apartment;
+  return typeof value === "string" && value.trim() ? value : "待确认";
 });
 
 const triggeredAt = computed(() => {
@@ -48,8 +53,12 @@ const triggeredAt = computed(() => {
 
         <div class="sos-overlay__grid">
           <article class="sos-card">
-            <span>老人/设备</span>
+            <span>老人 / 设备</span>
             <strong>{{ elderName }} / {{ deviceName }}</strong>
+          </article>
+          <article class="sos-card">
+            <span>房间 / 位置</span>
+            <strong>{{ apartment }}</strong>
           </article>
           <article class="sos-card">
             <span>触发方式</span>

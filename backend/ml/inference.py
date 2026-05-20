@@ -137,14 +137,9 @@ class HealthInferenceEngine:
     def _resolve_device(self) -> torch.device:
         requested = self.settings.model_device
         if requested == "auto":
-            if torch.cuda.is_available():
-                device = torch.device("cuda")
-            else:
-                device = torch.device("cpu")
+            device = self._safe_auto_device()
         elif requested == "cuda":
-            if not torch.cuda.is_available():
-                raise InferenceError("CUDA was requested but is not available in the current runtime")
-            device = torch.device("cuda")
+            device = self._safe_cuda_device(required=True)
         else:
             device = torch.device("cpu")
 
@@ -153,3 +148,23 @@ class HealthInferenceEngine:
         else:
             LOGGER.info("Health inference will use CPU device")
         return device
+
+    def _safe_auto_device(self) -> torch.device:
+        device = self._safe_cuda_device(required=False)
+        return device if device is not None else torch.device("cpu")
+
+    def _safe_cuda_device(self, *, required: bool) -> torch.device | None:
+        if not torch.cuda.is_available():
+            if required:
+                raise InferenceError("CUDA was requested but is not available in the current runtime")
+            return None
+        try:
+            # Probe a tiny CUDA allocation so we don't select a GPU that is
+            # visible but unusable for the installed torch build.
+            torch.zeros(1, device="cuda")
+            return torch.device("cuda")
+        except Exception as exc:
+            if required:
+                raise InferenceError(f"CUDA was requested but is not usable: {exc}") from exc
+            LOGGER.warning("CUDA detected but not usable for health inference; falling back to CPU: %s", exc)
+            return None

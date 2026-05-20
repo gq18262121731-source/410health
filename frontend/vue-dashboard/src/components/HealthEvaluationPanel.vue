@@ -60,17 +60,14 @@ const activeRiskLevel = computed(
 );
 
 const riskState = computed(() => normalizeRisk(activeRiskLevel.value));
-
 const reportRecommendations = computed(() => {
   if (props.generatedReport?.recommendations?.length) return props.generatedReport.recommendations;
   return props.reportSummary?.recommendations ?? [];
 });
-
 const notableEvents = computed(() => {
   if (props.generatedReport?.key_findings?.length) return props.generatedReport.key_findings;
   return props.reportSummary?.notable_events ?? [];
 });
-
 const riskFlags = computed(() => props.generatedReport?.risk_flags ?? props.evaluation?.risk_flags ?? []);
 
 const reportMeta = computed(() => {
@@ -297,8 +294,9 @@ const metricEntries = computed(() => {
   gap: 8px;
 }
 
-.evaluation-hero {
-  grid-template-columns: minmax(0, 1.35fr) 280px;
+.evaluation-hero,
+.evaluation-two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .overview-grid {
@@ -311,9 +309,9 @@ const metricEntries = computed(() => {
 .report-card,
 .meta-card,
 .metric-report-card {
-  border: 1px solid rgba(56, 189, 248, 0.10);
+  border: 1px solid var(--line-medium);
   border-radius: 22px;
-  background: rgba(13, 22, 38, 0.90);
+  background: #ffffff;
   padding: 18px;
 }
 
@@ -359,18 +357,18 @@ const metricEntries = computed(() => {
 }
 
 .evaluation-risk-card.tone-critical {
-  border-color: rgba(248, 113, 113, 0.24);
-  background: linear-gradient(180deg, rgba(33, 18, 30, 0.96), rgba(52, 20, 28, 0.92));
+  border-color: rgba(248, 113, 113, 0.3);
+  background: #fef2f2;
 }
 
 .evaluation-risk-card.tone-warning {
-  border-color: rgba(251, 146, 60, 0.22);
-  background: linear-gradient(180deg, rgba(28, 20, 30, 0.96), rgba(52, 30, 16, 0.92));
+  border-color: rgba(251, 146, 60, 0.28);
+  background: #fff7ed;
 }
 
 .evaluation-risk-card.tone-stable {
-  border-color: rgba(52, 211, 153, 0.22);
-  background: linear-gradient(180deg, rgba(14, 24, 34, 0.96), rgba(16, 42, 38, 0.92));
+  border-color: rgba(52, 211, 153, 0.28);
+  background: #ecfdf5;
 }
 
 .score-card {
@@ -396,12 +394,12 @@ const metricEntries = computed(() => {
 }
 
 .score-card.emphasis {
-  border-color: rgba(34, 211, 238, 0.20);
-  background: linear-gradient(180deg, rgba(12, 30, 42, 0.98), rgba(14, 22, 36, 0.92));
+  border-color: rgba(37, 99, 235, 0.22);
+  background: #eff6ff;
 }
 
 .score-card.emphasis strong {
-  color: #67e8f9;
+  color: #1d4ed8;
 }
 
 .report-head {

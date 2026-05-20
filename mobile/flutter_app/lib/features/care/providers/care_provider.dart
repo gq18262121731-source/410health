@@ -21,6 +21,8 @@ class CareProvider extends ChangeNotifier {
   Timer? _refreshTimer;
   bool _isFetching = false;
   bool _isMutating = false;
+  bool _disposed = false;
+  int _autoRefreshEpoch = 0;
 
   CareProvider(this._repository, this._sessionManager);
 
@@ -30,20 +32,38 @@ class CareProvider extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   bool get isMutating => _isMutating;
 
+  void _notifyIfAlive() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
   void updateDependencies(
       CareRepository repository, SessionManager sessionManager) {
     _repository = repository;
     _sessionManager = sessionManager;
   }
 
-  Future<void> fetchProfile({bool silent = false}) async {
+  Future<void> fetchProfile({
+    bool silent = false,
+    bool notify = true,
+  }) async {
     if (_isFetching) return;
+    if (!_sessionManager.isAuthenticated) {
+      stopAutoRefresh();
+      _profile = null;
+      _familyDirectory = null;
+      _status = CareLoadStatus.initial;
+      _errorMessage = null;
+      if (notify) _notifyIfAlive();
+      return;
+    }
     _isFetching = true;
 
     final shouldShowLoading = !silent || _profile == null;
     if (shouldShowLoading) {
       _status = CareLoadStatus.loading;
-      notifyListeners();
+      if (notify) _notifyIfAlive();
     }
 
     try {
@@ -60,16 +80,25 @@ class CareProvider extends ChangeNotifier {
       }
       _errorMessage = null;
       _status = CareLoadStatus.loaded;
-    } catch (_) {
-      _errorMessage = '获取监护数据失败';
-      if (_profile == null || !silent) {
+    } catch (error) {
+      if (_isUnauthorized(error)) {
+        stopAutoRefresh();
+        await _sessionManager.clearSession();
+        _profile = null;
+        _familyDirectory = null;
+        _errorMessage = '登录状态已失效，请重新登录';
         _status = CareLoadStatus.error;
+      } else {
+        _errorMessage = '获取监护数据失败';
+        if (_profile == null || !silent) {
+          _status = CareLoadStatus.error;
+        }
       }
     } finally {
       _isFetching = false;
     }
 
-    notifyListeners();
+    if (notify) _notifyIfAlive();
   }
 
   Future<bool> bindSelfDevice(
@@ -77,54 +106,67 @@ class CareProvider extends ChangeNotifier {
     String? deviceName,
   }) async {
     if (_isMutating) return false;
+    stopAutoRefresh();
     _isMutating = true;
     _errorMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       await _repository.bindSelfDevice(
         macAddress: macAddress,
         deviceName: deviceName,
       );
-      await fetchProfile(silent: _profile != null);
+      await fetchProfile(silent: true, notify: false);
       return true;
     } catch (error) {
       _errorMessage = _extractApiErrorMessage(error, '绑定手环失败，请稍后重试');
       return false;
     } finally {
       _isMutating = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
   Future<bool> unbindSelfDevice() async {
     if (_isMutating) return false;
+    stopAutoRefresh();
     _isMutating = true;
     _errorMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       await _repository.unbindSelfDevice();
-      await fetchProfile(silent: _profile != null);
+      await fetchProfile(silent: true, notify: false);
       return true;
     } catch (error) {
       _errorMessage = _extractApiErrorMessage(error, '解绑设备失败，请稍后重试');
       return false;
     } finally {
       _isMutating = false;
-      notifyListeners();
+      _notifyIfAlive();
     }
   }
 
-  void startAutoRefresh({Duration interval = const Duration(seconds: 1)}) {
+  void startAutoRefresh({Duration interval = const Duration(seconds: 4)}) {
+    if (!_sessionManager.isAuthenticated) {
+      return;
+    }
     stopAutoRefresh();
-    Future.microtask(() => fetchProfile(silent: _profile != null));
+    final epoch = ++_autoRefreshEpoch;
+    Future.microtask(() {
+      if (!_disposed && _autoRefreshEpoch == epoch && _refreshTimer != null) {
+        fetchProfile(silent: _profile != null);
+      }
+    });
     _refreshTimer = Timer.periodic(interval, (_) {
-      fetchProfile(silent: true);
+      if (!_disposed && _autoRefreshEpoch == epoch) {
+        fetchProfile(silent: true);
+      }
     });
   }
 
   void stopAutoRefresh() {
+    _autoRefreshEpoch++;
     _refreshTimer?.cancel();
     _refreshTimer = null;
   }
@@ -157,6 +199,13 @@ class CareProvider extends ChangeNotifier {
       }
     }
     return fallback;
+  }
+
+  bool _isUnauthorized(Object error) {
+    if (error is DioException) {
+      return error.response?.statusCode == 401;
+    }
+    return error.toString().contains('401');
   }
 
   bool _shouldRefreshFamilyDirectory(List<String> relatedElderIds) {
@@ -222,6 +271,7 @@ class CareProvider extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     stopAutoRefresh();
     super.dispose();
   }

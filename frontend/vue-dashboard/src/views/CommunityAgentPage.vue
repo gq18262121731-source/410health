@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { Bot, RefreshCw, SendHorizontal, Sparkles, Square } from "lucide-vue-next";
-import { computed, toRef, watch } from "vue";
-import type { SessionUser } from "../api/client";
+import { Bot, ChevronDown, RefreshCw, SendHorizontal, Sparkles, Square } from "lucide-vue-next";
+import { computed, ref, toRef, watch } from "vue";
+import type { CommunityWorkflow, SessionUser } from "../api/client";
 import AgentMarkdownContent from "../components/agent/AgentMarkdownContent.vue";
 import AgentTracePanel from "../components/agent/AgentTracePanel.vue";
 import CommunityAgentAttachmentRenderer from "../components/agent/CommunityAgentAttachmentRenderer.vue";
@@ -11,14 +11,10 @@ import { useCommunityWorkspace } from "../composables/useCommunityWorkspace";
 
 const props = defineProps<{
   sessionUser: SessionUser;
-  /**
-   * Trigger refresh behavior when user re-clicks the nav entry,
-   * even if the route/hash doesn't change.
-   */
   refreshKey?: number;
 }>();
 
-const workspace = useCommunityWorkspace(toRef(props, "sessionUser"));
+const workspace = useCommunityWorkspace(toRef(props, "sessionUser"), { mode: "dashboard" });
 const workbench = useCommunityAgentWorkbench(
   () => workspace.deviceStatuses.value.map((item) => item.device_mac),
   () => workspace.selectedDeviceMac.value,
@@ -27,9 +23,7 @@ const workbench = useCommunityAgentWorkbench(
 watch(
   () => props.refreshKey,
   (key, prev) => {
-    if (key == null) return;
-    // Ignore the first run after mount; this page already initializes a clean state.
-    if (prev == null) return;
+    if (key == null || prev == null) return;
     workbench.clearConversationState();
     void workbench.loadContext();
   },
@@ -42,16 +36,58 @@ const headerBadges = computed(() => [
 ]);
 
 const sampleStatusText = computed(() => {
-  if (workbench.demoDataStatus.value?.enabled && workbench.demoDataStatus.value.subject_count) {
-    return `社区样本已准备 ${workbench.demoDataStatus.value.subject_count} 位对象`;
+  const status = workbench.demoDataStatus.value;
+  if (status?.enabled && status.subject_count) {
+    return `社区样本已就绪 ${status.subject_count} 位对象`;
   }
   return "社区样本等待刷新";
 });
 
 const quickSuggestions = computed(() => workbench.quickActions.value.slice(0, 4));
+const workflowOptions = computed(() => workbench.quickActions.value);
+const selectedWorkflow = ref<CommunityWorkflow>("free_chat");
 
-function submitFreeChat() {
-  void workbench.submit("free_chat");
+const subjectSelectionValue = computed(() => {
+  if (workbench.selectedScope.value === "community") return "community";
+  return workbench.selectedElderId.value ? `elder:${workbench.selectedElderId.value}` : "elder:";
+});
+
+const selectedWorkflowPrompt = computed(
+  () => workflowOptions.value.find((item) => item.workflow === selectedWorkflow.value)?.prompt ?? "",
+);
+
+watch(
+  workflowOptions,
+  (actions) => {
+    if (!actions.length) {
+      selectedWorkflow.value = "free_chat";
+      return;
+    }
+    if (!actions.some((item) => item.workflow === selectedWorkflow.value)) {
+      selectedWorkflow.value = actions[0].workflow;
+    }
+  },
+  { immediate: true },
+);
+
+function updateSubjectSelection(value: string) {
+  if (value === "community") {
+    workbench.selectedScope.value = "community";
+    return;
+  }
+  if (value.startsWith("elder:")) {
+    workbench.selectedScope.value = "elder";
+    workbench.selectedElderId.value = value.slice("elder:".length);
+  }
+}
+
+function submitSuggestedWorkflow(workflow: CommunityWorkflow, prompt: string) {
+  void workbench.submit(workflow, prompt);
+}
+
+function submitSelectedWorkflow() {
+  const presetQuestion = workbench.question.value.trim() ? undefined : selectedWorkflowPrompt.value;
+  void workbench.submit(selectedWorkflow.value, presetQuestion);
 }
 </script>
 
@@ -60,75 +96,70 @@ function submitFreeChat() {
     <PageHeader
       eyebrow="社区智能体"
       title="社区智能体工作台"
-      description="围绕单个老人或整个社区，直接发起真实分析、图表整理、报告生成和综合建议。"
-      :meta="headerBadges"
+      description="围绕单个老人或整个社区，发起分析、整理图表与报告，并给出行动建议。"
     />
 
-    <section class="agent-shell">
+    <section class="agent-shell agent-shell--unified">
       <div class="agent-controls">
-          <div class="agent-toggle-group">
-            <button
-              type="button"
-              class="agent-toggle"
-              :class="{ 'agent-toggle--active': workbench.selectedScope.value === 'elder' }"
-              @click="workbench.selectedScope.value = 'elder'"
-            >
-              某位老人
-            </button>
-            <button
-              type="button"
-              class="agent-toggle"
-              :class="{ 'agent-toggle--active': workbench.selectedScope.value === 'community' }"
-              @click="workbench.selectedScope.value = 'community'"
-            >
-              整个社区
-            </button>
-          </div>
-
-          <div class="agent-toggle-group">
-            <button
-              type="button"
-              class="agent-toggle"
-              :class="{ 'agent-toggle--active': workbench.selectedWindow.value === 'day' }"
-              @click="workbench.selectedWindow.value = 'day'"
-            >
-              过去一天
-            </button>
-            <button
-              type="button"
-              class="agent-toggle"
-              :class="{ 'agent-toggle--active': workbench.selectedWindow.value === 'week' }"
-              @click="workbench.selectedWindow.value = 'week'"
-            >
-              过去一周
-            </button>
-          </div>
-
-          <label v-if="workbench.selectedScope.value === 'elder'" class="agent-select agent-select--wide">
-            <span>分析对象</span>
-            <select v-model="workbench.selectedElderId.value">
-              <option
-                v-for="subject in workbench.elderSubjects.value"
-                :key="subject.elder_id"
-                :value="subject.elder_id"
+        <div class="agent-filter-bar">
+          <label class="agent-filter-field">
+            <span class="agent-filter-field__label">分析对象</span>
+            <div class="agent-filter-field__control">
+              <select
+                :value="subjectSelectionValue"
+                @change="updateSubjectSelection(($event.target as HTMLSelectElement).value)"
               >
-                {{ subject.elder_name }} / {{ subject.apartment }}
-              </option>
-            </select>
+                <option value="community">整个社区</option>
+                <option
+                  v-for="subject in workbench.elderSubjects.value"
+                  :key="subject.elder_id"
+                  :value="`elder:${subject.elder_id}`"
+                >
+                  {{ subject.elder_name }} / {{ subject.apartment }}
+                </option>
+              </select>
+              <ChevronDown :size="16" />
+            </div>
           </label>
 
-          <label class="agent-select">
-            <span>分析模型</span>
-            <select v-model="workbench.selectedProvider.value">
-              <option value="auto">自动</option>
-              <option value="tongyi">Tongyi</option>
-              <option value="ollama">Ollama</option>
-            </select>
+          <label class="agent-filter-field">
+            <span class="agent-filter-field__label">时间范围</span>
+            <div class="agent-filter-field__control">
+              <select v-model="workbench.selectedWindow.value">
+                <option value="day">过去一天</option>
+                <option value="week">过去一周</option>
+              </select>
+              <ChevronDown :size="16" />
+            </div>
+          </label>
+
+          <label class="agent-filter-field">
+            <span class="agent-filter-field__label">智能体能力</span>
+            <div class="agent-filter-field__control">
+              <select v-model="selectedWorkflow">
+                <option v-for="action in workflowOptions" :key="action.workflow" :value="action.workflow">
+                  {{ action.label }}
+                </option>
+              </select>
+              <ChevronDown :size="16" />
+            </div>
+          </label>
+
+          <label class="agent-filter-field">
+            <span class="agent-filter-field__label">分析模型</span>
+            <div class="agent-filter-field__control">
+              <select v-model="workbench.selectedProvider.value">
+                <option value="auto">自动选择</option>
+                <option value="tongyi">Tongyi</option>
+                <option value="ollama">Ollama</option>
+              </select>
+              <ChevronDown :size="16" />
+            </div>
           </label>
 
           <button
             type="button"
-            class="ghost-btn"
+            class="ghost-btn agent-refresh-btn"
             :disabled="workbench.refreshingSamples.value"
             @click="workbench.refreshCommunitySamples"
           >
@@ -136,6 +167,7 @@ function submitFreeChat() {
             {{ workbench.refreshingSamples.value ? "刷新中..." : "刷新社区样本" }}
           </button>
         </div>
+      </div>
 
       <div class="agent-chat-surface">
         <div class="agent-chat-surface__head">
@@ -154,16 +186,17 @@ function submitFreeChat() {
             <div class="agent-empty-state__icon">
               <Sparkles :size="20" />
             </div>
-            <h2>像真正的大模型一样，直接发起一次分析</h2>
-            <p>选好分析对象和时间窗口后输入问题。执行过程、工具调用、图表和报告都会在同一条回答里展开。</p>
+            <h2>从一个明确能力开始，让智能体直接进入分析</h2>
+            <p>上方下拉栏用于固定分析对象、时间范围、智能体能力和模型来源，避免来回切换按钮。</p>
             <div class="agent-empty-state__actions">
               <button
                 v-for="action in quickSuggestions"
                 :key="action.workflow"
                 type="button"
-                class="agent-suggestion-chip"
-                @click="workbench.submit(action.workflow, action.prompt)"
+                class="agent-quick-pill"
+                @click="submitSuggestedWorkflow(action.workflow, action.prompt)"
               >
+                <Sparkles :size="14" />
                 {{ action.label }}
               </button>
             </div>
@@ -217,68 +250,47 @@ function submitFreeChat() {
             </div>
           </article>
         </div>
-        
-        <!-- 添加底部间距，为固定的输入框留出空间 -->
-        <div class="agent-chat-spacer"></div>
       </div>
+
+      <footer class="agent-composer">
+        <label class="agent-composer__field">
+          <textarea
+            v-model="workbench.question.value"
+            rows="3"
+            :placeholder="
+              workbench.selectedScope.value === 'elder'
+                ? '例如：请分析这位老人过去一周的风险变化、异常原因和建议动作。'
+                : '例如：请总结社区过去一天的高风险对象、告警热点和排班建议。'
+            "
+          />
+        </label>
+
+        <div class="agent-composer__footer">
+          <div class="agent-composer__actions">
+            <button
+              type="button"
+              class="agent-stop-btn"
+              :class="{ 'agent-stop-btn--active': workbench.running.value }"
+              :disabled="!workbench.running.value"
+              @click="workbench.cancel"
+            >
+              <Square :size="15" />
+              停止
+            </button>
+            <button
+              type="button"
+              class="agent-start-btn"
+              :class="{ 'agent-start-btn--running': workbench.running.value }"
+              :disabled="workbench.running.value || !workbench.canAnalyze.value"
+              @click="submitSelectedWorkflow"
+            >
+              <SendHorizontal :size="16" />
+              {{ workbench.running.value ? "分析中..." : "开始分析" }}
+            </button>
+          </div>
+        </div>
+      </footer>
     </section>
-
-    <!-- 将输入框放在页面内容区域，不再固定 -->
-    <footer class="agent-composer">
-      <div class="agent-composer__quick">
-        <button
-          v-for="action in quickSuggestions"
-          :key="action.workflow"
-          type="button"
-          class="agent-quick-pill"
-          @click="workbench.submit(action.workflow, action.prompt)"
-        >
-          <Sparkles :size="14" />
-          {{ action.label }}
-        </button>
-      </div>
-
-      <label class="agent-composer__field">
-        <textarea
-          v-model="workbench.question.value"
-          rows="3"
-          :placeholder="
-            workbench.selectedScope.value === 'elder'
-              ? '例如：请分析这位老人过去一周的风险变化、异常原因和建议动作。'
-              : '例如：请总结社区过去一天的高风险对象、告警热点和排班建议。'
-          "
-        />
-      </label>
-
-      <div class="agent-composer__footer">
-        <div class="agent-badge-row">
-          <span v-for="badge in headerBadges" :key="`footer-${badge}`" class="summary-badge">{{ badge }}</span>
-        </div>
-
-        <div class="agent-composer__actions">
-          <button 
-            type="button" 
-            class="agent-stop-btn" 
-            :class="{ 'agent-stop-btn--active': workbench.running.value }"
-            :disabled="!workbench.running.value" 
-            @click="workbench.cancel"
-          >
-            <Square :size="15" />
-            停止
-          </button>
-          <button
-            type="button"
-            class="agent-start-btn"
-            :class="{ 'agent-start-btn--running': workbench.running.value }"
-            :disabled="workbench.running.value || !workbench.canAnalyze.value"
-            @click="submitFreeChat"
-          >
-            <SendHorizontal :size="16" />
-            {{ workbench.running.value ? "分析中..." : "开始分析" }}
-          </button>
-        </div>
-      </div>
-    </footer>
   </section>
 </template>
 
@@ -292,9 +304,8 @@ function submitFreeChat() {
 }
 
 .agent-page {
-  min-height: calc(100vh - 48px);
   align-content: start;
-  padding-bottom: 40px;
+  padding-bottom: 12px;
   max-width: 100%;
   overflow-x: hidden;
 }
@@ -310,88 +321,79 @@ function submitFreeChat() {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
 }
 
+.agent-shell--unified {
+  gap: 18px;
+}
+
 .agent-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  align-items: stretch;
+  position: sticky;
+  top: 16px;
+  z-index: 6;
 }
 
-.agent-toggle-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  border-radius: 16px;
-  padding: 6px;
-  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-  border: 2px solid #e2e8f0;
-}
-
-.agent-toggle {
-  border: none;
-  min-width: 140px;
-  border-radius: 12px;
-  padding: 14px 24px;
-  background: transparent;
-  color: #64748b;
-  font-weight: 600;
-  font-size: 0.95rem;
-  cursor: pointer;
-  transition: all 200ms ease;
-  white-space: nowrap;
-}
-
-.agent-toggle:hover {
-  background: rgba(255, 255, 255, 0.6);
-  color: #475569;
-}
-
-.agent-toggle--active {
-  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
-  color: #1e40af;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
-  font-weight: 700;
-}
-
-.agent-select {
-  min-width: 240px;
+.agent-filter-bar {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  gap: 14px;
+  align-items: end;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid #dbe4f0;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(14px);
 }
 
-.agent-select--wide {
-  min-width: min(420px, 100%);
+.agent-filter-field {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
 }
 
-.agent-select span {
-  color: #475569;
-  font-size: 0.9rem;
-  font-weight: 600;
+.agent-filter-field__label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.02em;
 }
 
-.agent-select select {
+.agent-filter-field__control {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.agent-filter-field__control select {
   width: 100%;
-  min-height: 52px;
-  padding: 0 18px;
-  border-radius: 12px;
-  border: 2px solid #cbd5e1;
-  background: #ffffff;
+  min-height: 54px;
+  padding: 0 46px 0 16px;
+  border-radius: 16px;
+  border: 2px solid #d7dfeb;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
   color: #0f172a;
-  font-size: 0.95rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 200ms ease;
+  font: inherit;
+  font-size: 0.94rem;
+  font-weight: 600;
+  appearance: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
-.agent-select select:focus {
+.agent-filter-field__control select:focus {
   outline: none;
   border-color: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.agent-filter-field__control svg {
+  position: absolute;
+  right: 16px;
+  color: #64748b;
+  pointer-events: none;
 }
 
 .ghost-btn {
   padding: 12px 20px;
-  border-radius: 12px;
+  border-radius: 16px;
   border: 2px solid #cbd5e1;
   background: #ffffff;
   color: #475569;
@@ -416,11 +418,16 @@ function submitFreeChat() {
   cursor: not-allowed;
 }
 
+.agent-refresh-btn {
+  align-self: end;
+  min-height: 54px;
+}
+
 .agent-chat-surface {
-  padding: 12px 4px 0;
-  min-height: 50vh;
+  padding: 6px 4px 0;
+  min-height: clamp(320px, 44vh, 520px);
   display: grid;
-  gap: 24px;
+  gap: 20px;
 }
 
 .agent-chat-surface__head {
@@ -428,7 +435,7 @@ function submitFreeChat() {
   justify-content: space-between;
   gap: 20px;
   align-items: center;
-  padding-bottom: 16px;
+  padding-bottom: 12px;
   border-bottom: 2px solid #e2e8f0;
 }
 
@@ -469,21 +476,20 @@ function submitFreeChat() {
   border: 2px solid #fca5a5;
 }
 
-.agent-message-list {
-  padding-top: 8px;
-}
-
-.agent-chat-spacer {
-  height: 0;
-}
-
 .agent-empty-state {
-  min-height: 400px;
+  min-height: clamp(260px, 34vh, 320px);
   display: grid;
-  place-content: center;
-  gap: 20px;
+  place-content: start center;
+  gap: 16px;
   text-align: center;
-  padding: 40px 20px;
+  padding: 16px 20px 4px;
+}
+
+.agent-empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
 }
 
 .agent-empty-state__icon {
@@ -511,38 +517,6 @@ function submitFreeChat() {
   max-width: 600px;
   line-height: 1.8;
   font-size: 1rem;
-}
-
-.agent-empty-state__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  justify-content: center;
-  margin-top: 12px;
-}
-
-.agent-suggestion-chip {
-  border: 2px solid #cbd5e1;
-  border-radius: 999px;
-  padding: 12px 20px;
-  background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
-  color: #475569;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  cursor: pointer;
-  transition: all 200ms ease;
-  font-weight: 600;
-  font-size: 0.9rem;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
-}
-
-.agent-suggestion-chip:hover {
-  transform: translateY(-2px);
-  border-color: #3b82f6;
-  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-  color: #1e40af;
-  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
 }
 
 .agent-message {
@@ -619,16 +593,11 @@ function submitFreeChat() {
   font-size: 1rem;
 }
 
-/* 输入框样式 - 不再固定 */
 .agent-composer {
   display: grid;
-  gap: 14px;
-  padding: 20px;
-  margin-top: 24px;
-  border-radius: 20px;
-  border: 2px solid #e2e8f0;
-  background: #ffffff;
-  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid #e2e8f0;
 }
 
 .agent-quick-pill {
@@ -679,7 +648,7 @@ function submitFreeChat() {
 
 .agent-composer__footer {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 20px;
   align-items: center;
 }
@@ -689,13 +658,6 @@ function submitFreeChat() {
   gap: 12px;
 }
 
-.agent-composer__quick {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-/* 美化停止按钮 */
 .agent-stop-btn {
   min-width: 110px;
   height: 52px;
@@ -735,7 +697,6 @@ function submitFreeChat() {
   transform: none;
 }
 
-/* 美化开始分析按钮 */
 .agent-start-btn {
   min-width: 160px;
   height: 52px;
@@ -773,9 +734,9 @@ function submitFreeChat() {
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
 }
 
-/* 动画效果 */
 @keyframes pulse-stop {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow: 0 6px 16px rgba(248, 113, 113, 0.25);
   }
   50% {
@@ -784,7 +745,8 @@ function submitFreeChat() {
 }
 
 @keyframes pulse-running {
-  0%, 100% {
+  0%,
+  100% {
     box-shadow: 0 6px 16px rgba(16, 185, 129, 0.35);
   }
   50% {
@@ -798,10 +760,11 @@ function submitFreeChat() {
   }
 
   .agent-controls {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
+    position: static;
+  }
+
+  .agent-filter-bar {
+    grid-template-columns: 1fr;
   }
 
   .agent-chat-surface__head,
@@ -816,11 +779,6 @@ function submitFreeChat() {
 
   .agent-message--user {
     justify-self: stretch;
-  }
-
-  .agent-select,
-  .agent-select--wide {
-    min-width: 100%;
   }
 
   .agent-composer__actions {

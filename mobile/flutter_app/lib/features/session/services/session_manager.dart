@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_model.dart';
 
 class SessionManager {
   static const _keyToken = 'auth_token';
   static const _keyUser = 'session_user';
+  static const _keyInstallationId = 'app_installation_id';
 
   final SharedPreferences _prefs;
 
@@ -33,4 +35,16 @@ class SessionManager {
   }
 
   bool get isAuthenticated => token != null && user != null;
+
+  String getOrCreateInstallationId() {
+    final existing = _prefs.getString(_keyInstallationId);
+    if (existing != null && existing.isNotEmpty) {
+      return existing;
+    }
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    final installationId = bytes.map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+    _prefs.setString(_keyInstallationId, installationId);
+    return installationId;
+  }
 }

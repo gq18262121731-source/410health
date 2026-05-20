@@ -1,11 +1,22 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { LogOut, ShieldCheck } from "lucide-vue-next";
+import {
+  Activity,
+  Cpu,
+  LogOut,
+  Network,
+  ShieldCheck,
+  SquareTerminal,
+  type LucideIcon,
+  UsersRound,
+} from "lucide-vue-next";
 import type { SessionUser } from "../../api/client";
+import type { PageKey } from "../../composables/useHashRouting";
 
 const props = defineProps<{
   sessionUser: SessionUser;
   activeAlarmCount: number;
+  activePage?: PageKey;
 }>();
 
 const emit = defineEmits<{
@@ -24,15 +35,70 @@ const roleLabel = computed(() => {
       return "成员账号";
   }
 });
+
+type HeaderPageMeta = {
+  label: string;
+  description: string;
+  eyebrow: string;
+  icon: LucideIcon;
+};
+
+const pageMetaMap: Record<string, HeaderPageMeta> = {
+  overview: {
+    label: "总览监护",
+    description: "实时曲线与告警",
+    eyebrow: "社区监护态势",
+    icon: Activity,
+  },
+  topology: {
+    label: "设备拓扑",
+    description: "老人、家属与设备关系",
+    eyebrow: "设备关系网络",
+    icon: Network,
+  },
+  members: {
+    label: "成员设备",
+    description: "注册、绑定与台账",
+    eyebrow: "成员设备管理",
+    icon: UsersRound,
+  },
+  agent: {
+    label: "智能体工作台",
+    description: "问答、分析与工具",
+    eyebrow: "社区智能体",
+    icon: SquareTerminal,
+  },
+  family: {
+    label: "家属视图",
+    description: "家庭成员查看页面",
+    eyebrow: "家属协同查看",
+    icon: Cpu,
+  },
+};
+
+const activePageMeta = computed<HeaderPageMeta>(() => {
+  if (props.activePage && pageMetaMap[props.activePage]) {
+    return pageMetaMap[props.activePage];
+  }
+  return {
+    label: "智慧康养健康监测平台",
+    description: "社区监护、拓扑、成员设备等智能体分区协作",
+    eyebrow: "AIoT Care Console",
+    icon: Activity,
+  };
+});
 </script>
 
 <template>
   <header class="modern-global-header">
     <div class="modern-global-header__brand">
-      <div class="modern-global-header__icon">护</div>
+      <div class="modern-global-header__icon">
+        <component :is="activePageMeta.icon" :size="22" />
+      </div>
       <div class="modern-global-header__text">
-        <p class="modern-global-header__eyebrow">AIoT Care Console</p>
-        <h1 class="modern-global-header__title">智慧康养健康监测平台</h1>
+        <p class="modern-global-header__eyebrow">{{ activePageMeta.eyebrow }}</p>
+        <h1 class="modern-global-header__title">{{ activePageMeta.label }}</h1>
+        <p class="modern-global-header__description">{{ activePageMeta.description }}</p>
       </div>
     </div>
 
@@ -109,6 +175,13 @@ const roleLabel = computed(() => {
   color: #0f172a;
   letter-spacing: -0.02em;
   line-height: 1.2;
+}
+
+.modern-global-header__description {
+  margin: 0;
+  font-size: 0.84rem;
+  color: #64748b;
+  line-height: 1.45;
 }
 
 .modern-global-header__actions {

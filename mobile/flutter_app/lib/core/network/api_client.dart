@@ -42,14 +42,23 @@ class ApiClient {
     _dio.options.baseUrl = _endpointConfig.apiBaseUrl;
   }
 
-  Future<Response> get(String path, {Map<String, dynamic>? queryParameters}) {
+  Future<Response> get(
+    String path, {
+    Map<String, dynamic>? queryParameters,
+    Options? options,
+  }) {
     _syncBaseUrl();
-    return _dio.get(path, queryParameters: queryParameters);
+    return _dio.get(path, queryParameters: queryParameters, options: options);
   }
 
   Future<Response> post(String path, {dynamic data, Options? options}) {
     _syncBaseUrl();
     return _dio.post(path, data: data, options: options);
+  }
+
+  Future<Response> delete(String path, {dynamic data, Options? options}) {
+    _syncBaseUrl();
+    return _dio.delete(path, data: data, options: options);
   }
 
   Future<Response> postStream(String path, {dynamic data}) {

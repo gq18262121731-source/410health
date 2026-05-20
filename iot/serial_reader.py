@@ -148,14 +148,20 @@ class SerialGatewayReader:
             raise RuntimeError("pyserial is not installed; serial collection is unavailable.")
 
         current_port: str | None = None
+        failure_signature: tuple[str, str, str] | None = None
+        consecutive_failures = 0
+        next_delay_seconds = reconnect_delay_seconds
         while True:
             selected_port: str | None = None
             try:
                 selected_port = self.detect_port(current_port or port, detection_keywords)
-                if selected_port != current_port:
-                    logger.info("Serial collector connected on %s", selected_port)
-                current_port = selected_port
                 with serial.Serial(port=selected_port, baudrate=baudrate, timeout=1) as connection:
+                    if selected_port != current_port:
+                        logger.info("Serial collector connected on %s", selected_port)
+                    current_port = selected_port
+                    failure_signature = None
+                    consecutive_failures = 0
+                    next_delay_seconds = reconnect_delay_seconds
                     self._stream_connection(
                         connection,
                         collection_strategy=collection_strategy,
@@ -177,14 +183,18 @@ class SerialGatewayReader:
                 raise
             except Exception as exc:
                 retry_target = selected_port or current_port or port or "auto-detect"
-                logger.warning(
-                    "Serial collector unavailable on %s, retrying detection in %.1fs: %s",
-                    retry_target,
-                    reconnect_delay_seconds,
-                    exc,
-                )
+                signature = (str(retry_target).upper(), type(exc).__name__, str(exc))
+                consecutive_failures = consecutive_failures + 1 if signature == failure_signature else 1
+                failure_signature = signature
+                next_delay_seconds = min(max(reconnect_delay_seconds, 1.0) * (2 ** min(consecutive_failures - 1, 4)), 15.0)
+                log_message = "Serial collector unavailable on %s, retrying detection in %.1fs"
+                log_args = (retry_target, next_delay_seconds)
+                if consecutive_failures == 1 or consecutive_failures in {2, 4, 8, 16}:
+                    logger.warning(f"{log_message} (attempt %s): %s", *log_args, consecutive_failures, exc)
+                else:
+                    logger.debug(f"{log_message} (attempt %s): %s", *log_args, consecutive_failures, exc)
                 current_port = None
-                time.sleep(reconnect_delay_seconds)
+                time.sleep(next_delay_seconds)
 
     def _stream_connection(
         self,

@@ -1,17 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from "vue";
-import type {
-  AgentDeviceHealthReport,
-  CareAccessProfile,
-  CareHealthEvaluationSummary,
-  CareHealthReportSummary,
-  HealthSample,
-  SessionUser,
-} from "../api/client";
 import { ApiError, api } from "../api/client";
-import AlarmEscalationPanel from "../components/AlarmEscalationPanel.vue";
-import AssistantPanel from "../components/AssistantPanel.vue";
-import HealthEvaluationPanel from "../components/HealthEvaluationPanel.vue";
+import { LogOut, ShieldCheck } from "lucide-vue-next";
+import type { HealthSample, SessionUser } from "../api/client";
+import CameraMonitorCard from "../components/CameraMonitorCard.vue";
+import CameraRegistrationPanel from "../components/CameraRegistrationPanel.vue";
 import PageHeader from "../components/layout/PageHeader.vue";
 import { useCareDirectoryDashboard } from "../composables/useCareDirectoryDashboard";
 import { useDeviceTrend } from "../composables/useDeviceTrend";
@@ -51,16 +44,22 @@ const {
   dashboardLoading,
   devices,
   elders,
-  lastSyncAt,
   latest,
 } = useCareDirectoryDashboard(sessionUser);
 
 const selectedFamilyId = ref("");
 const selectedDeviceMac = ref("");
-const accessProfile = ref<CareAccessProfile | null>(null);
-const generatedHealthReport = ref<AgentDeviceHealthReport | null>(null);
-const reportLoading = ref(false);
-const reportError = ref("");
+const cameraCardKey = ref(0);
+
+const targetUserCreateBusy = ref(false);
+const targetUserCreateMessage = ref("");
+const targetUserCreateError = ref("");
+const targetUserCreateForm = ref({
+  displayName: "",
+  group: "default",
+  note: "",
+  files: [] as File[],
+});
 
 const { focusLatest, focusTrend } = useDeviceTrend({
   selectedDeviceMac,
@@ -68,124 +67,236 @@ const { focusLatest, focusTrend } = useDeviceTrend({
   pollIntervalMs: 15000,
 });
 
+function handleCameraSourceChange() {
+  cameraCardKey.value += 1;
+}
+
+function formatFamilyError(error: unknown, fallback: string) {
+  if (error instanceof ApiError && error.detail) return error.detail;
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
+function onTargetUserFilesChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  targetUserCreateForm.value.files = Array.from(input.files ?? []);
+}
+
+const selectedTargetPhotoSummary = computed(() => {
+  if (!targetUserCreateForm.value.files.length) return "未选择照片";
+  if (targetUserCreateForm.value.files.length === 1) {
+    return targetUserCreateForm.value.files[0].name;
+  }
+  return `${targetUserCreateForm.value.files.length} 张照片已选择`;
+});
+
+async function submitFamilyTargetUserRegistration() {
+  targetUserCreateError.value = "";
+  targetUserCreateMessage.value = "";
+  const displayName = targetUserCreateForm.value.displayName.trim();
+  if (!displayName) {
+    targetUserCreateError.value = "请先填写目标老人姓名。";
+    return;
+  }
+  if (!targetUserCreateForm.value.files.length) {
+    targetUserCreateError.value = "请至少上传 1 张目标老人照片。";
+    return;
+  }
+
+  targetUserCreateBusy.value = true;
+  try {
+    const created = await api.createTargetUser({
+      display_name: displayName,
+      group: targetUserCreateForm.value.group.trim() || "default",
+      note: targetUserCreateForm.value.note.trim(),
+      files: targetUserCreateForm.value.files,
+    });
+    targetUserCreateMessage.value = created.warnings.length
+      ? `目标用户已创建，但有提示：${created.warnings.join("；")}`
+      : `目标用户已创建：${created.user.display_name}`;
+    targetUserCreateForm.value = {
+      displayName: "",
+      group: "default",
+      note: "",
+      files: [],
+    };
+  } catch (error) {
+    targetUserCreateError.value = formatFamilyError(
+      error,
+      "目标用户照片注册失败，请稍后重试。",
+    );
+  } finally {
+    targetUserCreateBusy.value = false;
+  }
+}
+
 const families = computed(() =>
   sessionUser.value.role === "family"
-    ? allFamiliesRaw.value.filter((family) => family.id === sessionUser.value.family_id)
+    ? allFamiliesRaw.value.filter(
+        (family) => family.id === sessionUser.value.family_id,
+      )
     : allFamiliesRaw.value,
 );
-const selectedFamily = computed(() =>
-  families.value.find((family) => family.id === selectedFamilyId.value) ?? families.value[0] ?? null,
+
+const selectedFamily = computed(
+  () =>
+    families.value.find((family) => family.id === selectedFamilyId.value) ??
+    families.value[0] ??
+    null,
 );
+
 const elderRows = computed<ElderRow[]>(() =>
   elders.value.map((elder) => {
     const rawDeviceMac = elder.device_macs?.[0] ?? elder.device_mac ?? "";
     const deviceRecord = rawDeviceMac
-      ? devices.value.find((device) => device.mac_address === rawDeviceMac) ?? null
+      ? devices.value.find((device) => device.mac_address === rawDeviceMac) ??
+        null
       : null;
     const exposeDevice =
       deviceRecord != null
-        ? deviceRecord.ingest_mode === "mock" || deviceRecord.bind_status === "bound"
+        ? deviceRecord.ingest_mode === "mock" ||
+          deviceRecord.bind_status === "bound"
         : false;
     const deviceMac = exposeDevice ? rawDeviceMac : "";
     const sample = deviceMac ? latest.value[deviceMac] ?? null : null;
     const risk = evaluateRisk(
       sample,
-      deviceMac ? (deviceRecord?.status ?? "unknown") : "unbound",
+      deviceMac ? deviceRecord?.status ?? "unknown" : "unbound",
     );
     const familyNames = elder.family_ids
       .map((id) => allFamiliesRaw.value.find((family) => family.id === id)?.name)
       .filter(Boolean)
       .join(" / ");
-    return { id: elder.id, name: elder.name, apartment: elder.apartment, deviceMac, familyNames, risk, sample };
+    return {
+      id: elder.id,
+      name: elder.name,
+      apartment: elder.apartment,
+      deviceMac,
+      familyNames,
+      risk,
+      sample,
+    };
   }),
 );
+
 const visibleRows = computed(() =>
   sessionUser.value.role === "family" && selectedFamily.value
-    ? elderRows.value.filter((row) => new Set(selectedFamily.value.elder_ids ?? []).has(row.id))
+    ? elderRows.value.filter((row) =>
+        new Set(selectedFamily.value?.elder_ids ?? []).has(row.id),
+      )
     : elderRows.value,
 );
+
 const focusRow = computed(
   () =>
-    visibleRows.value.find((row) => row.deviceMac === selectedDeviceMac.value)
-    ?? elderRows.value.find((row) => row.deviceMac === selectedDeviceMac.value)
-    ?? null,
+    visibleRows.value.find((row) => row.deviceMac === selectedDeviceMac.value) ??
+    elderRows.value.find((row) => row.deviceMac === selectedDeviceMac.value) ??
+    null,
 );
+
 const focusAlarm = computed(
-  () => alarms.value.find((alarm) => !alarm.acknowledged && alarm.device_mac === selectedDeviceMac.value) ?? null,
+  () =>
+    alarms.value.find(
+      (alarm) =>
+        !alarm.acknowledged && alarm.device_mac === selectedDeviceMac.value,
+    ) ?? null,
 );
-const currentHealthEvaluation = computed<CareHealthEvaluationSummary | null>(() => {
-  if (!selectedDeviceMac.value || !accessProfile.value) return null;
-  return accessProfile.value.health_evaluations.find((item) => item.device_mac === selectedDeviceMac.value) ?? null;
-});
-const currentHealthReportSummary = computed<CareHealthReportSummary | null>(() => {
-  if (!selectedDeviceMac.value || !accessProfile.value) return null;
-  return accessProfile.value.health_reports.find((item) => item.device_mac === selectedDeviceMac.value) ?? null;
-});
-const hasBoundDevice = computed(() => {
-  if (sessionUser.value.role === "family") {
-    return visibleRows.value.some((row) => Boolean(row.deviceMac));
-  }
-  return Boolean(focusRow.value?.deviceMac);
-});
-const focusRiskLabel = computed(() => (focusRow.value ? riskLabel(focusRow.value.risk) : "未选择对象"));
+
+const hasBoundDevice = computed(() =>
+  visibleRows.value.some((row) => Boolean(row.deviceMac)),
+);
+const boundSubjectCount = computed(
+  () => visibleRows.value.filter((row) => row.deviceMac).length,
+);
+const unboundSubjectCount = computed(
+  () => visibleRows.value.filter((row) => !row.deviceMac).length,
+);
+const highRiskCount = computed(
+  () => visibleRows.value.filter((row) => row.risk === "high").length,
+);
+
+const focusRiskLabel = computed(() =>
+  focusRow.value ? riskLabel(focusRow.value.risk) : "未选择对象",
+);
 const focusTone = computed<DemoTone>(() => {
   if (!hasBoundDevice.value) return "neutral";
   if (focusAlarm.value) return "critical";
-  if (focusRow.value?.risk === "high" || focusRow.value?.risk === "medium") return "warning";
+  if (
+    focusRow.value?.risk === "high" ||
+    focusRow.value?.risk === "medium"
+  ) {
+    return "warning";
+  }
   if (focusRow.value?.risk === "low") return "stable";
   return "neutral";
 });
-const focusUpdatedLabel = computed(() =>
-  displayFocusLatest.value ? new Date(displayFocusLatest.value.timestamp).toLocaleString("zh-CN", { hour12: false }) : "尚未同步",
+
+const displayFocusLatest = computed(
+  () => focusLatest.value ?? focusRow.value?.sample ?? null,
 );
+
+const focusUpdatedLabel = computed(() =>
+  displayFocusLatest.value
+    ? new Date(displayFocusLatest.value.timestamp).toLocaleString("zh-CN", {
+        hour12: false,
+      })
+    : "尚未同步",
+);
+
 const focusSummaryTitle = computed(() => {
-  if (!hasBoundDevice.value) return "当前家属还没有绑定设备";
-  if (focusAlarm.value) return "已出现需要优先处理的告警";
-  if (focusRow.value?.risk === "high") return "健康风险偏高，需要尽快跟进";
-  if (focusRow.value?.risk === "medium") return "近期状态有波动，建议继续观察";
-  if (focusRow.value?.risk === "low") return "当前状态总体平稳";
+  if (!hasBoundDevice.value) return "当前家属还没有可用的绑定设备";
+  if (focusAlarm.value) return "当前对象存在需要优先关注的活动告警";
+  if (focusRow.value?.risk === "high") return "当前对象风险偏高，建议尽快查看";
+  if (focusRow.value?.risk === "medium") return "近期信号有波动，建议继续观察";
+  if (focusRow.value?.risk === "low") return "当前对象整体状态稳定";
   return "等待更多同步数据";
 });
+
 const focusSummaryCopy = computed(() => {
   if (!hasBoundDevice.value) {
-    return "当前还没有可用设备，请先确认家属关系和设备绑定状态。";
+    return "当前家属名下还没有已接入手环的监护对象。社区端完成设备绑定后，这里会自动显示实时状态、摄像头入口和健康摘要。";
   }
   if (!displayFocusLatest.value) {
-    return "已识别到绑定关系，但当前设备还没有可用的实时数据。请确认设备在线状态和最近同步情况。";
+    return "照护关系已经建立，但设备还没稳定地产生实时样本。你可以先等待下一轮同步，或者先打开摄像头确认现场情况。";
   }
 
-  const metrics = `心率 ${displayFocusLatest.value.heart_rate} bpm，血氧 ${displayFocusLatest.value.blood_oxygen}%，体温 ${displayFocusLatest.value.temperature.toFixed(1)}°C`;
+  const sample = displayFocusLatest.value;
+  const metrics = `心率 ${sample.heart_rate} bpm，血氧 ${sample.blood_oxygen}% ，体温 ${sample.temperature.toFixed(1)}℃`;
 
   if (focusAlarm.value) {
-    return `${focusAlarm.value.message}。当前关键指标为 ${metrics}，建议先查看告警升级建议，再决定是否联系社区人员处理。`;
+    return `${focusAlarm.value.message}。当前关键读数为 ${metrics}。建议先看告警升级建议，再决定是否联系社区人员处理。`;
   }
   if (focusRow.value?.risk === "high") {
-    return `当前对象综合风险为高，最近同步指标为 ${metrics}。建议尽快补充观察、生成正式报告并结合家属照护安排做进一步判断。`;
+    return `当前对象风险偏高，最新读数为 ${metrics}。建议先看摄像头和最近趋势，再安排进一步观察。`;
   }
   if (focusRow.value?.risk === "medium") {
-    return `当前对象存在中度波动，最近同步指标为 ${metrics}。建议继续观察趋势变化，并结合健康评估结果决定是否需要人工干预。`;
+    return `当前对象存在中度波动，最新读数为 ${metrics}。建议结合最近趋势持续关注。`;
   }
-  return `最近同步指标为 ${metrics}。整体趋势相对平稳，可继续保持日常观察并关注后续波动。`;
+  return `当前对象整体稳定，最新读数为 ${metrics}。可以继续日常关注，并定期回看摄像头和趋势。`;
 });
+
 const familyTrendPreview = computed(() => focusTrend.value.slice(-4).reverse());
-const displayFocusLatest = computed(() => focusLatest.value ?? focusRow.value?.sample ?? null);
+
 const familyTrendHeadline = computed(() => {
   if (!familyTrendPreview.value.length) {
-    return "选中的设备还没有可展示的趋势片段，后续同步后会在这里展示最近的变化轨迹。";
+    return "设备同步更多样本后，这里会展示最近一段时间的趋势变化。";
   }
-
   const latestPoint = familyTrendPreview.value[0];
-  const oldestPoint = familyTrendPreview.value[familyTrendPreview.value.length - 1];
+  const oldestPoint =
+    familyTrendPreview.value[familyTrendPreview.value.length - 1];
   const latestScore = latestPoint.health_score ?? null;
   const oldestScore = oldestPoint.health_score ?? null;
 
   if (latestScore !== null && oldestScore !== null) {
-    if (latestScore - oldestScore >= 5) return "最近几个采样点的健康分有回升趋势，短期状态正在改善。";
-    if (oldestScore - latestScore >= 5) return "最近几个采样点的健康分有下降趋势，建议关注后续变化。";
+    if (latestScore - oldestScore >= 5)
+      return "最近几次采样的健康分在回升，短期状态有改善。";
+    if (oldestScore - latestScore >= 5)
+      return "最近几次采样的健康分在下降，建议重点关注。";
   }
 
-  return "最近同步的几个采样点整体波动有限，可以继续结合实时指标与评估结果做判断。";
+  return "最近一段时间读数相对平稳，适合和摄像头画面一起看。";
 });
+
 const familySnapshotCards = computed<SnapshotMetric[]>(() => {
   const sample = displayFocusLatest.value;
   return [
@@ -197,10 +308,13 @@ const familySnapshotCards = computed<SnapshotMetric[]>(() => {
       unit: "bpm",
       note: sample
         ? sample.heart_rate >= 110 || sample.heart_rate <= 45
-          ? "心率超出稳态区间，建议重点关注。"
+          ? "心率超出建议的稳态区间。"
           : "心率处于可接受范围。"
-        : "等待实时数据同步。",
-      tone: sample && (sample.heart_rate >= 110 || sample.heart_rate <= 45) ? "warning" : "stable",
+        : "等待实时同步。",
+      tone:
+        sample && (sample.heart_rate >= 110 || sample.heart_rate <= 45)
+          ? "warning"
+          : "stable",
     },
     {
       id: "blood-oxygen",
@@ -208,7 +322,11 @@ const familySnapshotCards = computed<SnapshotMetric[]>(() => {
       label: "血氧",
       value: sample ? String(sample.blood_oxygen) : "--",
       unit: "%",
-      note: sample ? (sample.blood_oxygen < 93 ? "血氧偏低，建议尽快查看告警与趋势。" : "血氧状态相对稳定。") : "等待实时数据同步。",
+      note: sample
+        ? sample.blood_oxygen < 93
+          ? "血氧偏低，建议结合趋势和摄像头查看。"
+          : "血氧状态相对稳定。"
+        : "等待实时同步。",
       tone: sample && sample.blood_oxygen < 93 ? "critical" : "stable",
     },
     {
@@ -216,22 +334,29 @@ const familySnapshotCards = computed<SnapshotMetric[]>(() => {
       shortLabel: "TEMP",
       label: "体温",
       value: sample ? sample.temperature.toFixed(1) : "--",
-      unit: "°C",
-      note: sample ? (sample.temperature >= 37.8 ? "体温偏高，需要继续观察。" : "体温状态平稳。") : "等待实时数据同步。",
+      unit: "℃",
+      note: sample
+        ? sample.temperature >= 37.8
+          ? "体温偏高，建议继续观察。"
+          : "体温状态稳定。"
+        : "等待实时同步。",
       tone: sample && sample.temperature >= 37.8 ? "warning" : "stable",
     },
     {
       id: "battery",
       shortLabel: "BAT",
-      label: "设备电量",
-      value: sample?.battery !== null && sample?.battery !== undefined ? String(sample.battery) : "--",
+      label: "电量",
+      value:
+        sample?.battery !== null && sample?.battery !== undefined
+          ? String(sample.battery)
+          : "--",
       unit: "%",
       note:
         sample?.battery !== null && sample?.battery !== undefined
           ? sample.battery <= 20
-            ? "电量偏低，建议尽快充电。"
+            ? "设备电量偏低，建议尽快充电。"
             : "设备电量正常。"
-          : "尚未获取设备电量。",
+          : "暂无电量数据。",
       tone:
         sample?.battery !== null && sample?.battery !== undefined
           ? sample.battery <= 20
@@ -251,7 +376,7 @@ const familySnapshotCards = computed<SnapshotMetric[]>(() => {
       note:
         sample?.health_score !== null && sample?.health_score !== undefined
           ? sample.health_score < 60
-            ? "健康分偏低，建议生成正式报告。"
+            ? "健康分偏低，建议重点关注。"
             : "健康分处于可观察区间。"
           : "等待健康分同步。",
       tone:
@@ -265,68 +390,22 @@ const familySnapshotCards = computed<SnapshotMetric[]>(() => {
       id: "alarm-stage",
       shortLabel: "ALERT",
       label: "告警状态",
-      value: focusAlarm.value ? "处理中" : "无活动告警",
+      value: focusAlarm.value ? "有活动告警" : "暂无活动告警",
       unit: "",
-      note: focusAlarm.value?.message ?? "当前没有活动告警，仍建议持续关注实时状态变化。",
+      note:
+        focusAlarm.value?.message ?? "当前没有活动告警，但仍建议持续关注。",
       tone: focusAlarm.value ? "critical" : "stable",
     },
   ];
 });
-const syncLabel = computed(() =>
-  lastSyncAt.value ? lastSyncAt.value.toLocaleTimeString("zh-CN", { hour12: false }) : "尚未同步",
-);
+
 const pageMeta = computed(() => [
   `家属 ${selectedFamily.value?.name || "未选择"}`,
   `对象 ${focusRow.value?.name || "未选择"}`,
-  `设备 ${selectedDeviceMac.value || "未绑定"}`,
-  `同步 ${syncLabel.value}`,
+  `已绑定 ${boundSubjectCount.value}`,
+  `待绑定 ${unboundSubjectCount.value}`,
+  `高风险 ${highRiskCount.value}`,
 ]);
-
-function sessionToken() {
-  return localStorage.getItem("ai_health_demo_session_token") ?? "";
-}
-
-function formatUiError(error: unknown, fallback: string) {
-  if (error instanceof ApiError && error.detail) return error.detail;
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
-}
-
-async function refreshAccessProfile() {
-  if (sessionUser.value.role !== "family" && sessionUser.value.role !== "elder") {
-    accessProfile.value = null;
-    return;
-  }
-
-  accessProfile.value = await api.getCareAccessProfile(sessionToken()).catch(() => null);
-}
-
-async function generateHealthReport() {
-  if (!selectedDeviceMac.value) {
-    reportError.value = "请先选择一个已绑定设备，再生成正式健康报告。";
-    return;
-  }
-
-  reportLoading.value = true;
-  reportError.value = "";
-  generatedHealthReport.value = null;
-
-  try {
-    const endAt = new Date();
-    const startAt = new Date(endAt.getTime() - 24 * 60 * 60 * 1000);
-    generatedHealthReport.value = await api.generateDeviceHealthReport({
-      device_mac: selectedDeviceMac.value,
-      start_at: startAt.toISOString(),
-      end_at: endAt.toISOString(),
-      role: "family",
-      mode: "qwen",
-    });
-  } catch (error) {
-    reportError.value = formatUiError(error, "正式健康报告生成失败，请稍后重试。");
-  } finally {
-    reportLoading.value = false;
-  }
-}
 
 watch(
   families,
@@ -350,21 +429,9 @@ watch(
       return;
     }
     if (!list.some((item) => item.deviceMac === selectedDeviceMac.value)) {
-      selectedDeviceMac.value = list.find((item) => item.deviceMac)?.deviceMac ?? "";
+      selectedDeviceMac.value =
+        list.find((item) => item.deviceMac)?.deviceMac ?? "";
     }
-  },
-  { immediate: true },
-);
-
-watch(selectedDeviceMac, () => {
-  generatedHealthReport.value = null;
-  reportError.value = "";
-});
-
-watch(
-  lastSyncAt,
-  () => {
-    void refreshAccessProfile();
   },
   { immediate: true },
 );
@@ -376,34 +443,57 @@ function riskClass(level: RiskLevel) {
 function updateFamilyId(event: Event) {
   selectedFamilyId.value = (event.target as HTMLSelectElement).value;
 }
+
+function logoutCurrentPage() {
+  localStorage.removeItem("ai_health_demo_session_token");
+  window.location.reload();
+}
 </script>
 
 <template>
-  <section class="page-stack">
+  <section class="page-stack family-mobile-desktop-page">
     <PageHeader
-      eyebrow="Family View"
-      title="家属视图"
-      description="页面级头部承载家属对象、当前设备和同步信息；具体照护摘要、趋势、报告与助手能力都放在页面内部。"
+      eyebrow="家属关护"
+      title="家人守护"
+      description="这个 PC 家属端参照移动端家属首页重构，优先展示监护对象、实时摘要、摄像头入口和健康报告。"
       :meta="pageMeta"
-    />
+    >
+      <template #actions>
+        <div class="family-header-actions">
+          <div class="family-user-card">
+            <span class="family-user-card__name">{{ sessionUser.name }}</span>
+            <span class="family-user-card__role">
+              <ShieldCheck :size="14" />
+              家属查看
+            </span>
+          </div>
+          <button type="button" class="family-header-logout" @click="logoutCurrentPage">
+            <LogOut :size="16" />
+            <span>退出</span>
+          </button>
+        </div>
+      </template>
+    </PageHeader>
 
     <p v-if="dashboardLoadError" class="feedback-banner feedback-error">{{ dashboardLoadError }}</p>
 
     <div v-else-if="dashboardLoading && !visibleRows.length" class="state-block state-loading">
-      <strong>正在加载家属视图</strong>
-      <p>页面会在数据到位后展示绑定对象、实时摘要、健康评估和正式报告入口。</p>
+      <strong>正在加载家属工作台</strong>
+      <p>数据就绪后，这里会展示已关联对象、实时状态、摄像头入口和健康摘要。</p>
     </div>
 
-    <section v-else class="panel-grid family-grid">
-      <article class="panel family-header family-selector-panel">
-        <div class="family-toolbar">
+    <section v-else class="panel-grid family-grid family-grid--flutter">
+      <article class="panel family-header family-mobile-hero">
+        <div class="family-mobile-hero__top">
           <div>
-            <p class="section-eyebrow">Family View</p>
-            <h2>当前照护对象</h2>
-            <p class="subtle-copy">这里集中展示当前家属可访问的老人对象，并支持切换当前关注的设备与照护摘要。</p>
+            <p class="section-eyebrow">家属首页</p>
+            <h2>当前关护对象</h2>
+            <p class="subtle-copy">
+              和移动端一样，这里优先回答三个问题：你在关心谁、谁当前在线、谁需要先关注。有设备的对象会直接给出实时摘要，未绑定的对象会明确标记出来。
+            </p>
           </div>
           <label class="form-field family-select-field">
-            <span>当前家属</span>
+            <span>当前家属账号</span>
             <select :value="selectedFamilyId" class="inline-select" @change="updateFamilyId">
               <option v-for="family in families" :key="family.id" :value="family.id">
                 {{ family.name }} / {{ family.relationship }}
@@ -411,12 +501,31 @@ function updateFamilyId(event: Event) {
             </select>
           </label>
         </div>
-        <div class="family-cards">
+
+        <div class="family-mobile-summary">
+          <article class="family-mobile-summary__card">
+            <span>已绑定对象</span>
+            <strong>{{ boundSubjectCount }}</strong>
+            <small>已接入手环，可查看实时状态</small>
+          </article>
+          <article class="family-mobile-summary__card">
+            <span>待绑定对象</span>
+            <strong>{{ unboundSubjectCount }}</strong>
+            <small>已建立关系，但尚未接入设备</small>
+          </article>
+          <article class="family-mobile-summary__card">
+            <span>高风险关注</span>
+            <strong>{{ highRiskCount }}</strong>
+            <small>建议优先查看的对象数量</small>
+          </article>
+        </div>
+
+        <div class="family-cards family-cards--flutter">
           <button
             v-for="row in visibleRows"
             :key="row.id"
             type="button"
-            class="family-elder-card family-elder-card--demo"
+            class="family-elder-card family-elder-card--flutter"
             :class="[riskClass(row.risk), { active: row.deviceMac === selectedDeviceMac }]"
             @click="selectedDeviceMac = row.deviceMac"
           >
@@ -425,50 +534,55 @@ function updateFamilyId(event: Event) {
                 <strong>{{ row.name }}</strong>
                 <small>{{ row.apartment }}</small>
               </div>
-              <span class="risk-pill" :class="riskClass(row.risk)">{{ riskLabel(row.risk) }}</span>
+              <span class="risk-pill" :class="riskClass(row.risk)">
+                {{ row.deviceMac ? riskLabel(row.risk) : "未绑定" }}
+              </span>
             </div>
-            <p>{{ row.familyNames || "当前尚未配置家属关系说明" }}</p>
+            <p>{{ row.familyNames || "当前暂无更多家属关系说明" }}</p>
             <div class="family-kpis">
-              <span>HR {{ row.sample?.heart_rate ?? "-" }}</span>
-              <span>SpO2 {{ row.sample?.blood_oxygen ?? "-" }}</span>
-              <span>健康分 {{ row.sample?.health_score ?? "-" }}</span>
+              <span>{{ row.deviceMac ? `HR ${row.sample?.heart_rate ?? "-"}` : "待绑定设备" }}</span>
+              <span>{{ row.deviceMac ? `SpO2 ${row.sample?.blood_oxygen ?? "-"}` : "暂无实时指标" }}</span>
+              <span>{{ row.deviceMac ? `健康分 ${row.sample?.health_score ?? "-"}` : "完成绑定后可查看" }}</span>
             </div>
           </button>
         </div>
       </article>
 
-      <article class="panel family-detail family-main-panel">
+      <article class="panel family-detail family-main-panel family-main-panel--flutter">
         <header class="panel-head family-main-head">
           <div>
-            <p class="section-eyebrow">Care Summary</p>
-            <h2>{{ focusRow?.name ?? "请选择一个照护对象" }}</h2>
-            <p class="subtle-copy">当前对象的实时摘要、趋势预览和页面级状态都在这里集中展示。</p>
+            <p class="section-eyebrow">关护摘要</p>
+            <h2>{{ focusRow?.name ?? "请选择一个关护对象" }}</h2>
+            <p class="subtle-copy">这里是家属最常用的主视区：一句话摘要、摄像头入口、关键读数和趋势预览。</p>
           </div>
-          <span class="meta-pill">{{ hasBoundDevice ? focusRiskLabel : "未绑定设备" }}</span>
+          <span class="meta-pill">{{ hasBoundDevice ? focusRiskLabel : "等待设备绑定" }}</span>
         </header>
 
         <div v-if="hasBoundDevice" class="family-overview-stack">
           <section class="family-summary-banner" :class="`tone-${focusTone}`">
             <div class="family-summary-copy">
-              <p class="section-eyebrow">Summary</p>
+              <p class="section-eyebrow">摘要</p>
               <h3>{{ focusSummaryTitle }}</h3>
               <p class="summary-body">{{ focusSummaryCopy }}</p>
               <div class="summary-meta">
                 <span class="status-tag tone-info">房间 {{ focusRow?.apartment ?? "--" }}</span>
                 <span class="status-tag tone-neutral">设备 {{ selectedDeviceMac || "未选择" }}</span>
-                <span class="status-tag tone-neutral">更新时间 {{ focusUpdatedLabel }}</span>
+                <span class="status-tag tone-neutral">同步 {{ focusUpdatedLabel }}</span>
               </div>
             </div>
             <div class="family-summary-score">
               <span>当前风险</span>
               <strong>{{ focusRiskLabel }}</strong>
               <p>
-                {{ focusAlarm ? "建议优先查看告警升级建议和正式报告，再决定是否联系社区处理。" : "当前没有活动告警，可结合趋势和评估结果持续观察。" }}
+                {{ focusAlarm ? "建议先看活动告警和摄像头，再决定是否联系社区人员处理。" : "当前没有活动告警，维持日常关注即可。" }}
               </p>
             </div>
           </section>
 
-          <div class="family-health-grid family-health-grid--demo">
+          <CameraRegistrationPanel @source-change="handleCameraSourceChange" />
+          <CameraMonitorCard :key="cameraCardKey" />
+
+          <div class="family-health-grid family-health-grid--flutter">
             <article
               v-for="card in familySnapshotCards"
               :key="card.id"
@@ -487,14 +601,16 @@ function updateFamilyId(event: Event) {
             </article>
           </div>
 
-          <article class="family-trend-panel">
+          <article class="family-trend-panel family-trend-panel--flutter">
             <div class="panel-head">
               <div>
+                <p class="section-eyebrow">最近趋势</p>
                 <h3>最近趋势预览</h3>
                 <p class="panel-subtitle">{{ familyTrendHeadline }}</p>
               </div>
-              <span class="meta-pill">片段 {{ familyTrendPreview.length }}</span>
+              <span class="meta-pill">样本 {{ familyTrendPreview.length }}</span>
             </div>
+
             <div v-if="familyTrendPreview.length" class="trend-list trend-list--compact">
               <article v-for="point in familyTrendPreview" :key="point.timestamp" class="trend-item trend-item--demo">
                 <div class="trend-item-head">
@@ -504,55 +620,264 @@ function updateFamilyId(event: Event) {
                 <div class="trend-kpi-row">
                   <span>HR {{ point.heart_rate }}</span>
                   <span>SpO2 {{ point.blood_oxygen }}%</span>
-                  <span>Temp {{ point.temperature.toFixed(1) }}°C</span>
+                  <span>体温 {{ point.temperature.toFixed(1) }}℃</span>
                 </div>
               </article>
             </div>
             <div v-else class="state-block state-empty">
-              <strong>暂无趋势片段</strong>
-              <p>设备完成更多同步后，这里会展示最近几个采样点的变化轨迹。</p>
+              <strong>暂无最近趋势样本</strong>
+              <p>设备继续上报后，这里会自动出现最近一段时间的趋势变化。</p>
             </div>
           </article>
-
-          <div class="family-chain-grid">
-            <HealthEvaluationPanel
-              :is-bound="hasBoundDevice"
-              :subject-name="focusRow?.name ?? '未选择对象'"
-              :device-mac="selectedDeviceMac"
-              :evaluation="currentHealthEvaluation"
-              :report-summary="currentHealthReportSummary"
-              :generated-report="generatedHealthReport"
-              :report-loading="reportLoading"
-              :report-error="reportError"
-              @generate-report="generateHealthReport"
-            />
-            <AlarmEscalationPanel
-              :sample="displayFocusLatest"
-              :trend="focusTrend"
-              :focus-alarm="focusAlarm"
-            />
-          </div>
         </div>
 
         <div v-else class="state-block state-empty state-large">
           <strong>当前还没有可用的绑定设备</strong>
+          <p>社区端完成设备绑定后，这里会像移动端家属首页一样，优先展示实时摘要、摄像头入口和健康状态。</p>
         </div>
       </article>
 
-      <AssistantPanel
-        v-if="hasBoundDevice"
-        class="family-agent"
-        :device-mac="selectedDeviceMac"
-        :subject-name="focusRow?.name ?? '未选择对象'"
-        :sample="displayFocusLatest"
-        :risk-label="focusRiskLabel"
-        :focus-alarm="focusAlarm"
-        :trend-count="focusTrend.length"
-      />
-      <article v-else class="panel family-agent">
-        <h2>家属助手</h2>
-        <p class="subtle-copy">完成设备绑定后，这里会展示基于当前对象状态生成的照护建议与对话入口。</p>
+      <article class="panel family-register-panel">
+        <div class="panel-head family-register-panel__head">
+          <div>
+            <p class="section-eyebrow">目标用户照片</p>
+            <h3>上传目标老人照片</h3>
+            <p class="subtle-copy">这里对应社区端的“注册目标用户照片”能力。上传老人照片后，跌倒检测里的目标用户识别会把该老人作为重点匹配对象。</p>
+          </div>
+          <span class="meta-pill">仅用于跌倒检测目标识别</span>
+        </div>
+
+        <div class="family-register-panel__grid">
+          <label class="form-field">
+            <span>目标老人显示名</span>
+            <input v-model="targetUserCreateForm.displayName" class="text-input" type="text" placeholder="例如：张奶奶" />
+          </label>
+          <label class="form-field">
+            <span>分组</span>
+            <input v-model="targetUserCreateForm.group" class="text-input" type="text" placeholder="default" />
+          </label>
+          <label class="form-field family-register-panel__wide">
+            <span>备注</span>
+            <input v-model="targetUserCreateForm.note" class="text-input" type="text" placeholder="例如：家属端重点关注对象" />
+          </label>
+          <label class="form-field family-register-panel__wide">
+            <span>上传照片</span>
+            <input class="text-input" type="file" accept="image/*" multiple @change="onTargetUserFilesChange" />
+            <small class="helper-copy">{{ selectedTargetPhotoSummary }}</small>
+          </label>
+        </div>
+
+        <div class="family-register-panel__actions">
+          <button type="button" class="primary-btn" :disabled="targetUserCreateBusy" @click="submitFamilyTargetUserRegistration">
+            {{ targetUserCreateBusy ? "提交中..." : "创建目标用户" }}
+          </button>
+        </div>
+
+        <p v-if="targetUserCreateMessage" class="feedback-banner feedback-success">{{ targetUserCreateMessage }}</p>
+        <p v-if="targetUserCreateError" class="feedback-banner feedback-error">{{ targetUserCreateError }}</p>
       </article>
     </section>
   </section>
 </template>
+
+<style scoped>
+.family-mobile-desktop-page {
+  gap: 20px;
+}
+
+.family-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.family-user-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+.family-user-card__name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+}
+
+.family-user-card__role {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.family-header-logout {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.96);
+  color: #475569;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+
+.family-header-logout:hover {
+  color: #ef4444;
+  border-color: #ef4444;
+}
+
+.family-grid--flutter .family-header,
+.family-grid--flutter .family-detail,
+.family-grid--flutter .family-register-panel {
+  grid-column: span 12;
+}
+
+.family-mobile-hero,
+.family-mobile-hero__top,
+.family-mobile-summary,
+.family-cards--flutter,
+.family-main-panel--flutter {
+  display: grid;
+  gap: 18px;
+}
+
+.family-mobile-hero {
+  padding: 28px;
+  border-radius: 28px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid rgba(37, 99, 235, 0.14);
+}
+
+.family-mobile-hero__top {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  align-items: start;
+}
+
+.family-mobile-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.family-mobile-summary__card {
+  display: grid;
+  gap: 8px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  background: #ffffff;
+  border: 1px solid var(--line-medium);
+}
+
+.family-mobile-summary__card span {
+  color: var(--text-sub);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.family-mobile-summary__card strong {
+  color: var(--text-main);
+  font-size: clamp(1.9rem, 2.8vw, 2.4rem);
+  line-height: 1.05;
+}
+
+.family-mobile-summary__card small {
+  color: var(--text-sub);
+  line-height: 1.65;
+}
+
+.family-cards--flutter {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.family-elder-card--flutter {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid var(--line-medium);
+  background: #ffffff;
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.03);
+}
+
+.family-elder-card--flutter:hover,
+.family-elder-card--flutter.active {
+  border-color: var(--brand);
+  background: #eff6ff;
+  box-shadow: 0 14px 28px rgba(37, 99, 235, 0.08);
+}
+
+.family-health-grid--flutter {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.family-trend-panel--flutter {
+  padding: 20px;
+}
+
+.family-register-panel {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+}
+
+.family-register-panel__head {
+  margin-bottom: 0;
+}
+
+.family-register-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.family-register-panel__wide {
+  grid-column: span 2;
+}
+
+.family-register-panel__actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+@media (max-width: 1280px) {
+  .family-mobile-summary,
+  .family-cards--flutter,
+  .family-health-grid--flutter {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 960px) {
+  .family-header-actions {
+    justify-content: flex-start;
+  }
+
+  .family-mobile-hero__top,
+  .family-mobile-summary,
+  .family-cards--flutter,
+  .family-health-grid--flutter,
+  .family-register-panel__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .family-register-panel__wide {
+    grid-column: span 1;
+  }
+}
+</style>

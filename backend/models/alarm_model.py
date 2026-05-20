@@ -15,6 +15,8 @@ class AlarmType(str, Enum):
     INTELLIGENT_ANOMALY = "intelligent_anomaly"
     COMMUNITY_RISK = "community_risk"
     DEVICE_STATUS = "device_status"
+    FALL_DETECTED = "fall_detected"
+    FALL_INJURY_RISK = "fall_injury_risk"
 
 
 class AlarmPriority(int, Enum):
@@ -61,5 +63,8 @@ class MobilePushRecord(BaseModel):
     title: str
     body: str
     priority: AlarmPriority
+    recipient_count: int = 0
+    remote_ready_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     delivered: bool = True

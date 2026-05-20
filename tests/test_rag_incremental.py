@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from io import StringIO
 import contextlib
+from unittest.mock import MagicMock
 
 # Add the project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

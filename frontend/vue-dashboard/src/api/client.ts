@@ -59,6 +59,32 @@ export interface AlarmRecord {
   metadata?: Record<string, unknown>;
 }
 
+export interface FallReviewPendingMessage {
+  type: "fall_alarm_pending_review";
+  device_mac: string;
+  incident_id: string;
+  track_id?: string;
+  title: string;
+  lead: string;
+  expected_seconds?: number;
+  catalog_code?: string;
+  presentation?: Record<string, unknown>;
+  family_guidance?: Record<string, unknown>;
+  event?: Record<string, unknown>;
+}
+
+export interface FallReviewFinalizedMessage {
+  type: "fall_alarm_finalized";
+  device_mac: string;
+  incident_id: string;
+  track_id?: string;
+  catalog_code?: string;
+  presentation?: Record<string, unknown>;
+  family_guidance?: Record<string, unknown>;
+  event?: Record<string, unknown>;
+  review?: Record<string, unknown>;
+}
+
 export interface AlarmQueueItem {
   score: number;
   alarm: AlarmRecord;
@@ -782,8 +808,434 @@ export interface FamilyRelationRecord {
   created_at: string;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
-const WS_BASE = (import.meta.env.VITE_WS_BASE ?? "ws://localhost:8000").replace(/\/$/, "");
+export interface CameraStatusResponse {
+  configured: boolean;
+  online: boolean;
+  ip: string;
+  port: number;
+  path: string;
+  checked_at: string;
+  latency_ms?: number | null;
+  error?: string | null;
+  source?: "rtsp" | "local";
+  detail?: string | null;
+}
+
+export interface CameraSourceRecord {
+  camera_id: string;
+  name: string;
+  enabled: boolean;
+  source: string;
+  source_mode: "local" | "rtsp";
+  device_id?: string;
+  ip?: string;
+  rtsp_port?: number;
+  onvif_port?: number;
+  rtsp_path?: string;
+  stream_rtsp_path?: string;
+  audio_rtsp_path?: string;
+  has_password?: boolean;
+}
+
+export interface CameraSourceRegistrationResponse {
+  active_camera_id: string;
+  active_source: CameraSourceRecord;
+  sources: CameraSourceRecord[];
+  registry_path?: string;
+}
+
+export interface ExternalCameraTruthRecord {
+  camera_id?: string;
+  preferred_host?: string;
+  host?: string;
+  username?: string;
+  rtsp_port?: number;
+  transport?: string;
+  stream?: string;
+  verified_at?: string | null;
+  verified_status?: string;
+  verification_reason?: string | null;
+  source_of_truth?: string;
+  fallback_order?: Array<Record<string, unknown>>;
+}
+
+export interface ExternalCameraConfigResponse {
+  config: Record<string, unknown>;
+  truth?: ExternalCameraTruthRecord;
+  camera_health?: ExternalCameraHealthResponse;
+  viewer_url?: string;
+  snapshot_url?: string;
+  mjpeg_url?: string;
+  runtime_root?: string;
+  rtsp_source?: string;
+  rtsp_host?: string;
+  rtsp_stream?: string;
+}
+
+export interface ExternalCameraBootstrapResponse {
+  ok: boolean;
+  status: string;
+  camera_health?: ExternalCameraHealthResponse;
+  truth?: ExternalCameraTruthRecord;
+  probe?: Record<string, unknown>;
+  bridge_latency_ms?: number;
+}
+
+export type CameraPtzDirection =
+  | "up"
+  | "down"
+  | "left"
+  | "right"
+  | "up_left"
+  | "up_right"
+  | "down_left"
+  | "down_right"
+  | "zoom_in"
+  | "zoom_out"
+  | "stop";
+
+export interface CameraPtzResponse {
+  ok: boolean;
+  direction: CameraPtzDirection;
+  mode?: "pulse" | "continuous";
+}
+
+export interface CameraStreamStatusResponse {
+  clients: number;
+  websocket_clients?: number;
+  mjpeg_clients?: number;
+  running: boolean;
+  keep_warm?: boolean;
+  latest_frame_at?: number | null;
+  latest_frame_size?: number;
+  last_error?: string | null;
+  frames_total?: number;
+  broadcast_total?: number;
+  target_fps?: number;
+  source_fps?: number;
+  broadcast_fps?: number;
+  measured_fps?: number;
+  active_url?: string | null;
+  profile?: "smooth" | "balanced" | "quality";
+  jpeg_quality?: number;
+  stream_width?: number;
+}
+
+export interface CameraAudioStatusResponse {
+  configured: boolean;
+  listen_supported: boolean;
+  talk_supported: boolean;
+  checked_url?: string | null;
+  audio_codec?: string | null;
+  sample_rate?: number | null;
+  channels?: number | null;
+  source?: "rtsp" | "local";
+  sdk_available?: boolean;
+  sdk_arch?: string | null;
+  sdk_loadable?: boolean;
+  sdk_message?: string | null;
+  gateway_configured?: boolean;
+  activex_available?: boolean;
+  activex_clsid?: string | null;
+  activex_inproc_path?: string | null;
+  activex_message?: string | null;
+  error?: string | null;
+}
+
+export interface CameraAudioStreamStatusResponse {
+  clients: number;
+  running: boolean;
+  last_error?: string | null;
+  active_url?: string | null;
+  sample_rate?: number;
+  format?: string;
+  channels?: number;
+  chunks_total?: number;
+  bytes_total?: number;
+  kbps?: number;
+}
+
+export interface CameraFallDetectionStatusResponse {
+  enabled: boolean;
+  running: boolean;
+  process_running: boolean;
+  pid?: number | null;
+  speed_profile?: "accuracy" | "balanced" | "fast";
+  accuracy_preserving?: boolean;
+  event_log?: string;
+  snapshot_dir?: string;
+  roi?: {
+    enabled?: boolean;
+    rect?: string;
+    min_overlap?: number;
+    frame_width?: number;
+    frame_height?: number;
+    min_alert_score?: number;
+  };
+  last_event_at?: number | null;
+  last_event?: Record<string, unknown> | null;
+  last_error?: string | null;
+  restart_count?: number;
+  started_at?: number | null;
+  multimodal_review?: {
+    enabled: boolean;
+    configured_provider: string;
+    resolved_provider: string;
+    dashscope_configured: boolean;
+    qwen_omni_model?: string | null;
+    siliconflow_configured: boolean;
+    min_score: number;
+    timeout_seconds: number;
+  };
+}
+
+export interface PoseTrackPayload {
+  track_id: number;
+  bbox: number[];
+  pose_score: number;
+  state_label: string;
+  state_score: number;
+  keypoints: number[][];
+  features?: Record<string, number>;
+}
+
+export interface CameraPoseDetectionLatestResponse {
+  backend?: string;
+  profile?: string;
+  source?: string;
+  timestamp_s?: number;
+  frame_idx?: number;
+  frame_width?: number;
+  frame_height?: number;
+  tracks: PoseTrackPayload[];
+  _observed_at?: number;
+  status?: string;
+}
+
+export interface CameraPoseDetectionStatusResponse {
+  enabled: boolean;
+  running: boolean;
+  process_running: boolean;
+  pid?: number | null;
+  profile?: string;
+  process_every_override?: number;
+  pose_conf_threshold?: number;
+  analysis_width?: number;
+  event_log?: string;
+  latest_json?: string;
+  snapshot_dir?: string;
+  source_mode?: "auto" | "rtsp" | "local";
+  source_url?: string;
+  model_root?: string;
+  model_root_exists?: boolean;
+  python_command?: string;
+  python_exists?: boolean | null;
+  last_payload_at?: number | null;
+  last_payload?: CameraPoseDetectionLatestResponse | null;
+  last_error?: string | null;
+  restart_count?: number;
+  started_at?: number | null;
+}
+
+export interface CameraPoseDetectionConfigResponse {
+  enabled: boolean;
+  profile: string;
+  process_every_override: number;
+  pose_conf_threshold: number;
+  analysis_width: number;
+  floor_roi_rect: string;
+}
+
+export interface TargetUserRecord {
+  id: string;
+  display_name: string;
+  group: string;
+  note: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  photo_count: number;
+  face_embedding_count: number;
+  body_profile_count: number;
+}
+
+export interface ExternalCameraHealthResponse {
+  running: boolean;
+  source: string;
+  stream: string;
+  transport: string;
+  rtsp_port: number;
+  has_frame: boolean;
+  bridge_status?: string;
+  fresh_frame?: boolean;
+  stale_frame?: boolean;
+  frame_age_seconds?: number | null;
+  latest_frame_at?: number | null;
+  frame_count?: number;
+  last_error?: string | null;
+  last_opened_at?: number | null;
+  reconnect_count?: number;
+  consecutive_failures?: number;
+  current_stream?: string | null;
+  bridge_latency_ms?: number;
+  rtsp_host?: string;
+  rtsp_stream?: string;
+  truth?: ExternalCameraTruthRecord;
+  candidate_runtime?: Record<string, unknown>;
+  viewer_url?: string;
+  snapshot_url?: string;
+  mjpeg_url?: string;
+}
+
+export interface ExternalCameraFallDetectResponse {
+  ok: boolean;
+  status: string;
+  target_match?: {
+    matched: boolean;
+    user_id?: string | null;
+    display_name?: string | null;
+    face_score?: number;
+    body_score?: number;
+    fused_score?: number;
+    decision?: "target" | "non_target" | "unknown";
+  } | null;
+  fall_result?: {
+    ok?: boolean;
+    status?: string;
+    fall_detected?: boolean;
+    fall_score?: number;
+    scores?: Record<string, number>;
+    detections?: Array<Record<string, unknown>>;
+    alert?: Record<string, unknown>;
+    annotated_image_b64?: string;
+    annotated_image_mime?: string;
+    frame?: {
+      width: number;
+      height: number;
+    } | null;
+    error?: string;
+  } | null;
+  warnings?: string[];
+  tracking?: {
+    session_id?: string;
+    track_id?: number | null;
+    used_track?: boolean;
+    full_match_refreshed?: boolean;
+    candidate_count?: number;
+    roi?: {
+      bbox?: number[] | null;
+      used_roi?: boolean;
+    } | null;
+  } | null;
+  diagnostics?: {
+    is_failure?: boolean;
+    reasons?: string[];
+    warnings?: string[];
+    candidate_count?: number;
+    track_id?: number | null;
+    used_track?: boolean;
+    used_roi?: boolean;
+    match_decision?: string;
+    face_score?: number;
+    body_score?: number;
+    fused_score?: number;
+    fall_status?: string;
+  } | null;
+  camera_source?: {
+    viewer_url?: string;
+    snapshot_url?: string;
+    mjpeg_url?: string;
+  } | null;
+  target_pose?: {
+    ok?: boolean;
+    error?: string;
+    pose?: {
+      points?: Array<{
+        index: number;
+        name: string;
+        x: number;
+        y: number;
+        score: number;
+        tracked?: boolean;
+        estimated?: boolean;
+      }>;
+      connections?: Array<{
+        from: number;
+        to: number;
+        part: string;
+      }>;
+      posture?: {
+        label?: string;
+        severity?: string;
+        confidence?: number;
+        torso_angle_deg?: number | null;
+        features?: Record<string, unknown>;
+      };
+      quality?: {
+        visible_points?: number;
+        mean_score?: number;
+        estimated_points?: number;
+      };
+    };
+    latency_ms?: number;
+    model?: Record<string, unknown>;
+  } | null;
+  posture_event?: {
+    type?: string;
+    level?: string;
+    confidence?: number;
+    source_pose?: string;
+    reasons?: string[];
+    metrics?: Record<string, unknown>;
+    timestamp_ms?: number;
+  } | null;
+  posture_guidance?: {
+    level?: string;
+    title?: string;
+    possible_causes?: string[];
+    immediate_actions?: string[];
+    contraindications?: string[];
+    call_emergency?: boolean;
+  } | null;
+  bridge_latency_ms?: number;
+  latency_ms?: number;
+  snapshot_bytes?: number;
+}
+
+export interface TargetUserCreateResponse {
+  user: TargetUserRecord;
+  warnings: string[];
+}
+
+export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+
+function deriveWsBase() {
+  const rawWsBase = (import.meta.env.VITE_WS_BASE ?? "").trim();
+  const rawApiBase = API_BASE.trim();
+
+  const looksInvalidPlaceholder = (value: string) =>
+    !value
+    || value.includes("<URL>")
+    || value.includes("${")
+    || value.includes("undefined")
+    || value.includes("null");
+
+  if (!looksInvalidPlaceholder(rawWsBase)) {
+    return rawWsBase.replace(/\/$/, "");
+  }
+
+  if (!looksInvalidPlaceholder(rawApiBase)) {
+    return rawApiBase.replace(/^http/i, "ws").replace(/\/api\/v1\/?$/i, "").replace(/\/$/, "");
+  }
+
+  if (typeof window !== "undefined") {
+    return window.location.origin.replace(/^http/i, "ws").replace(/\/$/, "");
+  }
+
+  return "ws://localhost:8000";
+}
+
+const WS_BASE = deriveWsBase();
 
 export class ApiError extends Error {
   status: number;
@@ -797,6 +1249,11 @@ export class ApiError extends Error {
   }
 }
 
+type RequestJsonOptions = {
+  timeoutMs?: number;
+  allowEmptyResponse?: boolean;
+};
+
 function humanizeApiDetail(detail: string): string {
   if (detail.includes("INVALID_MAC_ADDRESS")) return "设备 MAC 格式错误，请使用 AA:BB:CC:DD:EE:FF。";
   if (detail.includes("INVALID_MAC_PREFIX")) return "当前服务尚未完成更新，请刷新页面或重启后端后重试。";
@@ -804,42 +1261,81 @@ function humanizeApiDetail(detail: string): string {
   if (detail.includes("TARGET_USER_ALREADY_HAS_DEVICE_OF_SAME_MODEL")) {
     return "该老人已经绑定了同型号手环。若本次只是演示新设备，请选择“暂不绑定，先登记设备”。";
   }
+  if (detail.includes("REQUEST_TIMEOUT")) return "服务响应超时，请确认后端已启动后重试。";
+  if (detail.includes("NETWORK_UNAVAILABLE")) return "无法连接到后端服务，请确认后端已启动。";
   return detail;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  if (!response.ok) {
-    let detail = `Request failed: ${response.status}`;
-    try {
-      const payload = (await response.json()) as {
-        detail?:
-          | string
-          | { message?: string; code?: string }
-          | Array<{ msg?: string; loc?: Array<string | number> }>;
-      };
-      const detailPayload = payload.detail;
-      if (typeof detailPayload === "string") {
-        detail = humanizeApiDetail(detailPayload);
-      } else if (Array.isArray(detailPayload) && detailPayload.length) {
-        const first = detailPayload[0];
-        const message = String(first.msg ?? "");
-        if (message.includes("INVALID_MAC_ADDRESS")) detail = "设备 MAC 格式错误，请使用 AA:BB:CC:DD:EE:FF。";
-        else if (message.includes("question")) detail = "请输入更具体的问题后再试。";
-        else if (message.includes("mode")) detail = "请求模式无效，请联系开发人员检查前端参数。";
-        else if (message.includes("role")) detail = "请求角色无效，请联系开发人员检查前端参数。";
-        else detail = message.replace(/^Value error,\s*/i, "") || detail;
-      } else if (detailPayload && !Array.isArray(detailPayload) && detailPayload.message) {
-        detail = detailPayload.message;
-      } else if (detailPayload && !Array.isArray(detailPayload) && detailPayload.code) {
-        detail = detailPayload.code;
-      }
-    } catch {
-      // ignore non-json error bodies
+async function requestJson<T>(url: string, init?: RequestInit, options: RequestJsonOptions = {}): Promise<T> {
+  const controller = options.timeoutMs ? new AbortController() : null;
+  const timeoutId = controller
+    ? window.setTimeout(() => {
+        controller.abort();
+      }, options.timeoutMs)
+    : null;
+
+  try {
+    const response = await fetch(url, {
+      ...init,
+      signal: controller?.signal ?? init?.signal,
+    });
+
+    if (response.status === 204 && options.allowEmptyResponse) {
+      return null as T;
     }
-    throw new ApiError(response.status, detail);
+
+    if (!response.ok) {
+      let detail = `Request failed: ${response.status}`;
+      try {
+        const payload = (await response.json()) as {
+          detail?:
+            | string
+            | { message?: string; code?: string }
+            | Array<{ msg?: string; loc?: Array<string | number> }>;
+        };
+        const detailPayload = payload.detail;
+        if (typeof detailPayload === "string") {
+          detail = humanizeApiDetail(detailPayload);
+        } else if (Array.isArray(detailPayload) && detailPayload.length) {
+          const first = detailPayload[0];
+          const message = String(first.msg ?? "");
+          if (message.includes("INVALID_MAC_ADDRESS")) detail = "设备 MAC 格式错误，请使用 AA:BB:CC:DD:EE:FF。";
+          else if (message.includes("question")) detail = "请输入更具体的问题后再试。";
+          else if (message.includes("mode")) detail = "请求模式无效，请联系开发人员检查前端参数。";
+          else if (message.includes("role")) detail = "请求角色无效，请联系开发人员检查前端参数。";
+          else detail = message.replace(/^Value error,\s*/i, "") || detail;
+        } else if (detailPayload && !Array.isArray(detailPayload) && detailPayload.message) {
+          detail = detailPayload.message;
+        } else if (detailPayload && !Array.isArray(detailPayload) && detailPayload.code) {
+          detail = detailPayload.code;
+        }
+      } catch {
+        // ignore non-json error bodies
+      }
+      throw new ApiError(response.status, detail);
+    }
+
+    return (await response.json()) as T;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+
+    const isAbortError = error instanceof Error && error.name === "AbortError";
+    const timedOut = Boolean(controller?.signal.aborted && !init?.signal?.aborted);
+
+    if (isAbortError && timedOut) {
+      throw new ApiError(408, humanizeApiDetail("REQUEST_TIMEOUT"));
+    }
+
+    if (isAbortError) {
+      throw error;
+    }
+
+    throw new ApiError(503, humanizeApiDetail("NETWORK_UNAVAILABLE"));
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
   }
-  return (await response.json()) as T;
 }
 
 function withBearer(token?: string): HeadersInit | undefined {
@@ -926,6 +1422,227 @@ export async function streamCommunityAnalysis(
 }
 
 export const api = {
+  getCameraStatus: () => requestJson<CameraStatusResponse>(`${API_BASE}/camera/status`),
+  getCameraStreamStatus: () => requestJson<CameraStreamStatusResponse>(`${API_BASE}/camera/stream-status`),
+  getCameraAudioStatus: () => requestJson<CameraAudioStatusResponse>(`${API_BASE}/camera/audio/status`),
+  getCameraAudioStreamStatus: () =>
+    requestJson<CameraAudioStreamStatusResponse>(`${API_BASE}/camera/audio/stream-status`),
+  getCameraFallDetectionStatus: () =>
+    requestJson<CameraFallDetectionStatusResponse>(`${API_BASE}/camera/fall-detection/status`),
+  getCameraPoseDetectionStatus: () =>
+    requestJson<CameraPoseDetectionStatusResponse>(`${API_BASE}/camera/pose-detection/status`),
+  getCameraPoseDetectionLatest: () =>
+    requestJson<CameraPoseDetectionLatestResponse>(`${API_BASE}/camera/pose-detection/latest`),
+  getCameraPoseDetectionConfig: () =>
+    requestJson<CameraPoseDetectionConfigResponse>(`${API_BASE}/camera/pose-detection/config`),
+  updateCameraPoseDetectionConfig: (payload: {
+    pose_detection_enabled?: boolean;
+    pose_detection_profile?: string;
+    pose_detection_process_every_override?: number;
+    pose_detection_pose_conf_threshold?: number;
+    pose_detection_analysis_width?: number;
+    pose_detection_floor_roi_rect?: string;
+  }) =>
+    requestJson<{ ok: boolean; config: CameraPoseDetectionConfigResponse; restarted: boolean }>(
+      `${API_BASE}/camera/pose-detection/config`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      { timeoutMs: 20000 },
+    ),
+  getCameraFallSnapshotUrl: (path: string) =>
+    `${API_BASE}/camera/fall-detection/snapshot?path=${encodeURIComponent(path)}&t=${Date.now()}`,
+  getCameraSnapshotUrl: () => `${API_BASE}/camera/snapshot?t=${Date.now()}`,
+  getCameraStreamUrl: () => `${API_BASE}/camera/stream.mjpg?t=${Date.now()}`,
+  getCameraDetectionStreamUrl: () => `${API_BASE}/camera/stream.detect.mjpg?t=${Date.now()}`,
+  getCameraPoseStreamUrl: () => `${API_BASE}/camera/stream.pose.mjpg?t=${Date.now()}`,
+  getCameraProcessedStreamUrl: () => `${API_BASE}/camera/stream.processed.mjpg?t=${Date.now()}`,
+  cameraFrameSocket: () => new WebSocket(`${WS_BASE}/ws/camera`),
+  cameraAudioSocket: () => new WebSocket(`${WS_BASE}/ws/camera/audio/listen`),
+  getCameraSourceRegistration: () =>
+    requestJson<CameraSourceRegistrationResponse>(`${API_BASE}/camera-sources/registration`),
+  registerExternalCameraSource: (payload: { device_id: string; name?: string }) =>
+    requestJson<CameraSourceRegistrationResponse>(`${API_BASE}/camera-sources/registration/external`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  selectLocalCameraSource: () =>
+    requestJson<CameraSourceRegistrationResponse>(`${API_BASE}/camera-sources/registration/local/select`, {
+      method: "POST",
+    }),
+  selectCameraSource: (camera_id: string) =>
+    requestJson<CameraSourceRegistrationResponse>(`${API_BASE}/camera-sources/registration/select`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ camera_id }),
+    }),
+  getActiveCameraStatus: () => requestJson<CameraStatusResponse>(`${API_BASE}/camera-sources/active/status`),
+  getActiveCameraStreamStatus: () =>
+    requestJson<CameraStreamStatusResponse>(`${API_BASE}/camera-sources/active/stream-status`),
+  getActiveCameraAudioStatus: () =>
+    requestJson<CameraAudioStatusResponse>(`${API_BASE}/camera-sources/active/audio/status`),
+  getActiveCameraAudioStreamStatus: () =>
+    requestJson<CameraAudioStreamStatusResponse>(`${API_BASE}/camera-sources/active/audio/stream-status`),
+  getActiveCameraStreamUrl: () => `${API_BASE}/camera-sources/active/stream.mjpg?t=${Date.now()}`,
+  getActiveCameraSnapshotUrl: () => `${API_BASE}/camera-sources/active/snapshot?t=${Date.now()}`,
+  activeCameraFrameSocket: () => new WebSocket(`${WS_BASE}/ws/camera-sources/active`),
+  activeCameraAudioSocket: () => new WebSocket(`${WS_BASE}/ws/camera-sources/active/audio/listen`),
+  moveActiveCamera: (direction: CameraPtzDirection, mode: "pulse" | "continuous" = "pulse") =>
+    requestJson<CameraPtzResponse>(`${API_BASE}/camera-sources/active/ptz`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction, mode }),
+    }),
+  moveCamera: (direction: CameraPtzDirection, mode: "pulse" | "continuous" = "pulse") =>
+    requestJson<CameraPtzResponse>(`${API_BASE}/camera/ptz`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction, mode }),
+    }),
+  listTargetUsers: () => requestJson<TargetUserRecord[]>(`${API_BASE}/target-users`),
+  createTargetUser: async (payload: {
+    display_name: string;
+    group?: string;
+    note?: string;
+    files: File[];
+  }) => {
+    const form = new FormData();
+    form.append("display_name", payload.display_name);
+    form.append("group", payload.group ?? "default");
+    form.append("note", payload.note ?? "");
+    for (const file of payload.files) {
+      form.append("files", file);
+    }
+    const response = await fetch(`${API_BASE}/target-users`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      let detail = `Request failed: ${response.status}`;
+      try {
+        const payload = (await response.json()) as { detail?: string };
+        if (typeof payload.detail === "string") detail = humanizeApiDetail(payload.detail);
+      } catch {
+        // ignore
+      }
+      throw new ApiError(response.status, detail);
+    }
+    return response.json() as Promise<TargetUserCreateResponse>;
+  },
+  deleteTargetUser: (userId: string) =>
+    requestJson<{ ok: boolean; id: string }>(`${API_BASE}/target-users/${encodeURIComponent(userId)}`, {
+      method: "DELETE",
+    }),
+  getExternalCameraHealth: () =>
+    requestJson<ExternalCameraHealthResponse>(`${API_BASE}/target-users/external-camera/health`),
+  getExternalCameraConfig: () =>
+    requestJson<ExternalCameraConfigResponse>(`${API_BASE}/target-users/external-camera/config`),
+  bootstrapExternalCamera: () =>
+    requestJson<ExternalCameraBootstrapResponse>(`${API_BASE}/target-users/external-camera/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: true }),
+    }),
+  probeExternalCameraRuntime: (payload: {
+    host?: string;
+    username?: string;
+    password?: string;
+    rtsp_port?: number;
+    transport?: string;
+    stream?: string;
+    apply_success?: boolean;
+  }) =>
+    requestJson<Record<string, unknown>>(`${API_BASE}/target-users/external-camera/probe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }, { timeoutMs: 40000 }),
+  discoverExternalCameraCandidates: (subnet?: string, limit = 64) => {
+    const params = new URLSearchParams();
+    if (subnet) params.set("subnet", subnet);
+    params.set("limit", String(limit));
+    return requestJson<Record<string, unknown>>(
+      `${API_BASE}/target-users/external-camera/discover?${params.toString()}`,
+      undefined,
+      { timeoutMs: 40000 },
+    );
+  },
+  refreshExternalCameraRuntime: (prefer_stream?: string) => {
+    const params = new URLSearchParams();
+    if (prefer_stream) params.set("prefer_stream", prefer_stream);
+    const suffix = params.toString();
+    return requestJson<Record<string, unknown>>(
+      `${API_BASE}/target-users/external-camera/refresh${suffix ? `?${suffix}` : ""}`,
+      { method: "POST" },
+      { timeoutMs: 20000 },
+    );
+  },
+  runExternalCameraFallDetect: (payload?: {
+    target_only?: boolean;
+    session_id?: string;
+    mode?: "metadata" | "annotated";
+  }) => {
+    const params = new URLSearchParams();
+    params.set("target_only", String(payload?.target_only ?? true));
+    params.set("session_id", payload?.session_id ?? "default");
+    params.set("mode", payload?.mode ?? "metadata");
+    return requestJson<ExternalCameraFallDetectResponse>(
+      `${API_BASE}/target-users/external-camera/fall-detect?${params.toString()}`,
+      { method: "POST" },
+      { timeoutMs: 30000 },
+    );
+  },
+  getLocalCameraSnapshotUrl: () => `${API_BASE}/target-users/local-camera/snapshot?t=${Date.now()}`,
+  runLocalCameraPoseDetect: (payload?: {
+    target_only?: boolean;
+    session_id?: string;
+    mode?: "metadata" | "annotated";
+  }) => {
+    const params = new URLSearchParams();
+    params.set("target_only", String(payload?.target_only ?? true));
+    params.set("session_id", payload?.session_id ?? "default");
+    params.set("mode", payload?.mode ?? "metadata");
+    return requestJson<ExternalCameraFallDetectResponse>(
+      `${API_BASE}/target-users/local-camera/pose-detect?${params.toString()}`,
+      { method: "POST" },
+      { timeoutMs: 30000 },
+    );
+  },
+  runBrowserFrameTargetPoseDetect: async (
+    file: Blob,
+    payload?: {
+      target_only?: boolean;
+      session_id?: string;
+      mode?: "metadata" | "annotated";
+      speed_mode?: string;
+    },
+  ) => {
+    const params = new URLSearchParams();
+    params.set("target_only", String(payload?.target_only ?? true));
+    params.set("session_id", payload?.session_id ?? "browser-preview");
+    params.set("mode", payload?.mode ?? "annotated");
+    params.set("speed_mode", payload?.speed_mode ?? "balanced");
+    const form = new FormData();
+    form.append("file", file, "browser_camera_frame.jpg");
+    const response = await fetch(`${API_BASE}/target-users/fall-detect?${params.toString()}`, {
+      method: "POST",
+      body: form,
+    });
+    if (!response.ok) {
+      let detail = `Request failed: ${response.status}`;
+      try {
+        const payload = (await response.json()) as { detail?: string };
+        if (typeof payload.detail === "string") detail = humanizeApiDetail(payload.detail);
+      } catch {
+        // ignore
+      }
+      throw new ApiError(response.status, detail);
+    }
+    return response.json() as Promise<ExternalCameraFallDetectResponse>;
+  },
   listDevices: () => requestJson<DeviceRecord[]>(`${API_BASE}/devices`),
   getDevice: (mac: string) => requestJson<DeviceRecord>(`${API_BASE}/devices/${mac}`),
   registerDevice: (
@@ -999,7 +1716,8 @@ export const api = {
       headers: jsonHeaders(token),
       body: JSON.stringify(payload),
     }),
-  getRealtime: (mac: string) => requestJson<HealthSample>(`${API_BASE}/health/realtime/${mac}`),
+  getRealtime: (mac: string) =>
+    requestJson<HealthSample | null>(`${API_BASE}/health/realtime/${mac}`, undefined, { allowEmptyResponse: true }),
   getTrend: (mac: string, minutes = 180, limit = 120) =>
     requestJson<HealthSample[]>(`${API_BASE}/health/trend/${mac}?minutes=${minutes}&limit=${limit}`),
   getCommunityOverview: () =>
@@ -1010,6 +1728,11 @@ export const api = {
   listAlarmQueue: () => requestJson<AlarmQueueItem[]>(`${API_BASE}/alarms/queue`),
   listMobilePushes: (limit = 10) =>
     requestJson<MobilePushRecord[]>(`${API_BASE}/alarms/mobile-pushes?limit=${limit}`),
+  ackActiveFallAlarms: () =>
+    requestJson<{ acknowledged_count: number; alarm_ids: string[] }>(
+      `${API_BASE}/alarms/fall/acknowledge-active`,
+      { method: "POST" },
+    ),
   ackAlarm: (alarmId: string) =>
     requestJson<AlarmRecord>(`${API_BASE}/alarms/${alarmId}/acknowledge`, { method: "POST" }),
   analyze: (payload: {
@@ -1046,19 +1769,20 @@ export const api = {
   getCareDirectory: () => requestJson<CareDirectory>(`${API_BASE}/care/directory`),
   getFamilyCareDirectory: (familyId: string) =>
     requestJson<CareDirectory>(`${API_BASE}/care/directory/family/${familyId}`),
-  listMockAccounts: () => requestJson<AuthAccountPreview[]>(`${API_BASE}/auth/mock-accounts`),
-  login: (payload: { username: string; password: string }) =>
+  listMockAccounts: (options?: RequestJsonOptions) =>
+    requestJson<AuthAccountPreview[]>(`${API_BASE}/auth/mock-accounts`, undefined, options),
+  login: (payload: { username: string; password: string }, options?: RequestJsonOptions) =>
     requestJson<LoginResponse>(`${API_BASE}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    }),
-  loginMock: (payload: { username: string; password: string }) =>
+    }, options),
+  loginMock: (payload: { username: string; password: string }, options?: RequestJsonOptions) =>
     requestJson<LoginResponse>(`${API_BASE}/auth/mock-login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-    }),
+    }, options),
   publicRegisterElder: (payload: ElderRegisterRequest) =>
     requestJson<UserRegisterResponse>(`${API_BASE}/auth/register/elder`, {
       method: "POST",
@@ -1083,10 +1807,10 @@ export const api = {
       headers: jsonHeaders(token),
       body: JSON.stringify(payload),
     }),
-  me: (token: string) =>
+  me: (token: string, options?: RequestJsonOptions) =>
     requestJson<SessionUser>(`${API_BASE}/auth/me`, {
       headers: withBearer(token),
-    }),
+    }, options),
   getSystemInfo: () => requestJson<SystemInfoResponse>(`${API_BASE}/system/info`),
   getDemoDataStatus: () => requestJson<DemoDataStatus>(`${API_BASE}/system/demo-data/status`),
   refreshDemoData: () =>
@@ -1135,7 +1859,13 @@ export const api = {
       headers: withBearer(token),
     }),
   healthSocket: (mac: string) => new WebSocket(`${WS_BASE}/ws/health/${mac}`),
-  alarmSocket: () => new WebSocket(`${WS_BASE}/ws/alarms`),
+  alarmSocket: (token?: string) => {
+    const resolvedToken = token?.trim() ?? "";
+    const url = resolvedToken
+      ? `${WS_BASE}/ws/alarms?token=${encodeURIComponent(resolvedToken)}`
+      : `${WS_BASE}/ws/alarms`;
+    return new WebSocket(url);
+  },
 
   // Voice API
   voiceStatus: () =>

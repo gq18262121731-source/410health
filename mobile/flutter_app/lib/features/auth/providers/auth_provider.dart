@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../../../core/services/mobile_device_registration_service.dart';
 import '../../session/models/user_model.dart';
 import '../../session/services/session_manager.dart';
 import '../models/register_models.dart';
@@ -10,8 +12,9 @@ enum AuthStatus { initial, authenticating, authenticated, unauthenticated, error
 enum RegisterStatus { idle, submitting, success, error }
 
 class AuthProvider extends ChangeNotifier {
-  final AuthRepository _repository;
-  final SessionManager _sessionManager;
+  AuthRepository _repository;
+  SessionManager _sessionManager;
+  MobileDeviceRegistrationService _mobileDeviceRegistrationService;
 
   AuthStatus _status = AuthStatus.initial;
   RegisterStatus _registerStatus = RegisterStatus.idle;
@@ -19,8 +22,9 @@ class AuthProvider extends ChangeNotifier {
   String? _errorMessage;
   String? _registerError;
   RegisterResponse? _lastRegistered;
+  bool _disposed = false;
 
-  AuthProvider(this._repository, this._sessionManager);
+  AuthProvider(this._repository, this._sessionManager, this._mobileDeviceRegistrationService);
 
   AuthStatus get status => _status;
   RegisterStatus get registerStatus => _registerStatus;
@@ -29,10 +33,26 @@ class AuthProvider extends ChangeNotifier {
   String? get registerError => _registerError;
   RegisterResponse? get lastRegistered => _lastRegistered;
 
+  void updateDependencies(
+    AuthRepository repository,
+    SessionManager sessionManager,
+    MobileDeviceRegistrationService mobileDeviceRegistrationService,
+  ) {
+    _repository = repository;
+    _sessionManager = sessionManager;
+    _mobileDeviceRegistrationService = mobileDeviceRegistrationService;
+  }
+
+  void _notifyIfAlive() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
   Future<void> checkSession() async {
     if (!_sessionManager.isAuthenticated) {
       _status = AuthStatus.unauthenticated;
-      notifyListeners();
+      _notifyIfAlive();
       return;
     }
 
@@ -43,13 +63,13 @@ class AuthProvider extends ChangeNotifier {
       _status = AuthStatus.unauthenticated;
       await _sessionManager.clearSession();
     }
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> login(String username, String password) async {
     _status = AuthStatus.authenticating;
     _errorMessage = null;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
       final response = await _repository.login(username, password);
@@ -58,29 +78,30 @@ class AuthProvider extends ChangeNotifier {
       _status = AuthStatus.authenticated;
     } catch (e) {
       _status = AuthStatus.error;
-      _errorMessage = '登录失败，请检查账号密码';
+      _errorMessage = _humanizeLoginError(e.toString());
     }
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<void> logout() async {
+    await _mobileDeviceRegistrationService.revokeCurrentInstallation();
     await _sessionManager.clearSession();
     _user = null;
     _status = AuthStatus.unauthenticated;
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   void handleUnauthorized() {
     _user = null;
     _status = AuthStatus.unauthenticated;
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   void resetRegisterState() {
     _registerStatus = RegisterStatus.idle;
     _registerError = null;
     _lastRegistered = null;
-    notifyListeners();
+    _notifyIfAlive();
   }
 
   Future<bool> registerElder(ElderRegisterRequest request) async {
@@ -98,25 +119,46 @@ class AuthProvider extends ChangeNotifier {
   Future<bool> _doRegister(Future<RegisterResponse> Function() call) async {
     _registerStatus = RegisterStatus.submitting;
     _registerError = null;
-    notifyListeners();
+    _notifyIfAlive();
     try {
       _lastRegistered = await call();
       _registerStatus = RegisterStatus.success;
-      notifyListeners();
+      _notifyIfAlive();
       return true;
     } catch (e) {
       _registerStatus = RegisterStatus.error;
       _registerError = _humanizeRegisterError(e.toString());
-      notifyListeners();
+      _notifyIfAlive();
       return false;
     }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  static String _humanizeLoginError(String raw) {
+    if (raw.contains('SocketException') ||
+        raw.contains('Connection refused') ||
+        raw.contains('Connection error') ||
+        raw.contains('No route to host')) {
+      return '无法连接到后端服务，请在服务器设置中填写局域网 IP 和 8000 端口。';
+    }
+    if (raw.contains('401') || raw.contains('403')) {
+      return '登录失败，请检查账号和密码。';
+    }
+    return '登录失败，请稍后重试。';
   }
 
   static String _humanizeRegisterError(String raw) {
     if (raw.contains('PHONE_ALREADY_EXISTS')) return '该手机号已被注册，请更换手机号。';
     if (raw.contains('LOGIN_USERNAME_ALREADY_EXISTS')) return '该账号名已被占用，请更换账号名。';
     if (raw.contains('409')) return '该账号信息已存在，请检查手机号或账号名。';
-    if (raw.contains('SocketException') || raw.contains('Connection')) return '无法连接到服务器，请检查网络后重试。';
+    if (raw.contains('SocketException') || raw.contains('Connection')) {
+      return '无法连接到服务器，请检查网络后重试。';
+    }
     return '注册失败，请稍后重试。';
   }
 }

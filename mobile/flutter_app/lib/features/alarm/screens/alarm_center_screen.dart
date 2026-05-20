@@ -102,7 +102,7 @@ class _AlarmCenterScreenState extends State<AlarmCenterScreen> with SingleTicker
 
     return Card(
       color: (isSOS || isCritical)
-          ? AppColors.error.withOpacity(0.05)
+          ? AppColors.error.withValues(alpha: 0.05)
           : AppColors.surface,
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(

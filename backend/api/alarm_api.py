@@ -3,11 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Header, Query
 
 from backend.dependencies import (
+    filter_alarm_queue_items_for_user,
+    filter_alarm_records_for_user,
     get_alarm_service,
     get_care_service,
     get_health_data_repository,
     get_websocket_manager,
     require_session_user,
+    resolve_session_user_by_token,
 )
 from backend.models.alarm_model import AlarmQueueItem, AlarmRecord, MobilePushRecord
 from backend.models.user_model import UserRole
@@ -16,17 +19,34 @@ from backend.models.user_model import UserRole
 router = APIRouter(prefix="/alarms", tags=["alarms"])
 
 
+def _extract_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token.strip()
+
+
 @router.get("", response_model=list[AlarmRecord])
 async def list_alarms(
     device_mac: str | None = Query(default=None),
     active_only: bool = Query(default=False),
+    authorization: str | None = Header(default=None),
 ) -> list[AlarmRecord]:
-    return get_alarm_service().list_alarms(device_mac=device_mac, active_only=active_only)
+    user = resolve_session_user_by_token(_extract_token(authorization))
+    alarms = get_alarm_service().list_alarms(device_mac=device_mac, active_only=active_only)
+    return filter_alarm_records_for_user(alarms, user)
 
 
 @router.get("/queue", response_model=list[AlarmQueueItem])
-async def list_alarm_queue(active_only: bool = Query(default=True)) -> list[AlarmQueueItem]:
-    return get_alarm_service().queue_items(active_only=active_only)
+async def list_alarm_queue(
+    active_only: bool = Query(default=True),
+    authorization: str | None = Header(default=None),
+) -> list[AlarmQueueItem]:
+    user = resolve_session_user_by_token(_extract_token(authorization))
+    items = get_alarm_service().queue_items(active_only=active_only)
+    return filter_alarm_queue_items_for_user(items, user)
 
 
 @router.get("/queue/snapshot")
@@ -73,6 +93,34 @@ async def list_mobile_pushes(
         return [record for record in pushes if record.device_mac.upper() in allowed_macs]
 
     return pushes
+
+
+@router.post("/fall/acknowledge-active")
+async def acknowledge_active_fall_alarms() -> dict[str, object]:
+    active_fall_alarms = [
+        alarm
+        for alarm in get_alarm_service().list_alarms(active_only=True)
+        if alarm.alarm_type.value in {"fall_detected", "fall_injury_risk"}
+    ]
+    if not active_fall_alarms:
+        return {"acknowledged_count": 0, "alarm_ids": []}
+
+    acknowledged = get_alarm_service().acknowledge_many({alarm.id for alarm in active_fall_alarms})
+    repository = get_health_data_repository()
+    for alarm in acknowledged:
+        repository.acknowledge_alert(alarm.id)
+        await get_websocket_manager().broadcast_alarm(alarm.model_dump(mode="json"))
+    await get_websocket_manager().broadcast_alarm_queue(
+        {
+            "type": "alarm_queue",
+            "queue": [item.model_dump(mode="json") for item in get_alarm_service().queue_items(active_only=True)],
+            "snapshot": get_alarm_service().queue_snapshot(),
+        }
+    )
+    return {
+        "acknowledged_count": len(acknowledged),
+        "alarm_ids": [alarm.id for alarm in acknowledged],
+    }
 
 
 @router.post("/{alarm_id}/acknowledge", response_model=AlarmRecord)

@@ -314,7 +314,8 @@ class T10PacketParser:
                 int.from_bytes(payload[marker_index + 5 : marker_index + 7], byteorder="big") / 100.0,
                 2,
             )
-            update_fields["temperature"] = body_temp
+            if 35.0 <= body_temp <= 45.0:
+                update_fields["temperature"] = body_temp
 
         return sample.model_copy(update=update_fields)
 

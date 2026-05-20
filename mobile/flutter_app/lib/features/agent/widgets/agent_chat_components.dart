@@ -51,7 +51,7 @@ class AgentMessageBubble extends StatelessWidget {
       ),
       boxShadow: <BoxShadow>[
         BoxShadow(
-          color: Colors.black.withOpacity(0.06),
+          color: Colors.black.withValues(alpha: 0.06),
           blurRadius: compact ? 16 : 24,
           offset: const Offset(0, 8),
         ),
@@ -150,7 +150,7 @@ class AgentMessageBubble extends StatelessWidget {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: isUser
-            ? accent.withOpacity(0.1)
+            ? accent.withValues(alpha: 0.1)
             : AppColors.background,
         border: Border.all(
           color: isUser ? accent : AppColors.border,
@@ -209,7 +209,7 @@ class AgentMessageBubble extends StatelessWidget {
         height: 1.6,
       ),
       blockquoteDecoration: BoxDecoration(
-        color: isUser ? Colors.black.withOpacity(0.08) : AppColors.background,
+        color: isUser ? Colors.black.withValues(alpha: 0.08) : AppColors.background,
         borderRadius: BorderRadius.circular(12),
         border: Border(
           left: BorderSide(
@@ -220,11 +220,11 @@ class AgentMessageBubble extends StatelessWidget {
       ),
       code: TextStyle(
         color: primaryText,
-        backgroundColor: isUser ? Colors.black.withOpacity(0.18) : AppColors.background,
+        backgroundColor: isUser ? Colors.black.withValues(alpha: 0.18) : AppColors.background,
         fontSize: fontSize - 1,
       ),
       codeblockDecoration: BoxDecoration(
-        color: isUser ? Colors.black.withOpacity(0.12) : AppColors.background,
+        color: isUser ? Colors.black.withValues(alpha: 0.12) : AppColors.background,
         borderRadius: BorderRadius.circular(12),
       ),
     );

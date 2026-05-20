@@ -109,7 +109,8 @@ def test_latest_serial_registration_becomes_active_target_and_falls_back_on_dele
     second = service.register_device(
         DeviceRegisterRequest(
             mac_address="53:57:08:04:00:02",
-            device_name="T10-WATCH",
+            device_name="T10-WATCH-BACKUP",
+            user_id=elder.id,
             ingest_mode=DeviceIngestMode.SERIAL,
         )
     )
@@ -156,12 +157,21 @@ def test_register_serial_device_without_binding_is_allowed_even_when_elder_has_s
     assert bound.user_id == elder.id
     assert unbound.user_id is None
     assert unbound.bind_status == DeviceBindStatus.UNBOUND
-    assert service.get_active_serial_target_mac() == unbound.mac_address
+    assert service.get_active_serial_target_mac() == bound.mac_address
 
 
 def test_can_switch_active_serial_target_explicitly(tmp_path) -> None:
+    user_service = UserService()
+    elder = user_service.seed_elder(
+        user_id="user-elder-switch",
+        name="切换老人",
+        phone="13900006666",
+        password="123456",
+        age=77,
+        apartment="4-401",
+    )
     service = DeviceService(
-        UserService(),
+        user_service,
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'device-switch.db').as_posix()}",
     )
 
@@ -170,13 +180,15 @@ def test_can_switch_active_serial_target_explicitly(tmp_path) -> None:
             mac_address="54:10:26:01:00:11",
             device_name="T10-WATCH",
             ingest_mode=DeviceIngestMode.SERIAL,
+            user_id=elder.id,
         )
     )
     second = service.register_device(
         DeviceRegisterRequest(
             mac_address="54:10:26:01:00:12",
-            device_name="T10-WATCH",
+            device_name="T10-WATCH-BACKUP",
             ingest_mode=DeviceIngestMode.SERIAL,
+            user_id=elder.id,
         )
     )
 
@@ -185,6 +197,50 @@ def test_can_switch_active_serial_target_explicitly(tmp_path) -> None:
     assert previous == second.mac_address
     assert active.mac_address == first.mac_address
     assert service.get_active_serial_target_mac() == first.mac_address
+
+
+def test_binding_new_serial_watch_detaches_previous_same_model_and_sets_target(tmp_path) -> None:
+    user_service = UserService()
+    elder = user_service.seed_elder(
+        user_id="user-elder-rebind",
+        name="换绑老人",
+        phone="13900005555",
+        password="123456",
+        age=78,
+        apartment="5-501",
+    )
+    service = DeviceService(
+        user_service,
+        database_url=f"sqlite+aiosqlite:///{(tmp_path / 'device-rebind.db').as_posix()}",
+    )
+
+    old_watch = service.register_device(
+        DeviceRegisterRequest(
+            mac_address="54:10:26:01:00:DF",
+            device_name="T10-WATCH",
+            user_id=elder.id,
+            ingest_mode=DeviceIngestMode.SERIAL,
+        )
+    )
+    new_watch = service.register_device(
+        DeviceRegisterRequest(
+            mac_address="54:10:26:01:00:E7",
+            device_name="T10-WATCH",
+            user_id=elder.id,
+            ingest_mode=DeviceIngestMode.SERIAL,
+        )
+    )
+
+    refreshed_old = service.get_device(old_watch.mac_address)
+    refreshed_new = service.get_device(new_watch.mac_address)
+
+    assert refreshed_old is not None
+    assert refreshed_new is not None
+    assert refreshed_old.user_id is None
+    assert refreshed_old.bind_status == DeviceBindStatus.UNBOUND
+    assert refreshed_new.user_id == elder.id
+    assert refreshed_new.bind_status == DeviceBindStatus.BOUND
+    assert service.get_active_serial_target_mac() == refreshed_new.mac_address
 
 
 def test_switching_mock_device_as_serial_target_is_rejected(tmp_path) -> None:
@@ -206,6 +262,27 @@ def test_switching_mock_device_as_serial_target_is_rejected(tmp_path) -> None:
         assert str(exc) == "DEVICE_NOT_SERIAL"
     else:
         raise AssertionError("expected switching mock device to fail")
+
+
+def test_switching_unbound_serial_device_as_target_is_rejected(tmp_path) -> None:
+    service = DeviceService(
+        UserService(),
+        database_url=f"sqlite+aiosqlite:///{(tmp_path / 'device-switch-unbound.db').as_posix()}",
+    )
+    device = service.register_device(
+        DeviceRegisterRequest(
+            mac_address="54:10:26:01:00:13",
+            device_name="T10-WATCH",
+            ingest_mode=DeviceIngestMode.SERIAL,
+        )
+    )
+
+    try:
+        service.set_active_serial_target(device.mac_address)
+    except ValueError as exc:
+        assert str(exc) == "DEVICE_NOT_BOUND"
+    else:
+        raise AssertionError("expected switching unbound serial device to fail")
 
 
 def test_demo_directory_strictly_matches_setup_account_layout(tmp_path) -> None:
@@ -252,13 +329,13 @@ def test_demo_directory_strictly_matches_setup_account_layout(tmp_path) -> None:
     assert family01 is not None
     assert family01.id == "family01"
     assert family01.elder_ids == ["elder01_01", "elder01_02"]
-    assert wang_xiuying is not None
-    assert wang_xiuying.id == "elder01_01"
-    assert li_jianguo is not None
-    assert li_jianguo.id == "elder01_02"
-    assert wang_xiuying.device_macs == []
-    assert li_jianguo.device_mac == first_mock_device.mac_address
-    assert serial_device.mac_address not in li_jianguo.device_macs
+    assert zhang_san is not None
+    assert zhang_san.id == "elder01_01"
+    assert li_si is not None
+    assert li_si.id == "elder01_02"
+    assert zhang_san.device_macs == []
+    assert li_si.device_mac == first_mock_device.mac_address
+    assert serial_device.mac_address not in li_si.device_macs
 
 
 def test_demo_bound_serial_device_uses_demo_elder_mapping_in_metrics(monkeypatch, tmp_path) -> None:
@@ -435,21 +512,32 @@ def test_formal_family_inference_stays_off_when_community_has_multiple_families(
 
 
 def test_serial_target_switch_api_returns_new_target(monkeypatch, tmp_path) -> None:
+    user_service = UserService()
+    elder = user_service.seed_elder(
+        user_id="user-elder-switch-api",
+        name="串口切换老人",
+        phone="13900009999",
+        password="123456",
+        age=77,
+        apartment="7-701",
+    )
     service = DeviceService(
-        UserService(),
+        user_service,
         database_url=f"sqlite+aiosqlite:///{(tmp_path / 'device-switch-api.db').as_posix()}",
     )
     first = service.register_device(
         DeviceRegisterRequest(
             mac_address="54:10:26:01:00:21",
             device_name="T10-WATCH",
+            user_id=elder.id,
             ingest_mode=DeviceIngestMode.SERIAL,
         )
     )
     second = service.register_device(
         DeviceRegisterRequest(
             mac_address="54:10:26:01:00:22",
-            device_name="T10-WATCH",
+            device_name="T10-WATCH-BACKUP",
+            user_id=elder.id,
             ingest_mode=DeviceIngestMode.SERIAL,
         )
     )
@@ -547,6 +635,7 @@ def test_binding_existing_serial_device_makes_it_active_target_even_if_newer_tar
         DeviceRegisterRequest(
             mac_address="54:10:26:01:00:52",
             device_name="T10-WATCH-B",
+            user_id=elder.id,
             ingest_mode=DeviceIngestMode.SERIAL,
         )
     )
@@ -597,6 +686,7 @@ def test_rebinding_existing_serial_device_makes_it_active_target_even_if_newer_t
         DeviceRegisterRequest(
             mac_address="54:10:26:01:00:62",
             device_name="T10-WATCH-B",
+            user_id=old_elder.id,
             ingest_mode=DeviceIngestMode.SERIAL,
         )
     )

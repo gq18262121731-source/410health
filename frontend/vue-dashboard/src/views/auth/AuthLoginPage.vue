@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { User, Lock, Heart } from "lucide-vue-next";
-import heartImage from "../../assets/爱心.png";
 
 defineProps<{
   loginUsername: string;

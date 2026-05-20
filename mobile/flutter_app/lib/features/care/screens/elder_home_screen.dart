@@ -17,17 +17,28 @@ class ElderHomeScreen extends StatefulWidget {
 }
 
 class _ElderHomeScreenState extends State<ElderHomeScreen> {
+  CareProvider? _careProvider;
+  bool _isBindingDevice = false;
+  bool _isUnbindingDevice = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<CareProvider>().startAutoRefresh();
+      if (!mounted) return;
+      _careProvider?.startAutoRefresh();
     });
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _careProvider = context.read<CareProvider>();
+  }
+
+  @override
   void dispose() {
-    context.read<CareProvider>().stopAutoRefresh();
+    _careProvider?.stopAutoRefresh();
     super.dispose();
   }
 
@@ -97,6 +108,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
 
     final hasDevice =
         profile.boundDeviceMacs.isNotEmpty || profile.deviceMetrics.isNotEmpty;
+    final hasRealtimeSample = metric?.hasRealtimeSample ?? false;
     final deviceStatus = metric?.deviceStatus ?? 'unknown';
     final batteryLabel = metric?.battery != null ? '${metric!.battery}%' : '--';
 
@@ -109,9 +121,18 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
             _buildHeaderCard(elderName),
             const SizedBox(height: 20),
             _buildDeviceStatusCard(
-                metric, hasDevice, deviceStatus, batteryLabel),
+              metric,
+              hasDevice,
+              hasRealtimeSample,
+              deviceStatus,
+              batteryLabel,
+            ),
             const SizedBox(height: 20),
-            _buildRealtimeMetrics(metric),
+            _buildRealtimeMetrics(
+              metric,
+              hasDevice: hasDevice,
+              hasRealtimeSample: hasRealtimeSample,
+            ),
             const SizedBox(height: 24),
             Row(
               children: [
@@ -211,6 +232,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
   Widget _buildDeviceStatusCard(
     CareAccessDeviceMetric? metric,
     bool hasDevice,
+    bool hasRealtimeSample,
     String status,
     String battery,
   ) {
@@ -226,7 +248,9 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
         border: Border.all(
           width: 3,
           color: hasDevice
-              ? (isOnline ? AppColors.success : AppColors.warning)
+              ? (isOnline && hasRealtimeSample
+                  ? AppColors.success
+                  : AppColors.warning)
               : AppColors.error,
         ),
         boxShadow: [
@@ -242,7 +266,9 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
           Icon(
             hasDevice ? Icons.watch : Icons.watch_off,
             size: 64,
-            color: hasDevice ? (isOnline ? Colors.green : Colors.orange) : Colors.red,
+            color: hasDevice
+                ? (isOnline && hasRealtimeSample ? Colors.green : Colors.orange)
+                : Colors.red,
           ),
           const SizedBox(height: 16),
           Text(
@@ -260,6 +286,31 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
               textAlign: TextAlign.center,
               style: const TextStyle(color: AppColors.textSub, fontSize: 20, fontWeight: FontWeight.bold),
             ),
+            if (!hasRealtimeSample) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.warning.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppColors.warning.withValues(alpha: 0.35),
+                    width: 1.5,
+                  ),
+                ),
+                child: const Text(
+                  '手环已绑定，正在等待第一批健康数据。请保持佩戴并等待 10-30 秒。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: AppColors.warning,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w900,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ],
           ] else ...[
             const SizedBox(height: 8),
             const Text(
@@ -286,11 +337,43 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
     );
   }
 
-  Widget _buildRealtimeMetrics(CareAccessDeviceMetric? metric) {
+  Widget _buildRealtimeMetrics(
+    CareAccessDeviceMetric? metric, {
+    required bool hasDevice,
+    required bool hasRealtimeSample,
+  }) {
     return Wrap(
       spacing: 12,
       runSpacing: 12,
       children: [
+        if (hasDevice && !hasRealtimeSample)
+          Container(
+            width: MediaQuery.of(context).size.width - 48,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFFBEB),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.sync, color: Color(0xFFF59E0B), size: 28),
+                SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '已连接手环，但暂未收到有效健康数据包。页面会自动刷新，收到后会立即显示心率、血氧、血压等指标。',
+                    style: TextStyle(
+                      color: Color(0xFF92400E),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         _buildMetricCard(
           '心率',
           _formatDouble(metric?.heartRate),
@@ -387,10 +470,10 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
   }
 
   Widget _buildBindDeviceButton(CareProvider provider) {
+    final isBusy = _isBindingDevice || provider.isMutating;
     return ElevatedButton.icon(
-      onPressed:
-          provider.isMutating ? null : () => _showBindDeviceDialog(provider),
-      icon: provider.isMutating
+      onPressed: isBusy ? null : () => _showBindDeviceDialog(provider),
+      icon: isBusy
           ? const SizedBox(
               width: 24,
               height: 24,
@@ -398,7 +481,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
             )
           : const Icon(Icons.add_link, size: 32, color: Colors.white),
       label: Text(
-        provider.isMutating ? '处理中...' : '绑定新手环',
+        isBusy ? '处理中...' : '绑定新手环',
         style: const TextStyle(
           fontSize: 26,
           color: Colors.white,
@@ -414,8 +497,9 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
   }
 
   Widget _buildUnbindDeviceButton(CareProvider provider) {
+    final isBusy = _isUnbindingDevice || provider.isMutating;
     return OutlinedButton.icon(
-      onPressed: provider.isMutating
+      onPressed: isBusy
           ? null
           : () async {
               final confirmed = await showDialog<bool>(
@@ -467,22 +551,9 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
               );
               if (confirmed != true) return;
 
-              final success = await provider.unbindSelfDevice();
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    success
-                        ? '手环已成功解绑'
-                        : (provider.errorMessage ?? '解绑失败，请稍后重试'),
-                    style: const TextStyle(fontSize: 18),
-                  ),
-                  backgroundColor:
-                      success ? Colors.green.shade700 : Colors.red.shade700,
-                ),
-              );
+              await _performUnbindDevice(provider);
             },
-      icon: provider.isMutating
+      icon: isBusy
           ? const SizedBox(
               width: 24,
               height: 24,
@@ -490,7 +561,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
             )
           : const Icon(Icons.link_off, size: 28, color: AppColors.warning),
       label: Text(
-        provider.isMutating ? '处理中...' : '解绑手环设备',
+        isBusy ? '处理中...' : '解绑手环设备',
         style: const TextStyle(
           fontSize: 22,
           color: AppColors.warning,
@@ -575,6 +646,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
   }
 
   Future<void> _showBindDeviceDialog(CareProvider provider) async {
+    provider.stopAutoRefresh();
     final macController = TextEditingController();
     final nameController = TextEditingController(text: 'T10-WATCH');
     final result = await showDialog<_BindDeviceResult>(
@@ -673,17 +745,116 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
     macController.dispose();
     nameController.dispose();
 
-    if (result == null) return;
+    if (result == null) {
+      if (mounted) {
+        _resumeAutoRefreshAfterBuild(provider);
+      }
+      return;
+    }
 
-    final success = await provider.bindSelfDevice(
-      result.macAddress,
-      deviceName: result.deviceName,
-    );
-    if (!mounted) return;
+    await _performBindDevice(provider, result);
+  }
+
+  Future<void> _performBindDevice(
+    CareProvider provider,
+    _BindDeviceResult result,
+  ) async {
+    if (_isBindingDevice) {
+      _resumeAutoRefreshAfterBuild(provider);
+      return;
+    }
+    provider.stopAutoRefresh();
+    setState(() => _isBindingDevice = true);
+    try {
+      // Let the dialog route and its inherited-provider dependents fully unmount
+      // before the bind call refreshes CareProvider.
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 180));
+      if (!mounted) return;
+
+      final success = await provider.bindSelfDevice(
+        result.macAddress,
+        deviceName: result.deviceName,
+      );
+      if (!mounted) return;
+
+      _showOperationSnackBarAfterBuild(
+        success: success,
+        successMessage: '手环已成功登记并绑定',
+        fallbackError: '绑定手环失败，请稍后重试',
+        provider: provider,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isBindingDevice = false);
+        _resumeAutoRefreshAfterBuild(provider);
+      }
+    }
+  }
+
+  Future<void> _performUnbindDevice(CareProvider provider) async {
+    if (_isUnbindingDevice) return;
+    provider.stopAutoRefresh();
+    setState(() => _isUnbindingDevice = true);
+    try {
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 140));
+      if (!mounted) return;
+
+      final success = await provider.unbindSelfDevice();
+      if (!mounted) return;
+
+      _showOperationSnackBarAfterBuild(
+        success: success,
+        successMessage: '手环已成功解绑',
+        fallbackError: '解绑失败，请稍后重试',
+        provider: provider,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isUnbindingDevice = false);
+        _resumeAutoRefreshAfterBuild(provider);
+      }
+    }
+  }
+
+  void _resumeAutoRefreshAfterBuild(CareProvider provider) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Future<void>.delayed(const Duration(milliseconds: 80), () {
+        if (mounted) {
+          provider.startAutoRefresh();
+        }
+      });
+    });
+  }
+
+  void _showOperationSnackBarAfterBuild({
+    required bool success,
+    required String successMessage,
+    required String fallbackError,
+    required CareProvider provider,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _showOperationSnackBar(
+        success: success,
+        successMessage: successMessage,
+        fallbackError: fallbackError,
+        provider: provider,
+      );
+    });
+  }
+
+  void _showOperationSnackBar({
+    required bool success,
+    required String successMessage,
+    required String fallbackError,
+    required CareProvider provider,
+  }) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          success ? '手环已成功登记并绑定' : (provider.errorMessage ?? '绑定手环失败，请稍后重试'),
+          success ? successMessage : (provider.errorMessage ?? fallbackError),
           style: const TextStyle(fontSize: 18),
         ),
         backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,

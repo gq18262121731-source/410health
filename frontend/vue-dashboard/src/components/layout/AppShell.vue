@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { api, type AlarmRecord, type SessionUser } from "../../api/client";
+import { LogOut, ShieldCheck } from "lucide-vue-next";
+import { api, type AlarmRecord, type FallReviewFinalizedMessage, type FallReviewPendingMessage, type SessionUser } from "../../api/client";
 import { focusCommunityWorkspaceDevice } from "../../composables/useCommunityWorkspace";
 import type { PageKey } from "../../composables/useHashRouting";
 import CommunitySosOverlay from "./CommunitySosOverlay.vue";
+import FallAlertOverlay from "./FallAlertOverlay.vue";
 import GlobalHeader from "./GlobalHeader.vue";
 import PrimaryNav from "./PrimaryNav.vue";
+import ReviewPendingOverlay from "./ReviewPendingOverlay.vue";
 import ToolEntryMenu from "./ToolEntryMenu.vue";
 
 const props = defineProps<{
@@ -22,12 +25,40 @@ const emit = defineEmits<{
 
 const activeAlarmCount = ref(0);
 const activeRealtimeAlarms = ref<AlarmRecord[]>([]);
+const alarmSessionStartedAt = ref(Date.now());
 const simulatedAlarms = ref<AlarmRecord[]>([]); // 存储模拟告警
 const acknowledgingSos = ref(false);
+const acknowledgingFall = ref(false);
 const manuallyAcknowledging = ref(false); // 标记是否正在手动确认告警
+const pendingFallReview = ref<FallReviewPendingMessage | null>(null);
 const isCommunityWorkspace = computed(
   () => props.sessionUser.role === "community" || props.sessionUser.role === "admin",
 );
+const showStandaloneNav = computed(
+  () => !isCommunityWorkspace.value && props.sessionUser.role !== "family" && props.allowedPages.length > 0,
+);
+const canShowFallOverlay = computed(
+  () => props.sessionUser.role === "community" || props.sessionUser.role === "admin" || props.sessionUser.role === "family",
+);
+const mergedHeaderPages = new Set<PageKey>(["overview", "topology", "members", "agent"]);
+const showGlobalHeader = computed(
+  () => props.activePage !== "family" && (!isCommunityWorkspace.value || !mergedHeaderPages.has(props.activePage)),
+);
+const showMergedPageAccountBar = computed(
+  () => isCommunityWorkspace.value && mergedHeaderPages.has(props.activePage),
+);
+const roleLabel = computed(() => {
+  switch (props.sessionUser.role) {
+    case "community":
+      return "社区值守";
+    case "family":
+      return "家属查看";
+    case "admin":
+      return "系统管理";
+    default:
+      return "成员账号";
+  }
+});
 const activeSosAlarms = computed(() =>
   activeRealtimeAlarms.value
     .filter((alarm) => !alarm.acknowledged && isRealSosAlarm(alarm))
@@ -35,6 +66,30 @@ const activeSosAlarms = computed(() =>
 );
 const primarySosAlarm = computed(() => activeSosAlarms.value[0] ?? null);
 const additionalSosCount = computed(() => Math.max(0, activeSosAlarms.value.length - 1));
+const activeFallAlarms = computed(() =>
+  activeRealtimeAlarms.value
+    .filter((alarm) => !alarm.acknowledged && isFallAlarm(alarm))
+    .sort((left, right) => {
+      const reviewRankDelta = fallPresentationRank(left) - fallPresentationRank(right);
+      if (reviewRankDelta !== 0) return reviewRankDelta;
+      if (left.alarm_level !== right.alarm_level) return left.alarm_level - right.alarm_level;
+      return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+    }),
+);
+const presentableFallAlarms = computed(() =>
+  activeFallAlarms.value.filter((alarm) => shouldPresentFallAlarm(alarm)),
+);
+const primaryFallAlarm = computed(() => presentableFallAlarms.value[0] ?? null);
+const additionalFallCount = computed(() => Math.max(0, presentableFallAlarms.value.length - 1));
+const shouldShowPendingFallReview = computed(() => {
+  if (!pendingFallReview.value || !primaryFallAlarm.value) return false;
+  return fallIncidentId(primaryFallAlarm.value) === pendingFallReview.value.incident_id;
+});
+const primaryAudibleAlarm = computed(() => {
+  if (primarySosAlarm.value) return primarySosAlarm.value;
+  if (primaryFallAlarm.value && isAudibleFallAlarm(primaryFallAlarm.value)) return primaryFallAlarm.value;
+  return null;
+});
 
 let refreshTimer: number | null = null;
 let alarmChannel: WebSocket | null = null;
@@ -42,9 +97,130 @@ let lastPresentedSosAlarmId = "";
 let sosAudioElement: HTMLAudioElement | null = null;
 let unlockAudioListenerBound = false;
 let unlockAudioHandler: (() => void) | null = null;
+const FALL_OVERLAY_SESSION_GRACE_MS = 15_000;
 
 function isRealSosAlarm(alarm: AlarmRecord) {
   return alarm.alarm_type === "sos" && !alarm.acknowledged && Boolean(alarm.metadata?.is_real_device);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function isFallAlarm(alarm: AlarmRecord) {
+  return alarm.alarm_type === "fall_detected" || alarm.alarm_type === "fall_injury_risk";
+}
+
+function fallEvent(alarm: AlarmRecord) {
+  return asRecord(alarm.metadata?.event);
+}
+
+function fallIncidentId(alarm: AlarmRecord) {
+  const value = fallEvent(alarm)?.incident_id ?? alarm.metadata?.incident_id;
+  return typeof value === "string" && value.trim() ? value : "";
+}
+
+function fallReview(alarm: AlarmRecord) {
+  return asRecord(fallEvent(alarm)?.multimodal_review);
+}
+
+function fallReviewJudgement(alarm: AlarmRecord) {
+  const value = fallReview(alarm)?.judgement;
+  return typeof value === "string" && value.trim() ? value : "";
+}
+
+function fallReviewConfidence(alarm: AlarmRecord) {
+  const value = fallReview(alarm)?.confidence;
+  return typeof value === "string" && value.trim() ? value : "";
+}
+
+function fallReviewSuppressesStrongAlert(alarm: AlarmRecord) {
+  const judgement = fallReviewJudgement(alarm);
+  const confidence = fallReviewConfidence(alarm);
+  const action = fallReview(alarm)?.recommended_action;
+  return (
+    judgement === "no_fall" &&
+    ((confidence === "medium" || confidence === "high") || action === "downgrade")
+  );
+}
+
+function fallReviewAction(alarm: AlarmRecord) {
+  const value = fallReview(alarm)?.recommended_action;
+  return typeof value === "string" && value.trim() ? value : "";
+}
+
+function fallSnapshotAvailable(alarm: AlarmRecord) {
+  const path = fallEvent(alarm)?.snapshot_path;
+  return typeof path === "string" && path.trim().length > 0;
+}
+
+function isSeriousFallAlarm(alarm: AlarmRecord) {
+  if (alarm.alarm_level <= 2) return true;
+  const event = fallEvent(alarm);
+  const injury = asRecord(event?.injury);
+  const injuryLevel = typeof injury?.level === "string" ? injury.level : "";
+  const severity = typeof event?.severity === "string" ? event.severity : "";
+  return ["I3", "I4", "I5"].includes(injuryLevel) || ["L3", "L4", "L5"].includes(severity);
+}
+
+function shouldShowFullscreenFallOverlay(alarm: AlarmRecord) {
+  if (!isFallAlarm(alarm) || alarm.acknowledged) return false;
+  if (!fallSnapshotAvailable(alarm)) return false;
+  if (fallReviewSuppressesStrongAlert(alarm)) return false;
+
+  const event = fallEvent(alarm);
+  const state = typeof event?.state === "string" ? event.state : "";
+  const judgement = fallReviewJudgement(alarm);
+  const action = fallReviewAction(alarm);
+
+  if (state === "confirmed_fall") {
+    return true;
+  }
+
+  if (judgement === "fall" || action === "keep_alarm") {
+    return true;
+  }
+  if ((judgement === "possible_fall" || judgement === "uncertain") && isSeriousFallAlarm(alarm)) {
+    return true;
+  }
+  if (!judgement || judgement === "not_available") {
+    return isSeriousFallAlarm(alarm) && ["confirmed_fall", "abnormal_recovery", "needs_assistance", "emergency"].includes(state);
+  }
+  return false;
+}
+
+function fallPresentationRank(alarm: AlarmRecord) {
+  const judgement = fallReviewJudgement(alarm);
+  if (fallReviewSuppressesStrongAlert(alarm)) return 3;
+  if (judgement === "fall") return 0;
+  if (judgement === "possible_fall") return 1;
+  if (judgement === "uncertain") return 2;
+  if (judgement === "no_fall") return 2;
+  return 1;
+}
+
+function isAudibleFallAlarm(alarm: AlarmRecord) {
+  if (!isFallAlarm(alarm)) return false;
+  if (fallReviewSuppressesStrongAlert(alarm)) return false;
+  if (alarm.alarm_level <= 2) return true;
+  const event = fallEvent(alarm);
+  const injury = asRecord(event?.injury);
+  const injuryLevel = typeof injury?.level === "string" ? injury.level : "";
+  const severity = typeof event?.severity === "string" ? event.severity : "";
+  return ["I3", "I4", "I5"].includes(injuryLevel) || ["L3", "L4", "L5"].includes(severity);
+}
+
+function alarmCreatedAtMs(alarm: AlarmRecord) {
+  const timestamp = new Date(alarm.created_at).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function shouldPresentFallAlarm(alarm: AlarmRecord) {
+  if (!isFallAlarm(alarm) || alarm.acknowledged) return false;
+  if (!shouldShowFullscreenFallOverlay(alarm)) return false;
+  const createdAtMs = alarmCreatedAtMs(alarm);
+  if (createdAtMs <= 0) return true;
+  return createdAtMs >= alarmSessionStartedAt.value - FALL_OVERLAY_SESSION_GRACE_MS;
 }
 
 function ensureSosAudioElement() {
@@ -125,7 +301,7 @@ function syncAlarmState(alarms: AlarmRecord[]) {
     .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime());
   activeAlarmCount.value = activeRealtimeAlarms.value.length;
   // 处理页面导航（不处理音频，由watch统一管理）
-  presentPrimarySos();
+  presentPrimaryAlarm();
 }
 
 function upsertAlarm(alarm: AlarmRecord) {
@@ -141,15 +317,43 @@ function upsertAlarm(alarm: AlarmRecord) {
   syncAlarmState(next);
 }
 
-function presentPrimarySos() {
-  if (!isCommunityWorkspace.value || !primarySosAlarm.value) {
+function mergeAlarmReviewFinalized(message: FallReviewFinalizedMessage) {
+  activeRealtimeAlarms.value = activeRealtimeAlarms.value.map((alarm) => {
+    if (fallIncidentId(alarm) !== message.incident_id) return alarm;
+    const nextMetadata = { ...(alarm.metadata ?? {}) } as Record<string, unknown>;
+    const nextEvent = { ...(asRecord(nextMetadata.event) ?? {}) };
+    if (message.event && typeof message.event === "object") {
+      Object.assign(nextEvent, message.event);
+    }
+    if (message.review && typeof message.review === "object") {
+      nextEvent.multimodal_review = message.review;
+    }
+    nextMetadata.event = nextEvent;
+    if (message.presentation && typeof message.presentation === "object") {
+      nextMetadata.presentation = message.presentation;
+    }
+    if (message.family_guidance && typeof message.family_guidance === "object") {
+      nextMetadata.family_guidance = message.family_guidance;
+    }
+    return {
+      ...alarm,
+      metadata: nextMetadata,
+    };
+  });
+}
+
+function presentPrimaryAlarm() {
+  const current = primarySosAlarm.value ?? primaryFallAlarm.value;
+  if (!isCommunityWorkspace.value || !current) {
     return;
   }
   
   // 只处理页面导航和设备聚焦，不处理音频（由watch统一管理）
-  if (lastPresentedSosAlarmId !== primarySosAlarm.value.id) {
-    lastPresentedSosAlarmId = primarySosAlarm.value.id;
-    focusCommunityWorkspaceDevice(primarySosAlarm.value.device_mac);
+  if (lastPresentedSosAlarmId !== current.id) {
+    lastPresentedSosAlarmId = current.id;
+    if (!current.device_mac.startsWith("CAMERA-")) {
+      focusCommunityWorkspaceDevice(current.device_mac);
+    }
     if (props.activePage !== "overview") {
       emit("navigate", "overview");
     }
@@ -174,12 +378,14 @@ async function refreshAlarmState() {
 function connectAlarmSocket() {
   alarmChannel?.close();
   alarmChannel = null;
-  if (!isCommunityWorkspace.value) return;
 
   alarmChannel = api.alarmSocket();
   alarmChannel.onmessage = (event) => {
     try {
-      const payload = JSON.parse(event.data) as AlarmRecord | { type?: string; queue?: Array<{ alarm?: AlarmRecord }> };
+      const payload = JSON.parse(event.data) as AlarmRecord | {
+        type?: string;
+        queue?: Array<{ alarm?: AlarmRecord }>;
+      } | FallReviewPendingMessage | FallReviewFinalizedMessage;
       if ("type" in payload && payload.type === "alarm_queue") {
         const alarms = Array.isArray(payload.queue)
           ? payload.queue
@@ -188,7 +394,18 @@ function connectAlarmSocket() {
           : [];
         syncAlarmState(alarms);
         return;
-      } 
+      }
+      if ("type" in payload && payload.type === "fall_alarm_pending_review") {
+        pendingFallReview.value = payload as FallReviewPendingMessage;
+        return;
+      }
+      if ("type" in payload && payload.type === "fall_alarm_finalized") {
+        mergeAlarmReviewFinalized(payload as FallReviewFinalizedMessage);
+        if (pendingFallReview.value?.incident_id === (payload as FallReviewFinalizedMessage).incident_id) {
+          pendingFallReview.value = null;
+        }
+        return;
+      }
       upsertAlarm(payload as AlarmRecord);
     } catch {
       // ignore malformed websocket payloads
@@ -198,13 +415,14 @@ function connectAlarmSocket() {
     alarmChannel = null;
     // Auto-reconnect after 2 seconds for real-time SOS delivery
     setTimeout(() => {
-      if (isCommunityWorkspace.value) connectAlarmSocket();
+      connectAlarmSocket();
     }, 2000);
   };
 }
 
 function startAlarmRuntime() {
   stopAlarmRuntime();
+  alarmSessionStartedAt.value = Date.now();
   void refreshAlarmState();
   connectAlarmSocket();
   refreshTimer = window.setInterval(() => {
@@ -229,7 +447,7 @@ function handleSOSSimulation(event: CustomEvent) {
   activeAlarmCount.value = activeRealtimeAlarms.value.length;
   
   // 处理页面导航（不处理音频，由watch统一管理）
-  presentPrimarySos();
+  presentPrimaryAlarm();
 }
 
 watch(() => props.sessionUser.id, () => {
@@ -303,8 +521,33 @@ async function acknowledgePrimarySos() {
   }
 }
 
+async function acknowledgePrimaryFall() {
+  const current = primaryFallAlarm.value;
+  if (!current) return;
+
+  manuallyAcknowledging.value = true;
+  acknowledgingFall.value = true;
+  stopSosToneLoop();
+
+  try {
+    activeRealtimeAlarms.value = activeRealtimeAlarms.value.filter((alarm) => alarm.id !== current.id);
+    activeAlarmCount.value = activeRealtimeAlarms.value.length;
+    if (pendingFallReview.value && pendingFallReview.value.incident_id === fallIncidentId(current)) {
+      pendingFallReview.value = null;
+    }
+    await api.ackAlarm(current.id);
+    await refreshAlarmState();
+    lastPresentedSosAlarmId = "";
+  } finally {
+    acknowledgingFall.value = false;
+    setTimeout(() => {
+      manuallyAcknowledging.value = false;
+    }, 100);
+  }
+}
+
 watch(
-  [primarySosAlarm, isCommunityWorkspace],
+  [primaryAudibleAlarm, isCommunityWorkspace],
   ([alarm, canRing], [oldAlarm]) => {
     console.log('[SOS Watch] Triggered', {
       alarm: alarm?.id,
@@ -359,13 +602,15 @@ watch(
 
     <div class="workspace-stage">
       <GlobalHeader
+        v-if="showGlobalHeader"
         :session-user="sessionUser"
         :active-alarm-count="activeAlarmCount"
+        :active-page="activePage"
         @logout="emit('logout')"
       />
 
       <div
-        v-if="!isCommunityWorkspace && allowedPages.length"
+        v-if="showStandaloneNav"
         class="app-shell__controls"
       >
         <PrimaryNav
@@ -382,6 +627,21 @@ watch(
       </div>
 
       <div class="app-shell__content">
+        <div v-if="showMergedPageAccountBar" class="app-shell__account-bar">
+          <div class="app-shell__user-info">
+            <span class="app-shell__user-name">{{ sessionUser.name }}</span>
+            <span class="app-shell__user-role">
+              <ShieldCheck :size="14" />
+              {{ roleLabel }}
+            </span>
+          </div>
+
+          <button type="button" class="app-shell__logout-btn" @click="emit('logout')">
+            <LogOut :size="16" />
+            <span>退出</span>
+          </button>
+        </div>
+
         <slot />
       </div>
     </div>
@@ -392,6 +652,19 @@ watch(
       :additional-count="additionalSosCount"
       :acknowledging="acknowledgingSos"
       @acknowledge="acknowledgePrimarySos"
+    />
+    <FallAlertOverlay
+      v-if="canShowFallOverlay && (!isCommunityWorkspace || !primarySosAlarm)"
+      :alarm="primaryFallAlarm"
+      :additional-count="additionalFallCount"
+      :acknowledging="acknowledgingFall"
+      @acknowledge="acknowledgePrimaryFall"
+    />
+    <ReviewPendingOverlay
+      :visible="Boolean(canShowFallOverlay && shouldShowPendingFallReview)"
+      :title="pendingFallReview?.title"
+      :lead="pendingFallReview?.lead"
+      :expected-seconds="pendingFallReview?.expected_seconds ?? null"
     />
   </main>
 </template>
@@ -405,8 +678,8 @@ watch(
 
 .app-shell--workspace {
   display: flex;
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
+  overflow: visible;
 }
 
 .workspace-sidebar {
@@ -435,30 +708,13 @@ watch(
   flex: 1;
   margin-left: 260px;
   width: calc(100% - 260px);
-  height: 100vh;
-  overflow-y: auto;
+  min-height: 100vh;
+  overflow-y: visible;
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: 18px;
   padding: 14px 20px 32px;
-}
-
-.workspace-stage::-webkit-scrollbar {
-  width: 8px;
-}
-
-.workspace-stage::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.workspace-stage::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.3);
-  border-radius: 4px;
-}
-
-.workspace-stage::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.5);
 }
 
 .app-shell__controls {
@@ -472,6 +728,78 @@ watch(
   flex: 1;
   width: 100%;
   min-height: 0;
+  position: relative;
+}
+
+.app-shell__account-bar {
+  position: absolute;
+  top: 22px;
+  right: 22px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.app-shell__user-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(14px);
+}
+
+.app-shell__user-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+}
+
+.app-shell__user-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-shell__logout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border: 1px solid #dbe4f0;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #64748b;
+  font-size: 0.92rem;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+
+.app-shell__logout-btn:hover {
+  color: #ffffff;
+  background: #ef4444;
+  border-color: #ef4444;
+}
+
+.app-shell__logout-btn:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
 }
 
 @media (max-width: 960px) {
@@ -494,6 +822,12 @@ watch(
     width: 100%;
     height: auto;
     overflow: visible;
+  }
+
+  .app-shell__account-bar {
+    position: static;
+    justify-content: flex-end;
+    margin-bottom: 14px;
   }
 }
 </style>

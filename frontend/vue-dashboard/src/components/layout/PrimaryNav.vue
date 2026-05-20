@@ -3,9 +3,11 @@ import { computed } from "vue";
 import {
   Activity,
   Cpu,
+  FlaskConical,
   Network,
   SquareTerminal,
   type LucideIcon,
+  UserRoundSearch,
   UsersRound,
 } from "lucide-vue-next";
 import type { PageKey } from "../../composables/useHashRouting";
@@ -31,7 +33,7 @@ const navItems = computed<NavItem[]>(() =>
     {
       page: "overview" as PageKey,
       label: "总览监护",
-      description: "实时曲线与告警",
+      description: "实时状态与告警",
       icon: Activity,
     },
     {
@@ -43,19 +45,31 @@ const navItems = computed<NavItem[]>(() =>
     {
       page: "members" as PageKey,
       label: "成员设备",
-      description: "注册、绑定与台账",
+      description: "注册、绑定与账号管理",
       icon: UsersRound,
+    },
+    {
+      page: "target-users" as PageKey,
+      label: "目标人物",
+      description: "照片注册与身份识别",
+      icon: UserRoundSearch,
     },
     {
       page: "agent" as PageKey,
       label: "智能体工作台",
-      description: "问答、分析与工具",
+      description: "问答、分析与工具调用",
       icon: SquareTerminal,
+    },
+    {
+      page: "model-tuning" as PageKey,
+      label: "模型训练展示",
+      description: "跌倒检测、评估与演示",
+      icon: FlaskConical,
     },
     {
       page: "family" as PageKey,
       label: "家属视图",
-      description: "家庭成员查看页面",
+      description: "家庭成员健康查看",
       icon: Cpu,
     },
   ] satisfies NavItem[]).filter((item) => props.allowedPages.includes(item.page)),
@@ -66,9 +80,9 @@ const navItems = computed<NavItem[]>(() =>
   <nav v-if="navItems.length" class="modern-primary-nav" aria-label="主导航">
     <div class="modern-primary-nav__header">
       <h3 class="modern-primary-nav__title">社区工作台</h3>
-      <p class="modern-primary-nav__subtitle">监护、拓扑、成员设备等智能体分区协作</p>
+      <p class="modern-primary-nav__subtitle">监护、拓扑、目标人物、模型展示和智能分析统一入口</p>
     </div>
-    
+
     <div class="modern-primary-nav__items">
       <button
         v-for="item in navItems"
@@ -98,7 +112,7 @@ const navItems = computed<NavItem[]>(() =>
   padding: 24px 20px;
   background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
   border: 1px solid #e2e8f0;
-  border-radius: 24px;
+  border-radius: 20px;
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
 }
 
@@ -112,7 +126,6 @@ const navItems = computed<NavItem[]>(() =>
   font-size: 1.25rem;
   font-weight: 800;
   color: #0f172a;
-  letter-spacing: -0.02em;
 }
 
 .modern-primary-nav__subtitle {
@@ -135,16 +148,16 @@ const navItems = computed<NavItem[]>(() =>
   gap: 14px;
   padding: 14px 16px;
   border: 2px solid transparent;
-  border-radius: 16px;
+  border-radius: 14px;
   background: #ffffff;
   text-align: left;
   cursor: pointer;
-  transition: all 200ms ease;
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease, background 180ms ease;
   overflow: hidden;
 }
 
 .modern-primary-nav__item::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   top: 0;
@@ -152,7 +165,7 @@ const navItems = computed<NavItem[]>(() =>
   width: 4px;
   background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   opacity: 0;
-  transition: opacity 200ms ease;
+  transition: opacity 180ms ease;
 }
 
 .modern-primary-nav__item:hover {
@@ -180,7 +193,7 @@ const navItems = computed<NavItem[]>(() =>
   align-items: center;
   justify-content: center;
   color: #64748b;
-  transition: all 200ms ease;
+  transition: background 180ms ease, color 180ms ease, box-shadow 180ms ease;
   flex-shrink: 0;
 }
 
@@ -205,34 +218,23 @@ const navItems = computed<NavItem[]>(() =>
   font-size: 0.95rem;
   font-weight: 700;
   color: #0f172a;
-  letter-spacing: -0.01em;
 }
 
 .modern-primary-nav__description {
   font-size: 0.8rem;
   color: #64748b;
-  line-height: 1.4;
-}
-
-.modern-primary-nav__item--active .modern-primary-nav__label {
-  color: #1e40af;
-}
-
-.modern-primary-nav__item--active .modern-primary-nav__description {
-  color: #3b82f6;
 }
 
 .modern-primary-nav__indicator {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
-  background: transparent;
-  transition: all 200ms ease;
-  flex-shrink: 0;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: background 180ms ease, transform 180ms ease;
 }
 
 .modern-primary-nav__item--active .modern-primary-nav__indicator {
-  background: #3b82f6;
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+  background: #2563eb;
+  transform: scale(1.2);
 }
 </style>

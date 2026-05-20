@@ -218,7 +218,9 @@ class LangChainRAGService:
         for source, info in current_files.items():
             old_info = old_files.get(source)
             # Use mtime/size as first pass hint
-            if old_info and old_info.get("mtime") == info["mtime"] and old_info.get("size") == info["size"]:
+            old_mtime = old_info.get("mtime", old_info.get("modified_at")) if old_info else None
+            old_size = old_info.get("size", old_info.get("size_bytes")) if old_info else None
+            if old_info and old_mtime == info["mtime"] and old_size == info["size"]:
                 existing_docs_metadata[source] = old_info
                 continue
             
@@ -339,7 +341,7 @@ class LangChainRAGService:
             "docs_hash": self._calculate_global_hash(fingerprints),
             "vector_collection": self._vector_collection_name,
             "knowledge_dir": str(self._knowledge_dir),
-            "files": {f.source: asdict(f) for f in fingerprints},
+            "files": [asdict(f) for f in fingerprints],
             "last_indexed": datetime.now().isoformat()
         }
         self._manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -525,14 +527,20 @@ class LangChainRAGService:
         normalized_query = query.lower()
         normalized_source = source.lower()
         checks = {
-            "community": ("community", "社区", "值守", "巡查", "随访"),
-            "sos": ("sos", "急救", "emergency"),
-            "oxygen": ("oxygen", "spo2", "血氧"),
-            "fever": ("fever", "temperature", "发热", "体温"),
-            "pressure": ("blood pressure", "heart rate", "血压", "心率"),
-            "device": ("device", "battery", "offline", "掉线", "电量"),
-            "report": ("report", "summary", "brief", "handoff", "报告", "总结", "交班"),
-            "family": ("family", "家属", "家庭"),
+            "community": ("社区", "值守", "巡查", "随访", "养老"),
+            "sos": ("sos", "急救", "求救", "紧急呼叫"),
+            "oxygen": ("血氧", "低氧", "氧饱和度", "spo2"),
+            "fever": ("发热", "体温", "高热", "低热"),
+            "pressure": ("血压", "心率", "脉搏", "高压", "低压"),
+            "device": ("设备", "电量", "掉线", "离线", "链路"),
+            "report": ("报告", "总结", "交班", "模板", "表述"),
+            "family": ("家属", "家庭", "照护", "看护"),
+            "fall": ("跌倒", "倒地", "摔倒", "滑倒", "坠地"),
+            "posture": ("姿态", "体态", "倾斜", "静止", "坍坐"),
+            "camera": ("摄像头", "视频", "画面", "黑屏", "卡顿", "rtsp"),
+            "alarm": ("告警", "报警", "分诊", "优先级", "预警"),
+            "review": ("复核", "人工复核", "核查", "排查", "检查清单"),
+            "event": ("事件", "记录", "模板", "处置", "经过"),
         }
         bias = 0.0
         if "community" in normalized_source:
@@ -551,6 +559,18 @@ class LangChainRAGService:
             bias += 1.0 if any(term in normalized_query for term in checks["report"]) else 0.0
         if "family" in normalized_source:
             bias += 0.75 if any(term in normalized_query for term in checks["family"]) else 0.0
+        if "fall" in normalized_source:
+            bias += 2.0 if any(term in normalized_query for term in checks["fall"]) else 0.0
+        if "posture" in normalized_source:
+            bias += 1.75 if any(term in normalized_query for term in checks["posture"]) else 0.0
+        if "camera" in normalized_source:
+            bias += 1.75 if any(term in normalized_query for term in checks["camera"]) else 0.0
+        if "alarm" in normalized_source:
+            bias += 1.5 if any(term in normalized_query for term in checks["alarm"]) else 0.0
+        if "review" in normalized_source or "checklist" in normalized_source:
+            bias += 1.5 if any(term in normalized_query for term in checks["review"]) else 0.0
+        if "event" in normalized_source:
+            bias += 1.25 if any(term in normalized_query for term in checks["event"]) else 0.0
         return bias
 
     def _format_candidate(self, item: dict[str, Any]) -> str:
@@ -581,8 +601,8 @@ class LangChainRAGService:
                     source=source,
                     title=meta.get("title", source),
                     sha256=meta.get("sha256", ""),
-                    size_bytes=meta.get("size", 0),
-                    modified_at=meta.get("mtime", 0.0),
+                    size_bytes=meta.get("size", meta.get("size_bytes", 0)),
+                    modified_at=meta.get("mtime", meta.get("modified_at", 0.0)),
                     chunk_count=chunk_counts.get(source, 0)
                 )
             )

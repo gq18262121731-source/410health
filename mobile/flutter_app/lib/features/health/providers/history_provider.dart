@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../models/history_model.dart';
 import '../repositories/health_repository.dart';
 
@@ -13,6 +14,7 @@ class HistoryProvider extends ChangeNotifier {
   DeviceHistoryResponse? _history;
   String? _errorMessage;
   String _currentWindow = 'day';
+  bool _disposed = false;
 
   HistoryProvider(this._repository, this._deviceMac);
 
@@ -22,31 +24,47 @@ class HistoryProvider extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   String get currentWindow => _currentWindow;
 
+  void _notifyIfAlive() {
+    if (!_disposed) {
+      notifyListeners();
+    }
+  }
+
   Future<void> fetchHistory({String? window}) async {
+    if (_disposed) return;
     if (window != null) _currentWindow = window;
-    
+
     _status = HistoryLoadStatus.loading;
-    notifyListeners();
+    _notifyIfAlive();
 
     try {
-      // 同时拉取趋势和聚合历史
-      final results = await Future.wait([
+      final results = await Future.wait<Object>([
         _repository.getTrend(_deviceMac),
         _repository.getHistory(_deviceMac, window: _currentWindow),
       ]);
+      if (_disposed) return;
 
       _trends = results[0] as List<TrendPoint>;
       _history = results[1] as DeviceHistoryResponse;
+      _errorMessage = null;
       _status = HistoryLoadStatus.loaded;
-    } catch (e) {
+    } catch (_) {
+      if (_disposed) return;
       _status = HistoryLoadStatus.error;
       _errorMessage = '获取历史数据失败';
     }
-    notifyListeners();
+
+    _notifyIfAlive();
   }
 
   void setWindow(String window) {
     if (_currentWindow == window) return;
     fetchHistory(window: window);
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 }

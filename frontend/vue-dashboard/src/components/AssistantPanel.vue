@@ -120,9 +120,9 @@ async function analyze() {
   <section class="panel assistant-panel">
     <div class="assistant-head">
       <div>
-        <p class="agent-kicker">Family Agent</p>
-        <h2>家庭智能体</h2>
-        <p class="panel-subtitle">只展示面向家属的结论、风险提示和建议动作，不暴露系统提示或内部执行细节。</p>
+        <p class="agent-kicker">家属智能体</p>
+        <h2>家庭智能助手</h2>
+        <p class="panel-subtitle">只展示面向家属的结论、风险提示和建议动作，不暴露系统内部执行细节。</p>
       </div>
       <span class="hero-pill">{{ props.deviceMac || "未选择设备" }}</span>
     </div>
@@ -147,7 +147,7 @@ async function analyze() {
         <article class="card">
           <div class="card-head">
             <div>
-              <p class="section-kicker">Summary</p>
+              <p class="section-kicker">总结</p>
               <h3>主结论</h3>
             </div>
           </div>
@@ -160,8 +160,8 @@ async function analyze() {
           <article v-if="riskFlags.length" class="card">
             <div class="card-head compact">
               <div>
-                <p class="section-kicker">Risk Flags</p>
-                <h3>风险提示</h3>
+                <p class="section-kicker">风险提示</p>
+                <h3>风险标记</h3>
               </div>
             </div>
             <div class="chip-row">
@@ -172,8 +172,8 @@ async function analyze() {
           <article v-if="notableEvents.length" class="card">
             <div class="card-head compact">
               <div>
-                <p class="section-kicker">Notable Events</p>
-                <h3>关键事件</h3>
+                <p class="section-kicker">关键事件</p>
+                <h3>近期异常</h3>
               </div>
             </div>
             <ul class="list-copy">
@@ -185,8 +185,8 @@ async function analyze() {
         <article v-if="recommendations.length" class="card">
           <div class="card-head compact">
             <div>
-              <p class="section-kicker">Recommendations</p>
-              <h3>建议动作</h3>
+              <p class="section-kicker">建议动作</p>
+              <h3>下一步建议</h3>
             </div>
           </div>
           <ul class="list-copy">
@@ -199,8 +199,8 @@ async function analyze() {
         <article class="card">
           <div class="card-head compact">
             <div>
-              <p class="section-kicker">Ask</p>
-              <h3>问问智能体</h3>
+              <p class="section-kicker">提问</p>
+              <h3>向智能体提问</h3>
             </div>
           </div>
           <div class="chip-row">
@@ -216,15 +216,15 @@ async function analyze() {
             <button type="button" class="primary-btn" :disabled="loading" @click="analyze">
               {{ loading ? "生成中..." : "生成结论" }}
             </button>
-            <small class="helper-copy">这里仅展示建议性解读，设备状态、关系状态和告警状态仍以后端实时数据为准。</small>
+            <small class="helper-copy">这里只展示建议性解释，设备状态、关系状态和告警状态仍以后端实时数据为准。</small>
           </div>
         </article>
 
         <article class="card">
           <div class="card-head compact">
             <div>
-              <p class="section-kicker">Now</p>
-              <h3>立刻可做</h3>
+              <p class="section-kicker">立刻可做</p>
+              <h3>当前建议</h3>
             </div>
           </div>
           <ul class="list-copy">
@@ -235,8 +235,8 @@ async function analyze() {
         <article v-if="references.length" class="card">
           <div class="card-head compact">
             <div>
-              <p class="section-kicker">References</p>
-              <h3>参考来源</h3>
+              <p class="section-kicker">参考来源</p>
+              <h3>数据依据</h3>
             </div>
           </div>
           <ul class="list-copy">
@@ -253,9 +253,8 @@ async function analyze() {
   display: grid;
   gap: 18px;
   color: var(--text-main);
-  background:
-    radial-gradient(circle at top right, rgba(34, 211, 238, 0.10), transparent 30%),
-    linear-gradient(180deg, rgba(15, 22, 40, 0.98), rgba(11, 18, 32, 0.96));
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid var(--line-medium);
 }
 
 .assistant-head,
@@ -276,10 +275,7 @@ async function analyze() {
   gap: 16px;
 }
 
-.summary-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
+.summary-grid,
 .vitals-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -294,15 +290,14 @@ async function analyze() {
 
 .card,
 .summary-card {
-  border: 1px solid rgba(56, 189, 248, 0.10);
+  border: 1px solid var(--line-medium);
   border-radius: 22px;
-  background:
-    linear-gradient(180deg, rgba(16, 24, 44, 0.98), rgba(12, 18, 32, 0.94));
+  background: #ffffff;
   transition: box-shadow 200ms ease;
 }
 
 .card:hover {
-  box-shadow: 0 20px 36px rgba(0, 0, 0, 0.26);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
 }
 
 .card {
@@ -333,8 +328,7 @@ async function analyze() {
 .section-kicker {
   margin: 0 0 6px;
   color: var(--brand);
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.08em;
   font-size: 0.72rem;
   font-weight: 700;
 }
@@ -350,9 +344,9 @@ async function analyze() {
   padding: 7px 13px;
   font-size: 0.8rem;
   font-weight: 600;
-  background: rgba(34, 211, 238, 0.10);
-  border: 1px solid rgba(34, 211, 238, 0.18);
-  color: #67e8f9;
+  background: #eff6ff;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  color: #1d4ed8;
 }
 
 .analysis-chip {
@@ -360,9 +354,9 @@ async function analyze() {
   padding: 6px 12px;
   font-size: 0.8rem;
   font-weight: 600;
-  background: rgba(15, 24, 42, 0.88);
-  border: 1px solid rgba(56, 189, 248, 0.16);
-  color: #67e8f9;
+  background: #eff6ff;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  color: #2563eb;
 }
 
 .answer-copy {
@@ -378,7 +372,7 @@ async function analyze() {
 }
 
 .error-copy {
-  color: #fca5a5;
+  color: #dc2626;
 }
 
 .list-copy {
@@ -396,11 +390,11 @@ async function analyze() {
 }
 
 .prompt-chip {
-  border: 1.5px solid rgba(56, 189, 248, 0.16);
+  border: 1.5px solid rgba(37, 99, 235, 0.16);
   border-radius: 999px;
   padding: 8px 14px;
-  background: rgba(13, 24, 38, 0.94);
-  color: #8ddff8;
+  background: #ffffff;
+  color: #2563eb;
   cursor: pointer;
   font-size: 0.84rem;
   font-weight: 500;
@@ -408,8 +402,8 @@ async function analyze() {
 }
 
 .prompt-chip:hover {
-  background: rgba(34, 211, 238, 0.12);
-  border-color: rgba(34, 211, 238, 0.24);
+  background: #eff6ff;
+  border-color: rgba(37, 99, 235, 0.24);
 }
 
 .composer {
@@ -424,8 +418,8 @@ async function analyze() {
   resize: vertical;
   min-height: 110px;
   border-radius: 16px;
-  border: 1.5px solid rgba(56, 189, 248, 0.16);
-  background: rgba(10, 18, 30, 0.96);
+  border: 1.5px solid rgba(37, 99, 235, 0.16);
+  background: #ffffff;
   color: var(--text-main);
   padding: 14px;
   transition: border-color 200ms ease, box-shadow 200ms ease;
@@ -433,8 +427,8 @@ async function analyze() {
 
 .composer textarea:focus {
   outline: none;
-  border-color: rgba(34, 211, 238, 0.28);
-  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.12);
+  border-color: rgba(37, 99, 235, 0.28);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.08);
 }
 
 .compact {

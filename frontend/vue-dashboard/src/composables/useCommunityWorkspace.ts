@@ -359,16 +359,8 @@ function normalizeAlarmQueuePayload(payload: unknown): AlarmRecord[] {
 
 function connectAlarmSocket() {
   stopAlarmSocket();
-  const WS_BASE = (typeof window !== "undefined")
-    ? window.location.origin.replace(/^http/, "ws")
-    : "ws://localhost:8000";
-  // 如果 API_BASE 不是 localhost，用配置的后端地址
-  const apiBase = (window as Window & { __API_BASE__?: string }).__API_BASE__ ?? "";
-  const wsBase = apiBase
-    ? apiBase.replace(/^http/, "ws").replace(/\/api\/v1$/, "")
-    : WS_BASE;
   try {
-    alarmSocket = new WebSocket(`${wsBase}/ws/alarms`);
+    alarmSocket = api.alarmSocket();
     alarmSocket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string) as Record<string, unknown>;
@@ -476,9 +468,27 @@ async function refreshDashboardData() {
 
 async function refreshRealtime(mac = selectedDeviceMac.value) {
   if (!mac) return;
+  const device = getDeviceByMac(mac);
+  const elder = selectedElder.value;
+  if (!device && !elder) return;
+  const hasObservedRealtime = Boolean(
+    device?.latest_timestamp
+      || elder?.latest_timestamp
+      || device?.heart_rate != null
+      || device?.blood_oxygen != null
+      || device?.blood_pressure
+      || device?.temperature != null
+      || device?.steps != null
+      || elder?.heart_rate != null
+      || elder?.blood_oxygen != null
+      || elder?.blood_pressure
+      || elder?.temperature != null,
+  );
+  if (device?.device_status === "offline") return;
+  if (device?.device_status === "pending" && !hasObservedRealtime) return;
   const sample = await api.getRealtime(mac).catch(() => null as HealthSample | null);
   if (!sample) return;
-  const ingestMode = getDeviceByMac(mac)?.ingest_mode ?? null;
+  const ingestMode = device?.ingest_mode ?? null;
   const mergedSample = mergeHealthSample(latestByDevice.value[mac], sample) ?? sample;
   if (!shouldAcceptSample(mergedSample, mac, ingestMode)) return;
   markFreshSerialSample(mac, mergedSample);
@@ -487,7 +497,9 @@ async function refreshRealtime(mac = selectedDeviceMac.value) {
 
 async function refreshTrend(mac = selectedDeviceMac.value, minutes = trendWindowMinutes.value) {
   if (!mac) return;
-  const ingestMode = getDeviceByMac(mac)?.ingest_mode ?? null;
+  const device = getDeviceByMac(mac);
+  if (!device && !selectedElder.value) return;
+  const ingestMode = device?.ingest_mode ?? null;
   const trend = await api.getTrend(mac, minutes, 120).catch(() => [] as HealthSample[]);
   const mergedTrend = mergeHealthSeries(trend);
   const displayReady = mergedTrend.filter((sample) => isDisplayReadySample(sample, ingestMode));
@@ -507,6 +519,7 @@ function connectHealthSocket(mac: string) {
   healthSocket?.close();
   healthSocket = null;
   if (!mac) return;
+  if (!getDeviceByMac(mac) && !selectedElder.value) return;
 
   healthSocket = api.healthSocket(mac);
   healthSocket.onmessage = (event) => {
@@ -586,13 +599,18 @@ function startDashboardPolling() {
   }, 15000);
 }
 
-function startWorkspaceRuntime(sessionUser: SessionUser | null) {
+function startWorkspaceRuntime(sessionUser: SessionUser | null, mode: "full" | "dashboard" = "full") {
   if (!sessionUser || (sessionUser.role !== "community" && sessionUser.role !== "admin")) return;
   runtimeUserId = sessionUser.id;
   restoreSelectedDevice();
   startDashboardPolling();
-  void startTrendRuntime();
-  connectAlarmSocket();
+  if (mode === "full") {
+    void startTrendRuntime();
+    connectAlarmSocket();
+    return;
+  }
+  stopTrendRuntime();
+  stopAlarmSocket();
 }
 
 export type CommunityWorkspaceState = {
@@ -629,7 +647,16 @@ export type CommunityWorkspaceState = {
   trendWindowMinutes: Ref<number>;
 };
 
-export function useCommunityWorkspace(sessionUser: Ref<SessionUser | null>): CommunityWorkspaceState {
+type CommunityWorkspaceOptions = {
+  mode?: "full" | "dashboard";
+};
+
+export function useCommunityWorkspace(
+  sessionUser: Ref<SessionUser | null>,
+  options: CommunityWorkspaceOptions = {},
+): CommunityWorkspaceState {
+  const mode = options.mode ?? "full";
+
   watch(
     () => sessionUser.value?.id ?? "",
     (nextId) => {
@@ -646,7 +673,7 @@ export function useCommunityWorkspace(sessionUser: Ref<SessionUser | null>): Com
       }
 
       if (nextId !== runtimeUserId && activeConsumers > 0) {
-        startWorkspaceRuntime(sessionUser.value);
+        startWorkspaceRuntime(sessionUser.value, mode);
       }
     },
     { immediate: true },
@@ -659,8 +686,8 @@ export function useCommunityWorkspace(sessionUser: Ref<SessionUser | null>): Com
   onMounted(() => {
     activeConsumers += 1;
     if (activeConsumers === 1) {
-      startWorkspaceRuntime(sessionUser.value);
-    } else if (selectedDeviceMac.value) {
+      startWorkspaceRuntime(sessionUser.value, mode);
+    } else if (mode === "full" && selectedDeviceMac.value) {
       void startTrendRuntime();
     }
   });

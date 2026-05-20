@@ -899,7 +899,32 @@ class HealthAgentService:
         if workflow in {"community_report", "report_generation", "elder_report", "overview", "risk_ranking", "alert_digest"}:
             return False
         normalized_question = question.lower()
-        explicit_search_terms = ("搜索", "查找", "检索", "search", "政策", "指南", "天气", "空气", "周边", "假期", "网页", "新闻")
+        explicit_search_terms = (
+            "搜索",
+            "查找",
+            "检索",
+            "search",
+            "政策",
+            "指南",
+            "天气",
+            "空气",
+            "周边",
+            "假期",
+            "网页",
+            "新闻",
+            "高血压",
+            "低血压",
+            "血压",
+            "血氧",
+            "心率",
+            "体温",
+            "饮食",
+            "早餐",
+            "用药",
+            "就医",
+            "护理",
+            "康复",
+        )
         return workflow in {"free_chat", "device_focus"} and any(term in normalized_question for term in explicit_search_terms)
 
     def _serialize_tool_result(self, call: ToolInvocation, item: Any) -> dict[str, Any]:
@@ -2865,8 +2890,8 @@ class HealthAgentService:
             return " ".join(
                 part
                 for part in [
-                    question or "summarize recent community health data",
-                    "community elder care prioritization risk distribution patrol follow-up",
+                    question or "概括最近的社区健康数据",
+                    "社区养老 健康监测 优先级 风险分布 巡查 随访 处置建议",
                     f"high={distribution.get('high', 0)}",
                     f"medium={distribution.get('medium', 0)}",
                     *focus_terms,
@@ -2879,8 +2904,8 @@ class HealthAgentService:
         return " ".join(
             part
             for part in [
-                question or "analyze recent device health data",
-                "elder health monitoring trends risk follow-up suggestions",
+                question or "分析最近的设备健康数据",
+                "老人健康监测 趋势 风险 随访建议 复测建议",
                 *(str(flag) for flag in risk_flags[:4]),
                 *(str(event) for event in notable_events[:2]),
             ]
@@ -2903,7 +2928,7 @@ class HealthAgentService:
         recommendations = analysis_payload.get("recommendations", [])
         trend = analysis_payload.get("trend", {})
         duration_minutes = max(int((end_at - start_at).total_seconds() // 60), 0)
-        role_hint = "family report template wording follow-up guidance" if role == UserRole.FAMILY else "community report template handoff wording patrol follow-up"
+        role_hint = "家属报告模板 表述规范 后续处置建议" if role == UserRole.FAMILY else "社区报告模板 交班表述 巡查随访 后续处置建议"
         anomaly_summary = ""
         anomaly_reason = ""
         anomaly_payload = self._extract_report_anomaly_payload(model_signals)
@@ -2921,7 +2946,7 @@ class HealthAgentService:
         return " ".join(
             part
             for part in [
-                "health report report template wording guide event interpretation follow-up guidance",
+                "健康报告 报告模板 表述规范 事件解读 后续处置建议",
                 "时间段 健康报告 指标解释 趋势含义 风险说明 报告措辞模板",
                 role_hint,
                 device_mac,
@@ -2932,7 +2957,7 @@ class HealthAgentService:
                 anomaly_summary,
                 anomaly_reason,
                 f"sustained_minutes={anomaly_payload.get('sustained_minutes', '')}",
-                "transformer temporal attention sustained anomaly report wording",
+                "持续异常 时序分析 异常解释 报告表述",
                 *(str(item) for item in health_model_evidence.get("summary_inputs", [])[:3]),
                 *(str(item) for item in health_model_evidence.get("key_evidence", [])[:3]),
                 *trend_terms[:4],

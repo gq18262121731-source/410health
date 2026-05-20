@@ -1,7 +1,3 @@
-param(
-    [string]$CondaEnv = "helth"
-)
-
 $ErrorActionPreference = "Stop"
 
 function Resolve-EnvPython {

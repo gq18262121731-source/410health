@@ -13,8 +13,8 @@
 
 本项目禁止混用 Python 环境。默认规则如下：
 
-- 所有 Python 命令都优先使用 `conda run -n helth python ...`
-- 所有 pytest 命令都优先使用 `conda run -n helth pytest ...`
+- 所有 Python 命令都优先使用 `conda run -n health python ...`
+- 所有 pytest 命令都优先使用 `conda run -n health pytest ...`
 - 后端启动优先使用仓库内脚本，而不是手写裸命令
 - 当前仓库支持 `--reload` 快速热重载
 
@@ -25,7 +25,7 @@
 当前仓库推荐使用下面这套本地开发组合：
 
 - Docker Desktop：用于启动 Redis
-- conda 环境 `helth`：用于运行后端和测试
+- conda 环境 `health`：用于运行后端和测试
 - Node.js 本地环境：用于运行前端
 - ChromaDB：默认使用 `pip` 安装后的本地持久化模式，不强制使用 Docker 容器
 
@@ -85,16 +85,16 @@ Docker Desktop 官方下载地址：
 示例：
 
 ```powershell
-conda create -n helth python=3.11 -y
+conda create -n health python=3.11 -y
 ```
 
 如果你喜欢交互式切换环境，也可以执行：
 
 ```powershell
-conda activate helth
+conda activate health
 ```
 
-但本文后续所有标准命令都默认写成 `conda run -n helth ...`，这样更不容易因为终端状态混乱而跑错解释器。
+但本文后续所有标准命令都默认写成 `conda run -n health ...`，这样更不容易因为终端状态混乱而跑错解释器。
 
 前端使用 Vite，建议本机准备 Node.js 18 或更高版本。
 
@@ -174,6 +174,42 @@ AT+TYPE=4  持续 2 秒，补抓广播包里的 SOS
 
 广播包进来后，系统会保留最近一次回应包里的电量、步数、血压、环境温度、表面温度，只用广播包补 `sos_flag` 和实时心率/体温。
 
+如果你现在插了两个采集器，推荐直接改成“双采集器固定分工”：
+
+```env
+DATA_MODE=serial
+USE_MOCK_DATA=false
+SERIAL_ENABLED=true
+SERIAL_BAUDRATE=115200
+SERIAL_MAC_FILTER=535708000000
+SERIAL_AUTO_CONFIGURE=true
+
+SERIAL_DUAL_COLLECTOR_ENABLED=true
+SERIAL_BROADCAST_PORT=COM4
+SERIAL_RESPONSE_PORT=COM3
+
+SERIAL_APPLY_PACKET_TYPE=true
+SERIAL_ENABLE_BROADCAST_SOS_OVERLAY=false
+```
+
+这组配置会让后端分别下发：
+
+```text
+# 广播采集器
+AT+SCANSTOP
+AT+UUID=NO
+AT+TYPE=4
+AT+SCANSTART
+
+# 回应采集器
+AT+SCANSTOP
+AT+UUID=NO
+AT+TYPE=5
+AT+SCANSTART
+```
+
+这样两个采集器就不用再来回切换，广播包和回应包会按同一个设备 MAC 在后端自动汇合。
+
 如果你后续要切回演示模式，可把 `.env` 改回：
 
 ```env
@@ -187,7 +223,7 @@ SERIAL_ENABLED=false
 默认请安装 `requirements.txt`：
 
 ```powershell
-conda run -n helth python -m pip install -r requirements.txt
+conda run -n health python -m pip install -r requirements.txt
 ```
 
 这里的 `requirements.txt` 是完整开发依赖，适合本地开发、调试 and 联调使用。
@@ -230,7 +266,7 @@ docker ps
 回到项目根目录后，优先使用下面的标准命令启动 FastAPI 后端：
 
 ```powershell
-conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_server.ps1
+conda run -n health powershell -ExecutionPolicy Bypass -File .\scripts\start_server.ps1
 ```
 
 这个脚本会调用项目里的 `scripts/start_server.ps1`，默认监听 `0.0.0.0:8000`，适合局域网真机直接访问。
@@ -240,13 +276,13 @@ conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_serv
 如果你暂时不想走脚本，也可以使用下面的手动命令：
 
 ```powershell
-conda run -n helth python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+conda run -n health python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 如果你确实需要热重载，再额外追加 `--reload`：
 
 ```powershell
-conda run -n helth python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+conda run -n health python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 注意：之前项目在 OneDrive 目录下建议关闭 `--reload`，现在移动到本地目录后可放心开启。
@@ -258,7 +294,7 @@ conda run -n helth python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 新开一个终端，优先使用下面的标准命令启动前端：
 
 ```powershell
-conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1
+conda run -n health powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1
 ```
 
 这个脚本会调用项目里的 `scripts/start_frontend.ps1`，默认监听 `127.0.0.1:5173`。如果本地还没有 `node_modules`，脚本会先执行安装。
@@ -325,25 +361,25 @@ curl http://127.0.0.1:8000/healthz
 ### 8.2 后端 HTTP smoke 检查
 
 ```powershell
-conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\smoke_backend_http.ps1
+conda run -n health powershell -ExecutionPolicy Bypass -File .\scripts\smoke_backend_http.ps1
 ```
 
 ### 8.3 联调整体验证
 
 ```powershell
-conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\run_smoke_tests.ps1 -BuildFrontend
+conda run -n health powershell -ExecutionPolicy Bypass -File .\scripts\run_smoke_tests.ps1 -BuildFrontend
 ```
 
 ## 9. 推荐启动顺序
 
 如果你想按最稳妥的顺序执行，建议按下面的步骤来：
 
-1. 创建 conda 环境：`conda create -n helth python=3.11 -y`
+1. 创建 conda 环境：`conda create -n health python=3.11 -y`
 2. 复制 `.env.example` 为 `.env`
-3. 安装依赖：`conda run -n helth python -m pip install -r requirements.txt`
+3. 安装依赖：`conda run -n health python -m pip install -r requirements.txt`
 4. 启动 Redis：`docker compose up -d redis`
-5. 启动后端：`conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_server.ps1`
-6. 启动前端：`conda run -n helth powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1`
+5. 启动后端：`conda run -n health powershell -ExecutionPolicy Bypass -File .\scripts\start_server.ps1`
+6. 启动前端：`conda run -n health powershell -ExecutionPolicy Bypass -File .\scripts\start_frontend.ps1`
 7. 验证后端健康检查、HTTP smoke 和前端页面是否正常打开
 
 ## 10. 常见问题
@@ -386,7 +422,7 @@ the attribute `version` is obsolete, it will be ignored
 默认安装：
 
 ```powershell
-conda run -n helth python -m pip install -r requirements.txt
+conda run -n health python -m pip install -r requirements.txt
 ```
 
 原因很简单：
@@ -412,13 +448,13 @@ conda run -n helth python -m pip install -r requirements.txt
 如果你只想快速抄一份最短命令流程，可以直接用下面这组：
 
 ```powershell
-conda create -n helth python=3.11 -y
+conda create -n health python=3.11 -y
 Copy-Item .env.example .env
-conda run -n helth python -m pip install -r requirements.txt
+conda run -n health python -m pip install -r requirements.txt
 cd docker
 docker compose up -d redis
 cd ..
-conda run -n helth python run.py
+conda run -n health python run.py
 ```
 
 然后新开一个终端进入前端目录执行：
@@ -433,20 +469,30 @@ npm run dev
 
 ### 12.1 推荐的 PyTorch GPU 环境
 
-如果现场演示机器带 NVIDIA GPU，推荐把 `helth` 环境切到 `torch 2.2.2 + cu121`：
+如果现场演示机器带 NVIDIA GPU，推荐把 `health` 环境切到 `torch 2.2.2 + cu121`：
 
 ```powershell
-conda run -n helth python -m pip uninstall -y torch torchvision torchaudio
-conda run -n helth python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
+conda run -n health python -m pip uninstall -y torch torchvision torchaudio
+conda run -n health python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
 ```
 
 安装后验证：
 
 ```powershell
-conda run -n helth python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
+conda run -n health python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
 ```
 
 项目当前支持：
+
+### 12.2 静态健康模型产物
+
+静态健康评分默认读取仓库内随代码分发的模型产物目录：
+
+```text
+backend/resources/static_health/
+```
+
+如果你重新训练模型，脚本也会把最新产物写回这里，便于新同事直接 `clone` 后运行后端而不需要额外恢复 `data/artifacts/static_health`。
 - `MODEL_DEVICE=auto`：优先 CUDA，失败时回退 CPU
 - `MODEL_DEVICE=cpu`：强制使用 CPU
 - `MODEL_DEVICE=cuda`：强制使用 GPU，不可用时直接报错

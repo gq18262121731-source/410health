@@ -1,11 +1,23 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { api, type DeviceRecord, type HealthSample } from "../api/client";
+import {
+  api,
+  type CameraPoseDetectionConfigResponse,
+  type CameraPoseDetectionLatestResponse,
+  type CameraPoseDetectionStatusResponse,
+  type DeviceRecord,
+  type HealthSample,
+} from "../api/client";
 import { mergeHealthSample } from "../domain/healthSampleMerge";
 
 export function useDebugDashboard(pollIntervalMs = 5000) {
   const devices = ref<DeviceRecord[]>([]);
   const latest = ref<Record<string, HealthSample>>({});
+  const poseStatus = ref<CameraPoseDetectionStatusResponse | null>(null);
+  const poseLatest = ref<CameraPoseDetectionLatestResponse | null>(null);
+  const poseConfig = ref<CameraPoseDetectionConfigResponse | null>(null);
   const dashboardLoading = ref(false);
+  const poseSavePending = ref(false);
+  const poseSaveMessage = ref("");
   const dashboardLoadError = ref("");
   const lastSyncAt = ref<Date | null>(null);
 
@@ -41,12 +53,34 @@ export function useDebugDashboard(pollIntervalMs = 5000) {
     });
     latest.value = nextLatest;
 
-    if (!devices.value.length) {
-      dashboardLoadError.value = "";
-    }
+    poseStatus.value = await api.getCameraPoseDetectionStatus().catch(() => null);
+    poseLatest.value = await api.getCameraPoseDetectionLatest().catch(() => null);
+    poseConfig.value = await api.getCameraPoseDetectionConfig().catch(() => poseConfig.value);
 
     lastSyncAt.value = new Date();
     dashboardLoading.value = false;
+  }
+
+  async function savePoseConfig(payload: {
+    pose_detection_enabled: boolean;
+    pose_detection_profile: string;
+    pose_detection_process_every_override: number;
+    pose_detection_pose_conf_threshold: number;
+    pose_detection_analysis_width: number;
+    pose_detection_floor_roi_rect: string;
+  }) {
+    poseSavePending.value = true;
+    poseSaveMessage.value = "";
+    try {
+      const response = await api.updateCameraPoseDetectionConfig(payload);
+      poseConfig.value = response.config;
+      poseSaveMessage.value = response.restarted ? "姿态配置已保存，服务已自动重启。" : "姿态配置已保存。";
+      await refreshDebugData();
+    } catch (error) {
+      poseSaveMessage.value = error instanceof Error ? `保存失败：${error.message}` : "保存失败：未知错误";
+    } finally {
+      poseSavePending.value = false;
+    }
   }
 
   async function startPolling() {
@@ -72,7 +106,13 @@ export function useDebugDashboard(pollIntervalMs = 5000) {
     devices,
     lastSyncAt,
     latest,
+    poseConfig,
+    poseLatest,
+    poseSaveMessage,
+    poseSavePending,
+    poseStatus,
     refreshDebugData,
+    savePoseConfig,
     stopPolling,
   };
 }
