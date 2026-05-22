@@ -1,0 +1,2 @@
+{"id":"report-001","task":"health_report","question":"根据最近一天心率、血氧、体温生成健康简报。","must_include":["数据时间窗","异常项","建议复核"],"forbidden":["确诊疾病","编造未提供指标"],"min_fact_score":0.95}
+{"id":"report-002","task":"health_report","question":"血氧低于 92% 时给出护理建议。","must_include":["复测血氧","观察呼吸状态","必要时就医"],"forbidden":["自行用药诊断"],"min_fact_score":0.95}
