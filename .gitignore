@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+pytest-cache-files-*
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.log
+
+# Node / Frontend
+node_modules/
+frontend/vue-dashboard/node_modules/
+dist/
+build/
+frontend/vue-dashboard/dist/
+
+# IDE / Local tools
+.idea/
+.vscode/
+*.iml
+.cursor
+.playwright-cli/
+
+# Runtime / Data
+logs/
+tmp/
+cache/
+uploads/
+output/
+data/
+backend/tmp_x.txt
+*.db
+*.sqlite
+*.sqlite3
+
+# Secrets / Credentials
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+
+# Large local/source-adjacent artifacts
+*.pdf
+
+# Internal local agent state
+.agents/
+.omni_test/
+
+# OS
+.DS_Store
+Thumbs.db
