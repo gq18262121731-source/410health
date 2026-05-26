@@ -905,7 +905,29 @@ class HealthAgentService:
         if workflow in {"community_report", "report_generation", "elder_report", "overview", "risk_ranking", "alert_digest"}:
             return False
         normalized_question = question.lower()
-        explicit_search_terms = ("搜索", "查找", "检索", "search", "政策", "指南", "天气", "空气", "周边", "假期", "网页", "新闻")
+        explicit_search_terms = (
+            "搜索",
+            "查找",
+            "检索",
+            "search",
+            "政策",
+            "指南",
+            "天气",
+            "空气",
+            "周边",
+            "假期",
+            "网页",
+            "新闻",
+            "高血压",
+            "低血压",
+            "血压",
+            "血糖",
+            "血氧",
+            "心率",
+            "用药",
+            "饮食",
+            "早餐",
+        )
         return workflow in {"free_chat", "device_focus"} and any(term in normalized_question for term in explicit_search_terms)
 
     @staticmethod
