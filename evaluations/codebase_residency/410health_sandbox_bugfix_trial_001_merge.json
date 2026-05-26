@@ -1,0 +1,33 @@
+{
+  "phase": "SE-0.3B",
+  "merge_phase": "controlled_merge",
+  "project_path": "D:/Program/410health",
+  "source_branch": "lobster/sandbox-bugfix-trial-001",
+  "target_branch": "master",
+  "leader_approved_merge": true,
+  "merge_executed": true,
+  "merge_strategy": "--no-ff",
+  "merge_commit": "3cabcafa3a92dff2c9fe03f41e785f9db81f32be",
+  "merge_message": "test: fix incremental RAG test isolation",
+  "merged_files": [
+    "tests/test_rag_incremental.py",
+    "docs/410health_sandbox_bugfix_trial_001_report.md",
+    "evaluations/codebase_residency/410health_sandbox_bugfix_trial_001.json"
+  ],
+  "targeted_pytest_command": "conda run -n helth pytest tests/test_rag_incremental.py -q",
+  "targeted_pytest_executed_on_master": true,
+  "targeted_pytest_result": "passed",
+  "targeted_pytest_summary": "1 passed",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest_executed_on_master": true,
+  "full_pytest_result": "failed",
+  "full_pytest_summary": "82 passed, 13 failed",
+  "remaining_failures_recorded": true,
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "remote_connected": false,
+  "prohibited_command_detected": false,
+  "created_at": "2026-05-26T16:21:31+08:00"
+}
