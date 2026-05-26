@@ -1,0 +1,37 @@
+{
+  "phase": "SE-0.4",
+  "project_path": "D:/Program/410health",
+  "branch": "lobster/sandbox-bugfix-trial-002",
+  "test_branch_created": true,
+  "target_failure_selected": true,
+  "target_failure": "tests/test_demo_overlay.py::test_mock_generator_personas_follow_setup_subject_names",
+  "target_failure_before": "Expected legacy demo names, while generator follows setup.md and care_service.py names.",
+  "minimal_patch_applied": true,
+  "changed_files": [
+    "tests/test_demo_overlay.py"
+  ],
+  "patch_summary": [
+    "Updated expected mock persona names to 李四, 王五, 赵六.",
+    "Aligned test expectation with setup.md and backend/services/care_service.py.",
+    "Did not change SyntheticHealthDataGenerator or production service code."
+  ],
+  "targeted_pytest_command": "conda run -n helth pytest tests/test_demo_overlay.py::test_mock_generator_personas_follow_setup_subject_names -q",
+  "targeted_pytest_executed": true,
+  "targeted_pytest_result": "passed",
+  "targeted_pytest_summary": "1 passed",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest_rerun_attempted": true,
+  "full_pytest_result": "failed",
+  "full_pytest_summary": "83 passed, 12 failed",
+  "remaining_failures_recorded": true,
+  "device_serial_flow_touched": false,
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "merge_to_master_attempted": false,
+  "prohibited_command_detected": false,
+  "change_report_created": true,
+  "leader_approval_requested": true,
+  "created_at": "2026-05-26T16:39:35+08:00"
+}

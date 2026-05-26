@@ -122,7 +122,7 @@ def test_mock_generator_history_includes_steps() -> None:
 def test_mock_generator_personas_follow_setup_subject_names() -> None:
     generator = SyntheticHealthDataGenerator(device_count=3, seed=11)
 
-    assert [persona.display_name for persona in generator.personas] == ["李建国", "张桂兰", "陈德福"]
+    assert [persona.display_name for persona in generator.personas] == ["李四", "王五", "赵六"]
     assert [persona.apartment for persona in generator.personas] == ["1-102", "1-103", "2-101"]
 
 
