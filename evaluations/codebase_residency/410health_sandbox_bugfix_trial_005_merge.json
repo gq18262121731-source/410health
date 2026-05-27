@@ -1,0 +1,39 @@
+{
+  "phase": "SE-0.7C",
+  "project_path": "D:/Program/410health",
+  "source_branch": "lobster/sandbox-bugfix-trial-005",
+  "target_branch": "master",
+  "leader_approval_received": true,
+  "merge_executed": true,
+  "merge_strategy": "no_ff",
+  "merge_commit": "f890e68",
+  "merge_message": "test: align RAG manifest assertion with source-keyed files map",
+  "changed_files": [
+    "tests/test_langchain_rag_service.py",
+    "docs/410health_sandbox_bugfix_trial_005_report.md",
+    "evaluations/codebase_residency/410health_sandbox_bugfix_trial_005.json"
+  ],
+  "targeted_pytest_command": "conda run -n helth pytest tests/test_langchain_rag_service.py::test_rag_service_writes_manifest_when_vector_store_is_ready -q",
+  "targeted_test": "1 passed",
+  "targeted_pytest_result": "passed",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest": "86 passed, 9 failed",
+  "full_pytest_result": "failed_with_known_remaining_failures",
+  "new_failure_detected": false,
+  "remaining_failures_recorded": true,
+  "remaining_failure_clusters": [
+    "tests/test_alarm_service.py::test_alarm_service_dedupes_active_sos_alarm",
+    "tests/test_device_registration_flow.py serial target registration and switch flow"
+  ],
+  "business_code_changed": false,
+  "rag_manifest_service_touched": false,
+  "device_serial_flow_touched": false,
+  "alarm_service_touched": false,
+  "omni_logic_touched": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "prohibited_command_detected": false,
+  "merge_report_created": true,
+  "created_at": "2026-05-27T09:49:21+08:00"
+}
