@@ -89,7 +89,7 @@ def test_rag_service_writes_manifest_when_vector_store_is_ready(tmp_path: Path, 
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert payload["docs_hash"] == rag.stats()["docs_hash"]
     assert payload["vector_collection"] == rag.stats()["vector_collection"]
-    assert payload["files"][0]["source"] == "faq.md"
+    assert payload["files"]["faq.md"]["source"] == "faq.md"
 
 
 def test_health_agent_retrieve_node_enables_qwen_rerank(tmp_path: Path) -> None:
