@@ -199,7 +199,6 @@ class AlarmService:
     def _find_active_sos_index(self, alarm: AlarmRecord) -> int | None:
         if alarm.alarm_type.value != "sos":
             return None
-        now = datetime.now(timezone.utc)
         incoming_mac = self._normalize_mac(alarm.device_mac)
         last_non_sos_at = self._last_non_sos_sample_at.get(incoming_mac)
         for index in range(len(self._alarms) - 1, -1, -1):
@@ -220,7 +219,7 @@ class AlarmService:
             # Group unacknowledged packets within the configured dedupe window.
             # If an unacknowledged alarm is older than that window, treat it as
             # stale and clear it so a fresh SOS can trigger a new popup.
-            age = now - existing.created_at
+            age = max(timedelta(0), alarm.created_at - existing.created_at)
             if age > self._sos_dedupe_window:
                 self._alarms[index] = existing.model_copy(update={"acknowledged": True})
                 self._queue.remove(existing.id)
