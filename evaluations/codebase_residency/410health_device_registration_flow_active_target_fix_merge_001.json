@@ -1,0 +1,45 @@
+{
+  "phase": "SE-1.0A-C",
+  "project_path": "D:/Program/410health",
+  "source_branch": "lobster/device-registration-flow-fix-active-target-001",
+  "target_branch": "master",
+  "leader_approval_received": true,
+  "merge_executed": true,
+  "merge_strategy": "no_ff",
+  "merge_commit": "49e55de",
+  "merge_message": "fix: allow unbound serial devices as active serial targets",
+  "changed_files": [
+    "backend/services/device_service.py",
+    "docs/410health_device_registration_flow_active_target_fix_report.md",
+    "evaluations/codebase_residency/410health_device_registration_flow_active_target_fix_001.json"
+  ],
+  "active_target_tests": "6 passed",
+  "active_target_test_results": [
+    "test_latest_serial_registration_becomes_active_target_and_falls_back_on_delete: passed",
+    "test_register_serial_device_without_binding_is_allowed_even_when_elder_has_same_model: passed",
+    "test_can_switch_active_serial_target_explicitly: passed",
+    "test_serial_target_switch_api_returns_new_target: passed",
+    "test_binding_existing_serial_device_makes_it_active_target_even_if_newer_target_exists: passed",
+    "test_rebinding_existing_serial_device_makes_it_active_target_even_if_newer_target_exists: passed"
+  ],
+  "device_registration_flow_command": "conda run -n helth pytest tests/test_device_registration_flow.py -q",
+  "device_registration_flow": "16 passed, 2 failed",
+  "device_registration_flow_result": "failed_with_known_remaining_failures",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest": "93 passed, 2 failed",
+  "full_pytest_result": "failed_with_known_remaining_failures",
+  "new_failure_detected": false,
+  "remaining_failures_recorded": true,
+  "remaining_failures": [
+    "tests/test_device_registration_flow.py::test_demo_directory_strictly_matches_setup_account_layout",
+    "tests/test_device_registration_flow.py::test_unbind_self_prioritizes_active_serial_target"
+  ],
+  "demo_directory_test_touched": false,
+  "unbind_self_seam_touched": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "prohibited_command_detected": false,
+  "merge_report_created": true,
+  "created_at": "2026-05-27T14:36:30+08:00"
+}
