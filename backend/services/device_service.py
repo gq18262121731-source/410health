@@ -554,8 +554,6 @@ class DeviceService:
         if (
             device is None
             or device.ingest_mode != DeviceIngestMode.SERIAL
-            or device.bind_status != DeviceBindStatus.BOUND
-            or not device.user_id
             or device.bind_status == DeviceBindStatus.DISABLED
         ):
             self._active_serial_target_mac = None
@@ -569,8 +567,6 @@ class DeviceService:
                 device
                 for device in self._devices.values()
                 if device.ingest_mode == DeviceIngestMode.SERIAL
-                and device.bind_status == DeviceBindStatus.BOUND
-                and device.user_id
                 and device.bind_status != DeviceBindStatus.DISABLED
             ),
             key=lambda item: (item.created_at, item.mac_address),
