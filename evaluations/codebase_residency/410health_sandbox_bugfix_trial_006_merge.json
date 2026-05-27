@@ -1,0 +1,39 @@
+{
+  "phase": "SE-0.8C",
+  "project_path": "D:/Program/410health",
+  "source_branch": "lobster/sandbox-bugfix-trial-006",
+  "target_branch": "master",
+  "leader_approval_received": true,
+  "merge_executed": true,
+  "merge_strategy": "no_ff",
+  "merge_commit": "bc7a1ad",
+  "merge_message": "fix: dedupe active SOS alarms by event time",
+  "changed_files": [
+    "backend/services/alarm_service.py",
+    "docs/410health_sandbox_bugfix_trial_006_report.md",
+    "evaluations/codebase_residency/410health_sandbox_bugfix_trial_006.json"
+  ],
+  "targeted_pytest_command": "conda run -n helth pytest tests/test_alarm_service.py::test_alarm_service_dedupes_active_sos_alarm -q",
+  "targeted_test": "1 passed",
+  "targeted_pytest_result": "passed",
+  "alarm_service_pytest_command": "conda run -n helth pytest tests/test_alarm_service.py -q",
+  "alarm_service_tests": "8 passed",
+  "alarm_service_pytest_result": "passed",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest": "87 passed, 8 failed",
+  "full_pytest_result": "failed_with_known_remaining_failures",
+  "new_failure_detected": false,
+  "remaining_failures_recorded": true,
+  "remaining_failure_clusters": [
+    "tests/test_device_registration_flow.py serial target registration and switch flow"
+  ],
+  "device_serial_flow_touched": false,
+  "rag_manifest_service_touched": false,
+  "omni_logic_touched": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "prohibited_command_detected": false,
+  "merge_report_created": true,
+  "created_at": "2026-05-27T10:14:18+08:00"
+}
