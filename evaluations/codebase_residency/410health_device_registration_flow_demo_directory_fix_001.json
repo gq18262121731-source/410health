@@ -1,0 +1,46 @@
+{
+  "phase": "SE-1.0B",
+  "project_path": "D:/Program/410health",
+  "branch": "lobster/device-registration-flow-fix-demo-directory-001",
+  "target_failure": "tests/test_device_registration_flow.py::test_demo_directory_strictly_matches_setup_account_layout",
+  "test_branch_created": true,
+  "minimal_patch_applied": true,
+  "changed_files": [
+    "tests/test_device_registration_flow.py"
+  ],
+  "diagnosis": "stale_test_variable_names",
+  "current_demo_persona_contract": {
+    "elder01_01": "张三",
+    "elder01_02": "李四"
+  },
+  "patch_summary": [
+    "Replaced wang_xiuying assertions with zhang_san.",
+    "Replaced li_jianguo assertions with li_si.",
+    "Did not change CareService, DeviceService, device_api, active target logic, or unbind_self seam."
+  ],
+  "targeted_pytest_command": "conda run -n helth pytest tests/test_device_registration_flow.py::test_demo_directory_strictly_matches_setup_account_layout -q",
+  "targeted_pytest_result": "passed",
+  "targeted_pytest_summary": "1 passed",
+  "device_registration_flow_command": "conda run -n helth pytest tests/test_device_registration_flow.py -q",
+  "device_registration_flow_result": "failed_with_known_remaining_failure",
+  "device_registration_flow_summary": "17 passed, 1 failed",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest_result": "failed_with_known_remaining_failure",
+  "full_pytest_summary": "94 passed, 1 failed",
+  "remaining_failures_recorded": true,
+  "remaining_failures": [
+    "tests/test_device_registration_flow.py::test_unbind_self_prioritizes_active_serial_target"
+  ],
+  "care_service_touched": false,
+  "device_service_touched": false,
+  "device_api_touched": false,
+  "active_serial_target_logic_touched": false,
+  "unbind_self_seam_touched": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "merge_to_master_attempted": false,
+  "prohibited_command_detected": false,
+  "leader_approval_requested": true,
+  "created_at": "2026-05-27T14:43:26+08:00"
+}
