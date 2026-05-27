@@ -1,0 +1,41 @@
+{
+  "phase": "SE-1.0B-C",
+  "project_path": "D:/Program/410health",
+  "source_branch": "lobster/device-registration-flow-fix-demo-directory-001",
+  "target_branch": "master",
+  "leader_approval_received": true,
+  "merge_executed": true,
+  "merge_strategy": "no_ff",
+  "merge_commit": "4ee3b0f",
+  "merge_message": "test: align demo directory assertion variables",
+  "changed_files": [
+    "tests/test_device_registration_flow.py",
+    "docs/410health_device_registration_flow_demo_directory_fix_report.md",
+    "evaluations/codebase_residency/410health_device_registration_flow_demo_directory_fix_001.json"
+  ],
+  "targeted_pytest_command": "conda run -n helth pytest tests/test_device_registration_flow.py::test_demo_directory_strictly_matches_setup_account_layout -q",
+  "targeted_test": "1 passed",
+  "targeted_pytest_result": "passed",
+  "device_registration_flow_command": "conda run -n helth pytest tests/test_device_registration_flow.py -q",
+  "device_registration_flow": "17 passed, 1 failed",
+  "device_registration_flow_result": "failed_with_known_remaining_failure",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest": "94 passed, 1 failed",
+  "full_pytest_result": "failed_with_known_remaining_failure",
+  "new_failure_detected": false,
+  "remaining_failures_recorded": true,
+  "remaining_failures": [
+    "tests/test_device_registration_flow.py::test_unbind_self_prioritizes_active_serial_target"
+  ],
+  "care_service_touched": false,
+  "device_service_touched": false,
+  "device_api_touched": false,
+  "active_serial_target_logic_touched": false,
+  "unbind_self_seam_touched": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "prohibited_command_detected": false,
+  "merge_report_created": true,
+  "created_at": "2026-05-27T14:50:58+08:00"
+}
