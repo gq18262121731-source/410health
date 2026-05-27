@@ -252,13 +252,13 @@ def test_demo_directory_strictly_matches_setup_account_layout(tmp_path) -> None:
     assert family01 is not None
     assert family01.id == "family01"
     assert family01.elder_ids == ["elder01_01", "elder01_02"]
-    assert wang_xiuying is not None
-    assert wang_xiuying.id == "elder01_01"
-    assert li_jianguo is not None
-    assert li_jianguo.id == "elder01_02"
-    assert wang_xiuying.device_macs == []
-    assert li_jianguo.device_mac == first_mock_device.mac_address
-    assert serial_device.mac_address not in li_jianguo.device_macs
+    assert zhang_san is not None
+    assert zhang_san.id == "elder01_01"
+    assert li_si is not None
+    assert li_si.id == "elder01_02"
+    assert zhang_san.device_macs == []
+    assert li_si.device_mac == first_mock_device.mac_address
+    assert serial_device.mac_address not in li_si.device_macs
 
 
 def test_demo_bound_serial_device_uses_demo_elder_mapping_in_metrics(monkeypatch, tmp_path) -> None:
