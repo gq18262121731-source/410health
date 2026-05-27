@@ -1,0 +1,67 @@
+{
+  "phase": "SE-1.0A",
+  "project_path": "D:/Program/410health",
+  "branch": "lobster/device-registration-flow-fix-active-target-001",
+  "target_cluster": "active_serial_target_semantics",
+  "test_branch_created": true,
+  "minimal_patch_applied": true,
+  "changed_files": [
+    "backend/services/device_service.py"
+  ],
+  "patch_summary": [
+    "Allowed active serial target selection for unbound SERIAL devices.",
+    "Kept disabled devices rejected.",
+    "Kept MOCK and BLE devices rejected.",
+    "Did not change tests."
+  ],
+  "targeted_tests": [
+    {
+      "test_name": "test_latest_serial_registration_becomes_active_target_and_falls_back_on_delete",
+      "result": "passed"
+    },
+    {
+      "test_name": "test_register_serial_device_without_binding_is_allowed_even_when_elder_has_same_model",
+      "result": "passed"
+    },
+    {
+      "test_name": "test_can_switch_active_serial_target_explicitly",
+      "result": "passed"
+    },
+    {
+      "test_name": "test_serial_target_switch_api_returns_new_target",
+      "result": "passed"
+    },
+    {
+      "test_name": "test_binding_existing_serial_device_makes_it_active_target_even_if_newer_target_exists",
+      "result": "passed"
+    },
+    {
+      "test_name": "test_rebinding_existing_serial_device_makes_it_active_target_even_if_newer_target_exists",
+      "result": "passed"
+    }
+  ],
+  "targeted_active_target_tests_summary": "6 passed",
+  "device_registration_flow_command": "conda run -n helth pytest tests/test_device_registration_flow.py -q",
+  "device_registration_flow_result": "failed_with_known_remaining_failures",
+  "device_registration_flow_summary": "16 passed, 2 failed",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest_result": "failed_with_known_remaining_failures",
+  "full_pytest_summary": "93 passed, 2 failed",
+  "remaining_failures_recorded": true,
+  "remaining_failures": [
+    "tests/test_device_registration_flow.py::test_demo_directory_strictly_matches_setup_account_layout",
+    "tests/test_device_registration_flow.py::test_unbind_self_prioritizes_active_serial_target"
+  ],
+  "demo_directory_test_touched": false,
+  "unbind_self_seam_touched": false,
+  "alarm_service_touched": false,
+  "rag_manifest_service_touched": false,
+  "omni_logic_touched": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "merge_to_master_attempted": false,
+  "prohibited_command_detected": false,
+  "leader_approval_requested": true,
+  "created_at": "2026-05-27T14:19:19+08:00"
+}
