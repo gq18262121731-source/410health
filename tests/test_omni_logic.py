@@ -100,8 +100,8 @@ def test_omni_chat_aggregates_text_and_wraps_pcm_audio(monkeypatch) -> None:
     messages = request_kwargs["messages"]
     assert isinstance(messages, list)
     system_message = messages[0]
-    assert "Sound warm, gentle, natural, and reassuring" in system_message["content"]
-    assert "Never invent measurements" in system_message["content"]
+    assert "温和" in system_message["content"]
+    assert "绝对不要虚构" in system_message["content"]
     user_message = messages[1]
     user_content = user_message["content"]
     assert user_content[0]["type"] == "input_audio"
