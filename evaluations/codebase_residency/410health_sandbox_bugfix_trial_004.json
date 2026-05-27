@@ -1,0 +1,39 @@
+{
+  "phase": "SE-0.6",
+  "project_path": "D:/Program/410health",
+  "branch": "lobster/sandbox-bugfix-trial-004",
+  "test_branch_created": true,
+  "target_failure_selected": true,
+  "target_failure": "tests/test_omni_logic.py::test_omni_chat_aggregates_text_and_wraps_pcm_audio",
+  "target_failure_before": "Omni request used generic system prompt instead of elder voice safety prompt.",
+  "minimal_patch_applied": true,
+  "changed_files": [
+    "backend/services/voice_service.py",
+    "tests/test_omni_logic.py"
+  ],
+  "patch_summary": [
+    "Used the constructed system_prompt as the outbound system message.",
+    "Aligned test assertions with the current Chinese elder voice prompt safety wording.",
+    "Did not change text aggregation or PCM-to-WAV wrapping logic."
+  ],
+  "targeted_pytest_command": "conda run -n helth pytest tests/test_omni_logic.py::test_omni_chat_aggregates_text_and_wraps_pcm_audio -q",
+  "targeted_pytest_executed": true,
+  "targeted_pytest_result": "passed",
+  "targeted_pytest_summary": "1 passed",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest_rerun_attempted": true,
+  "full_pytest_result": "failed",
+  "full_pytest_summary": "85 passed, 10 failed",
+  "remaining_failures_recorded": true,
+  "device_serial_flow_touched": false,
+  "alarm_service_touched": false,
+  "rag_manifest_touched": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "merge_to_master_attempted": false,
+  "prohibited_command_detected": false,
+  "change_report_created": true,
+  "leader_approval_requested": true,
+  "created_at": "2026-05-27T09:09:04+08:00"
+}

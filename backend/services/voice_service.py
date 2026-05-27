@@ -242,7 +242,7 @@ class VoiceService:
 
         audio_input_b64 = base64.b64encode(audio_bytes).decode("ascii")
         messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": [
