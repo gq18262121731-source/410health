@@ -4,6 +4,7 @@ from fastapi import APIRouter, Header, HTTPException
 
 from backend.dependencies import (
     get_alarm_service,
+    get_care_service,
     get_device_service,
     get_health_data_repository,
     get_websocket_manager,
@@ -137,8 +138,6 @@ async def unbind_device(payload: DeviceUnbindRequest, authorization: str | None 
 @router.post("/unbind/self", response_model=DeviceBindLogRecord)
 async def unbind_device_self(authorization: str | None = Header(default=None)) -> DeviceBindLogRecord:
     """Elder self-service: unbind the real serial device currently bound to the calling elder."""
-    from backend.dependencies import get_care_service
-
     user = _require_authenticated_user(authorization)
 
     directory = get_care_service().get_directory()
