@@ -1,0 +1,47 @@
+{
+  "phase": "SE-0.8",
+  "project_path": "D:/Program/410health",
+  "branch": "lobster/sandbox-bugfix-trial-006",
+  "test_branch_created": true,
+  "target_failure_selected": true,
+  "target_failure": "tests/test_alarm_service.py::test_alarm_service_dedupes_active_sos_alarm",
+  "target_failure_before": "Second SOS inside the configured dedupe window was emitted because active SOS age used wall-clock time instead of incoming event time.",
+  "diagnosis": "dedupe_logic_defect",
+  "minimal_patch_applied": true,
+  "changed_files": [
+    "backend/services/alarm_service.py"
+  ],
+  "patch_summary": [
+    "Changed active SOS dedupe age calculation to use alarm.created_at - existing.created_at.",
+    "Removed the unused wall-clock now variable.",
+    "Did not touch device serial flow, RAG manifest service, or omni logic."
+  ],
+  "targeted_pytest_command": "conda run -n helth pytest tests/test_alarm_service.py::test_alarm_service_dedupes_active_sos_alarm -q",
+  "targeted_pytest_executed": true,
+  "targeted_pytest_result": "passed",
+  "targeted_pytest_summary": "1 passed",
+  "alarm_service_pytest_command": "conda run -n helth pytest tests/test_alarm_service.py -q",
+  "alarm_service_pytest_result": "passed",
+  "alarm_service_pytest_summary": "8 passed",
+  "full_pytest_command": "conda run -n helth pytest",
+  "full_pytest_rerun_attempted": true,
+  "full_pytest_result": "failed",
+  "full_pytest_summary": "87 passed, 8 failed",
+  "remaining_failures_recorded": true,
+  "remaining_failure_clusters": [
+    "tests/test_device_registration_flow.py serial target registration and switch flow"
+  ],
+  "business_code_changed": true,
+  "alarm_service_touched": true,
+  "device_serial_flow_touched": false,
+  "rag_manifest_service_touched": false,
+  "omni_logic_touched": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "merge_to_master_attempted": false,
+  "prohibited_command_detected": false,
+  "change_report_created": true,
+  "leader_approval_requested": true,
+  "created_at": "2026-05-27T10:07:41+08:00"
+}
