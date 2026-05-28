@@ -1,0 +1,23 @@
+{
+  "overall_status": "passed",
+  "backend_status": "passed",
+  "frontend_status": "passed",
+  "checks": {
+    "git_status": {
+      "status": "passed",
+      "stdout_tail": " M backend/main.py",
+      "stderr_tail": ""
+    },
+    "backend_pytest": {
+      "status": "passed",
+      "stdout_tail": "95 passed",
+      "stderr_tail": ""
+    },
+    "frontend_check": {
+      "status": "passed",
+      "stdout_tail": "npm run check passed",
+      "stderr_tail": ""
+    }
+  },
+  "synthetic_git_dirty": true
+}

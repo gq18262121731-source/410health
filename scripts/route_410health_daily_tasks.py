@@ -46,7 +46,9 @@ def _route(check: dict) -> list[dict[str, object]]:
     backend = check.get("backend_status", "unknown")
     frontend = check.get("frontend_status", "unknown")
     git_status = check.get("checks", {}).get("git_status", {})
-    git_dirty = _still_dirty_from_source(git_status.get("stdout_tail") or "")
+    git_dirty = bool(check.get("synthetic_git_dirty")) or _still_dirty_from_source(
+        git_status.get("stdout_tail") or ""
+    )
     has_warning = _has_chunk_warning(check)
 
     tasks: list[dict[str, object]] = []

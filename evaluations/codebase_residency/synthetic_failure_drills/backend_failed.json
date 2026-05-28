@@ -1,0 +1,22 @@
+{
+  "overall_status": "failed",
+  "backend_status": "failed",
+  "frontend_status": "passed",
+  "checks": {
+    "git_status": {
+      "status": "passed",
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    "backend_pytest": {
+      "status": "failed",
+      "stdout_tail": "1 failed, 94 passed",
+      "stderr_tail": ""
+    },
+    "frontend_check": {
+      "status": "passed",
+      "stdout_tail": "npm run check passed",
+      "stderr_tail": ""
+    }
+  }
+}

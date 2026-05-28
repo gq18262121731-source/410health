@@ -1,0 +1,89 @@
+{
+  "phase": "SE-2.4",
+  "created_at": "2026-05-28T09:23:24.681604+00:00",
+  "drill_status": "passed",
+  "case_count": 4,
+  "cases_passed": 4,
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "results": [
+    {
+      "case_id": "backend_failed",
+      "synthetic_check": "evaluations/codebase_residency/synthetic_failure_drills/backend_failed.json",
+      "expected_task": "triage_backend_pytest_failure",
+      "expected_owner": "qa_reviewer_lobster",
+      "actual_tasks": [
+        {
+          "task_id": "triage_backend_pytest_failure",
+          "owner": "qa_reviewer_lobster",
+          "priority": "high",
+          "reason": "backend_pytest_failed",
+          "action": "Classify failing tests and prepare leader approval request before fixing.",
+          "leader_approval_required": true
+        }
+      ],
+      "passed": true
+    },
+    {
+      "case_id": "frontend_failed",
+      "synthetic_check": "evaluations/codebase_residency/synthetic_failure_drills/frontend_failed.json",
+      "expected_task": "triage_frontend_check_failure",
+      "expected_owner": "qa_reviewer_lobster",
+      "actual_tasks": [
+        {
+          "task_id": "triage_frontend_check_failure",
+          "owner": "qa_reviewer_lobster",
+          "priority": "high",
+          "reason": "frontend_check_failed",
+          "action": "Classify typecheck/lint/build failure and request approval before code changes.",
+          "leader_approval_required": true
+        }
+      ],
+      "passed": true
+    },
+    {
+      "case_id": "git_dirty",
+      "synthetic_check": "evaluations/codebase_residency/synthetic_failure_drills/git_dirty.json",
+      "expected_task": "inspect_dirty_workspace",
+      "expected_owner": "safety_officer_lobster",
+      "actual_tasks": [
+        {
+          "task_id": "inspect_dirty_workspace",
+          "owner": "safety_officer_lobster",
+          "priority": "high",
+          "reason": "git_status_has_uncommitted_or_untracked_changes",
+          "action": "Inspect changed files before authorizing any code task.",
+          "leader_approval_required": false
+        }
+      ],
+      "passed": true
+    },
+    {
+      "case_id": "warning_only",
+      "synthetic_check": "evaluations/codebase_residency/synthetic_failure_drills/warning_only.json",
+      "expected_task": "track_vite_chunk_size_warning",
+      "expected_owner": "workflow_engineer_lobster",
+      "actual_tasks": [
+        {
+          "task_id": "continue_observation",
+          "owner": "workflow_engineer_lobster",
+          "priority": "normal",
+          "reason": "daily_ops_chain_passed",
+          "action": "Continue normal daily Software Open Claw observation.",
+          "leader_approval_required": false
+        },
+        {
+          "task_id": "track_vite_chunk_size_warning",
+          "owner": "workflow_engineer_lobster",
+          "priority": "low",
+          "reason": "vite_chunk_size_warning_only",
+          "action": "Keep in optimization backlog; do not block daily operations.",
+          "leader_approval_required": false
+        }
+      ],
+      "passed": true
+    }
+  ]
+}
