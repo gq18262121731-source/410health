@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT_PATH = ROOT / "docs" / "410health_daily_residency_check_report.md"
-SUMMARY_PATH = ROOT / "evaluations" / "codebase_residency" / "410health_daily_residency_check_002.json"
+SUMMARY_PATH = ROOT / "evaluations" / "codebase_residency" / "410health_daily_residency_check_003.json"
 FRONTEND_DIR = ROOT / "frontend" / "vue-dashboard"
 
 

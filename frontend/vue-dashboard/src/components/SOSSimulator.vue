@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref } from "vue";
 import { AlertTriangle } from "lucide-vue-next";
 
-const props = defineProps<{
+defineProps<{
   canAccessDebug?: boolean;
 }>();
 

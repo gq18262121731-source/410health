@@ -4,10 +4,10 @@
 
 ```text
 project = D:\Program\410health
-created_at = 2026-05-28T02:26:51.197689+00:00
-overall_status = failed
+created_at = 2026-05-28T07:03:39.410938+00:00
+overall_status = passed
 business_code_changed = false
-frontend_failure_reason = npm_run_check_failed
+frontend_failure_reason = none
 ```
 
 ## Checks
@@ -16,14 +16,15 @@ frontend_failure_reason = npm_run_check_failed
 | --- | --- | --- | --- |
 | Git status | `git status --short` | passed | 0 |
 | Backend pytest | `conda run -n helth pytest` | passed | 0 |
-| Frontend check | `npm run check` | failed | 1 |
+| Frontend check | `npm run check` | passed | 0 |
 
 ## Git Status
 
 ```text
- M docs/410health_daily_residency_check_report.md
+ M frontend/vue-dashboard/src/components/SOSSimulator.vue
+ M frontend/vue-dashboard/src/composables/useDeviceTrend.ts
+ M frontend/vue-dashboard/src/views/auth/AuthLoginPage.vue
  M scripts/run_410health_daily_residency_check.py
-?? evaluations/codebase_residency/410health_daily_residency_check_002.json
 ```
 
 ## Backend Pytest Tail
@@ -66,7 +67,7 @@ tests\test_serial_reader.py .......                                      [100%]
 
 
 
-======================= 95 passed in 102.51s (0:01:42) ========================
+======================= 95 passed in 120.68s (0:02:00) ========================
 
 
 ```
@@ -87,22 +88,28 @@ tests\test_serial_reader.py .......                                      [100%]
 > eslint src --ext .ts,.vue
 
 
-D:\Program\410health\frontend\vue-dashboard\src\components\SOSSimulator.vue
-  2:15  error  'computed' is defined but never used        @typescript-eslint/no-unused-vars
-  5:7   error  'props' is assigned a value but never used  @typescript-eslint/no-unused-vars
+> ai-health-iot-dashboard@0.1.0 build
+> vite build
 
-D:\Program\410health\frontend\vue-dashboard\src\composables\useDeviceTrend.ts
-  7:10  error  'parseBloodPressure' is defined but never used  @typescript-eslint/no-unused-vars
-
-D:\Program\410health\frontend\vue-dashboard\src\views\auth\AuthLoginPage.vue
-  3:8  error  'heartImage' is defined but never used  @typescript-eslint/no-unused-vars
-
-✖ 4 problems (4 errors, 0 warnings)
-
+[36mvite v6.4.2 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 2483 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                  [39m[1m[2m  1.00 kB[22m[1m[22m[2m │ gzip:   0.58 kB[22m
+[2mdist/[22m[32massets/老人-BELZloj1.png      [39m[1m[2m118.01 kB[22m[1m[22m
+[2mdist/[22m[32massets/社区-DZuva8oZ.png      [39m[1m[2m165.37 kB[22m[1m[22m
+[2mdist/[22m[32massets/家人-PiVEYYcF.png      [39m[1m[2m187.50 kB[22m[1m[22m
+[2mdist/[22m[32massets/背景-BST42LBB.jpg      [39m[1m[2m600.65 kB[22m[1m[22m
+[2mdist/[22m[35massets/index-CWabLZDF.css   [39m[1m[2m149.17 kB[22m[1m[22m[2m │ gzip:  26.12 kB[22m
+[2mdist/[22m[36massets/index-CnSZujhV.js    [39m[1m[2m195.31 kB[22m[1m[22m[2m │ gzip:  61.60 kB[22m
+[2mdist/[22m[36massets/vendor-C6rcS8xd.js   [39m[1m[2m403.52 kB[22m[1m[22m[2m │ gzip: 150.88 kB[22m
+[2mdist/[22m[36massets/echarts-uvSR9kx1.js  [39m[1m[33m823.19 kB[39m[22m[2m │ gzip: 270.32 kB[22m
+[32m✓ built in 8.12s[39m
 ```
 
 ## Notes
 
-Backend checks passed. Frontend tooling is available and `npm run check` was executed, but the frontend check failed. The runner records the failure without installing dependencies or modifying frontend code.
+Backend and frontend checks passed.
 
 This runner is the minimal Software Open Claw daily residency check. It only observes repository state and runs existing verification commands. It does not install dependencies, deploy, push, or modify business code.
