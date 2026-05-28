@@ -1,0 +1,116 @@
+{
+  "phase": "SE-2.0",
+  "project": "410health",
+  "protocol_scope": "daily residency operations",
+  "default_entrypoint": "python scripts/run_410health_daily_ops_chain.py",
+  "default_mode": "observe_and_report",
+  "business_code_write_allowed": false,
+  "auto_merge_allowed": false,
+  "deploy_allowed": false,
+  "git_push_allowed": false,
+  "employees": [
+    {
+      "agent_id": "workflow_engineer_lobster",
+      "responsibility": "Keep daily verification chain running.",
+      "default_tools": [
+        "run_410health_daily_ops_chain",
+        "build_410health_residency_history_index"
+      ],
+      "escalates_when": [
+        "required_step_failed",
+        "git_status_dirty",
+        "history_trend_worsens"
+      ]
+    },
+    {
+      "agent_id": "product_manager_lobster",
+      "responsibility": "Convert results into priority and leadership language.",
+      "default_tools": [
+        "build_410health_daily_ops_summary"
+      ],
+      "escalates_when": [
+        "failure_needs_product_decision",
+        "release_posture_changes"
+      ]
+    },
+    {
+      "agent_id": "qa_reviewer_lobster",
+      "responsibility": "Review failed tests, evidence, and trend changes.",
+      "default_tools": [
+        "run_410health_daily_residency_check",
+        "build_410health_residency_history_index"
+      ],
+      "escalates_when": [
+        "backend_pytest_failed",
+        "frontend_check_failed",
+        "new_regression_suspected"
+      ]
+    },
+    {
+      "agent_id": "safety_officer_lobster",
+      "responsibility": "Enforce no deploy, push, install, destructive action, or unapproved merge.",
+      "default_tools": [
+        "software_open_claw_tool_registry"
+      ],
+      "escalates_when": [
+        "dependency_install_requested",
+        "deployment_requested",
+        "git_push_requested",
+        "branch_merge_requested",
+        "destructive_command_requested"
+      ]
+    }
+  ],
+  "failure_escalation": {
+    "backend_pytest_failed": {
+      "classification": "regression_or_test_failure",
+      "immediate_action": "stop_and_write_triage_note",
+      "leader_approval_required_before_fix": true
+    },
+    "frontend_check_failed": {
+      "classification": "frontend_regression_or_tooling_issue",
+      "immediate_action": "record_failure_and_classify",
+      "leader_approval_required_before_fix": true
+    },
+    "git_status_dirty_before_run": {
+      "classification": "workspace_not_clean",
+      "immediate_action": "stop_and_inspect_changed_files",
+      "leader_approval_required_before_fix": false
+    },
+    "vite_chunk_size_warning_only": {
+      "classification": "expected_non_blocking_warning",
+      "immediate_action": "track_in_backlog",
+      "leader_approval_required_before_fix": false
+    },
+    "dependency_missing": {
+      "classification": "environment_blocked",
+      "immediate_action": "report_missing_tooling_do_not_install",
+      "leader_approval_required_before_fix": true
+    }
+  },
+  "allowed_without_leader_approval": [
+    "observe",
+    "run_existing_tests",
+    "generate_reports",
+    "summarize_history",
+    "diagnose_non_blocking_warnings"
+  ],
+  "requires_leader_approval": [
+    "business_code_change",
+    "frontend_code_change",
+    "dependency_install",
+    "deployment",
+    "git_push",
+    "branch_merge",
+    "destructive_filesystem_operation",
+    "production_configuration_change"
+  ],
+  "end_of_day_questions": [
+    "Is git status clean?",
+    "Did backend pytest pass?",
+    "Did frontend check pass?",
+    "Are there warnings?",
+    "Is any action blocked on leader approval?",
+    "Who owns the next step?"
+  ]
+}
