@@ -422,3 +422,54 @@ conda run -n helth pytest tests/test_rule_engine.py tests/test_inference.py test
 5. 在 `backend/ml/inference.py` 中根据模型版本切换静态推理或时序推理。
 
 这条升级路径已经在当前工程结构中预留好了，不需要再推翻第一版静态链路。
+## Software Open Claw Daily Autopilot
+
+Daily residency entry point:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_410health_daily_autopilot.ps1
+```
+
+Equivalent Python command:
+
+```powershell
+python scripts/run_410health_daily_autopilot.py
+```
+
+This command runs:
+
+```text
+daily residency check
+  -> daily ops summary
+  -> residency history index
+  -> task routing
+```
+
+Expected healthy result:
+
+```text
+daily_ops_chain = passed
+task_routing = passed
+blocking_task_count = 0
+autopilot_status = passed
+```
+
+Generated artifacts:
+
+```text
+docs/410health_daily_autopilot_report.md
+docs/410health_daily_ops_summary.md
+docs/410health_lobster_team_room.md
+docs/410health_residency_history_summary.md
+evaluations/codebase_residency/410health_daily_autopilot_001.json
+```
+
+Safety boundary:
+
+```text
+No dependency install.
+No deployment.
+No git push.
+No automatic merge.
+No business-code modification.
+```
