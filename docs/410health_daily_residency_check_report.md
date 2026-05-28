@@ -4,9 +4,10 @@
 
 ```text
 project = D:\Program\410health
-created_at = 2026-05-28T01:52:38.272501+00:00
+created_at = 2026-05-28T02:26:51.197689+00:00
 overall_status = failed
 business_code_changed = false
+frontend_failure_reason = npm_run_check_failed
 ```
 
 ## Checks
@@ -15,14 +16,14 @@ business_code_changed = false
 | --- | --- | --- | --- |
 | Git status | `git status --short` | passed | 0 |
 | Backend pytest | `conda run -n helth pytest` | passed | 0 |
-| Frontend check | `npm run check` | failed | None |
+| Frontend check | `npm run check` | failed | 1 |
 
 ## Git Status
 
 ```text
-?? docs/410health_daily_residency_check_report.md
-?? evaluations/codebase_residency/410health_daily_residency_check_001.json
-?? scripts/run_410health_daily_residency_check.py
+ M docs/410health_daily_residency_check_report.md
+ M scripts/run_410health_daily_residency_check.py
+?? evaluations/codebase_residency/410health_daily_residency_check_002.json
 ```
 
 ## Backend Pytest Tail
@@ -65,7 +66,7 @@ tests\test_serial_reader.py .......                                      [100%]
 
 
 
-======================= 95 passed in 101.64s (0:01:41) ========================
+======================= 95 passed in 102.51s (0:01:42) ========================
 
 
 ```
@@ -73,9 +74,35 @@ tests\test_serial_reader.py .......                                      [100%]
 ## Frontend Check Tail
 
 ```text
-command not found: npm
+
+> ai-health-iot-dashboard@0.1.0 check
+> npm run typecheck && npm run lint && npm run build
+
+
+> ai-health-iot-dashboard@0.1.0 typecheck
+> vue-tsc --noEmit
+
+
+> ai-health-iot-dashboard@0.1.0 lint
+> eslint src --ext .ts,.vue
+
+
+D:\Program\410health\frontend\vue-dashboard\src\components\SOSSimulator.vue
+  2:15  error  'computed' is defined but never used        @typescript-eslint/no-unused-vars
+  5:7   error  'props' is assigned a value but never used  @typescript-eslint/no-unused-vars
+
+D:\Program\410health\frontend\vue-dashboard\src\composables\useDeviceTrend.ts
+  7:10  error  'parseBloodPressure' is defined but never used  @typescript-eslint/no-unused-vars
+
+D:\Program\410health\frontend\vue-dashboard\src\views\auth\AuthLoginPage.vue
+  3:8  error  'heartImage' is defined but never used  @typescript-eslint/no-unused-vars
+
+✖ 4 problems (4 errors, 0 warnings)
+
 ```
 
 ## Notes
+
+Backend checks passed. Frontend tooling is available and `npm run check` was executed, but the frontend check failed. The runner records the failure without installing dependencies or modifying frontend code.
 
 This runner is the minimal Software Open Claw daily residency check. It only observes repository state and runs existing verification commands. It does not install dependencies, deploy, push, or modify business code.

@@ -1,0 +1,56 @@
+{
+  "phase": "SE-1.3",
+  "project_path": "D:\\Program\\410health",
+  "created_at": "2026-05-28T02:26:51.197689+00:00",
+  "runner_created": true,
+  "runner_status_semantics_updated": true,
+  "git_status_checked": true,
+  "backend_pytest_executed": true,
+  "frontend_check_attempted": true,
+  "daily_report_created": true,
+  "summary_json_created": true,
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "npm_install_attempted": false,
+  "frontend_code_changed": false,
+  "backend_business_code_changed": false,
+  "overall_status": "failed",
+  "backend_status": "passed",
+  "frontend_status": "failed",
+  "checks": {
+    "git_status": {
+      "command": "git status --short",
+      "cwd": "D:\\Program\\410health",
+      "exit_code": 0,
+      "status": "passed",
+      "stdout_tail": " M docs/410health_daily_residency_check_report.md\n M scripts/run_410health_daily_residency_check.py\n?? evaluations/codebase_residency/410health_daily_residency_check_002.json",
+      "stderr_tail": "",
+      "started_at": "2026-05-28T02:26:51.197689+00:00",
+      "completed_at": "2026-05-28T02:26:51.248812+00:00"
+    },
+    "backend_pytest": {
+      "command": "conda run -n helth pytest",
+      "cwd": "D:\\Program\\410health",
+      "exit_code": 0,
+      "status": "passed",
+      "stdout_tail": "\n\n\ntests\\test_alarm_service.py ........                                     [  8%]\n\ntests\\test_chat_agent_api.py .....                                       [ 13%]\n\ntests\\test_demo_overlay.py .........                                     [ 23%]\n\ntests\\test_device_registration_flow.py ..................                [ 42%]\n\ntests\\test_display_sample_resolution.py ......                           [ 48%]\n\ntests\\test_health_api.py .......                                         [ 55%]\n\ntests\\test_inference.py ...                                              [ 58%]\n\ntests\\test_langchain_rag_service.py .....                                [ 64%]\n\ntests\\test_omni_logic.py .....                                           [ 69%]\n\ntests\\test_rag_health.py .                                               [ 70%]\n\ntests\\test_rag_incremental.py .                                          [ 71%]\n\ntests\\test_rule_engine.py ....                                           [ 75%]\n\ntests\\test_runtime_bootstrap.py .......                                  [ 83%]\n\ntests\\test_runtime_tasks.py .                                            [ 84%]\n\ntests\\test_serial_parser.py ........                                     [ 92%]\n\ntests\\test_serial_reader.py .......                                      [100%]\n\n\n\n======================= 95 passed in 102.51s (0:01:42) ========================\n\n",
+      "stderr_tail": "",
+      "started_at": "2026-05-28T02:26:51.248812+00:00",
+      "completed_at": "2026-05-28T02:28:42.138375+00:00"
+    },
+    "frontend_check": {
+      "command": "npm run check",
+      "cwd": "D:\\Program\\410health\\frontend\\vue-dashboard",
+      "exit_code": 1,
+      "status": "failed",
+      "stdout_tail": "\n> ai-health-iot-dashboard@0.1.0 check\n> npm run typecheck && npm run lint && npm run build\n\n\n> ai-health-iot-dashboard@0.1.0 typecheck\n> vue-tsc --noEmit\n\n\n> ai-health-iot-dashboard@0.1.0 lint\n> eslint src --ext .ts,.vue\n\n\nD:\\Program\\410health\\frontend\\vue-dashboard\\src\\components\\SOSSimulator.vue\n  2:15  error  'computed' is defined but never used        @typescript-eslint/no-unused-vars\n  5:7   error  'props' is assigned a value but never used  @typescript-eslint/no-unused-vars\n\nD:\\Program\\410health\\frontend\\vue-dashboard\\src\\composables\\useDeviceTrend.ts\n  7:10  error  'parseBloodPressure' is defined but never used  @typescript-eslint/no-unused-vars\n\nD:\\Program\\410health\\frontend\\vue-dashboard\\src\\views\\auth\\AuthLoginPage.vue\n  3:8  error  'heartImage' is defined but never used  @typescript-eslint/no-unused-vars\n\n✖ 4 problems (4 errors, 0 warnings)\n",
+      "stderr_tail": "",
+      "started_at": "2026-05-28T02:28:42.628964+00:00",
+      "completed_at": "2026-05-28T02:28:51.478401+00:00",
+      "tool_available": true,
+      "failure_reason": "npm_run_check_failed"
+    }
+  }
+}
