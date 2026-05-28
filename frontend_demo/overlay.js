@@ -1,9 +1,19 @@
 const ENABLE_COLOR_SKELETON = true;
-const ENABLE_PART_BOXES = true;
+const ENABLE_PART_BOXES = false;
 const ENABLE_TARGET_AURA = true;
 const ENABLE_TARGET_PULSE = true;
 const ENABLE_TARGET_BBOX = true;
 const POSE_CONFIDENCE_THRESHOLD = 0.2;
+const SKELETON_SMOOTHING_ALPHA = 0.38;
+const SKELETON_HISTORY_TTL_MS = 1200;
+
+const poseSmoothingState = window.__VISION_POSE_SMOOTHING__ || {
+  tracks: new Map(),
+  reset() {
+    this.tracks.clear();
+  },
+};
+window.__VISION_POSE_SMOOTHING__ = poseSmoothingState;
 
 const overlayStats = window.__VISION_OVERLAY_STATS__ || {
   draws: [],
@@ -56,13 +66,13 @@ const OVERLAY_BEHAVIOR_LABELS = {
 };
 
 const BODY_PART_COLORS = {
-  head: "#45D8FF",
-  torso: "#FF5E5B",
-  leftArm: "#4F83FF",
-  rightArm: "#39D98A",
+  head: "#4CC9F0",
+  torso: "#FF6B6B",
+  leftArm: "#4D96FF",
+  rightArm: "#55D187",
   leftLeg: "#FFD166",
-  rightLeg: "#B57CFF",
-  keypoint: "#F7FAFC",
+  rightLeg: "#B388FF",
+  keypoint: "#F8FAFC",
   keypointStroke: "#081017",
 };
 
@@ -181,13 +191,37 @@ const BODY_PART_BOX_SPECS = [
   },
 ];
 
-function drawOverlay(canvas, video, result) {
+const KEYPOINT_PART_COLORS = {
+  nose: BODY_PART_COLORS.head,
+  left_eye: BODY_PART_COLORS.head,
+  right_eye: BODY_PART_COLORS.head,
+  left_ear: BODY_PART_COLORS.head,
+  right_ear: BODY_PART_COLORS.head,
+  left_shoulder: BODY_PART_COLORS.torso,
+  right_shoulder: BODY_PART_COLORS.torso,
+  left_hip: BODY_PART_COLORS.torso,
+  right_hip: BODY_PART_COLORS.torso,
+  left_elbow: BODY_PART_COLORS.leftArm,
+  left_wrist: BODY_PART_COLORS.leftArm,
+  right_elbow: BODY_PART_COLORS.rightArm,
+  right_wrist: BODY_PART_COLORS.rightArm,
+  left_knee: BODY_PART_COLORS.leftLeg,
+  left_ankle: BODY_PART_COLORS.leftLeg,
+  right_knee: BODY_PART_COLORS.rightLeg,
+  right_ankle: BODY_PART_COLORS.rightLeg,
+};
+
+function drawOverlay(video, result, frameMetadata = null) {
   const debug = window.__VISION_DEBUG__;
   const mode = debug?.overlayMode || "full";
   const totalStart = performance.now();
   let skeletonMs = 0;
   let bodyBoxMs = 0;
   let highlightMs = 0;
+  const canvas = document.getElementById("overlay");
+  if (!canvas) {
+    return;
+  }
 
   const rect = video.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
@@ -213,7 +247,8 @@ function drawOverlay(canvas, video, result) {
     return;
   }
 
-  if (!result || !result.frame_width || !result.frame_height) {
+  const mapper = createOverlayMapper(result, video, rect);
+  if (!mapper) {
     overlayStats.record({
       at: Date.now(),
       mode,
@@ -226,13 +261,6 @@ function drawOverlay(canvas, video, result) {
     return;
   }
 
-  const scale = Math.min(
-    rect.width / result.frame_width,
-    rect.height / result.frame_height,
-  );
-  const offsetX = (rect.width - result.frame_width * scale) / 2;
-  const offsetY = (rect.height - result.frame_height * scale) / 2;
-
   ctx.lineWidth = 2;
   ctx.font = "14px Segoe UI, Microsoft YaHei, sans-serif";
 
@@ -241,8 +269,8 @@ function drawOverlay(canvas, video, result) {
       continue;
     }
 
-    const bbox = scaleBoundingBox(object.bbox, scale, offsetX, offsetY);
-    const poseState = collectPoseState(object, scale, offsetX, offsetY);
+    const bbox = mapBoundingBox(object.bbox, mapper);
+    const poseState = collectPoseState(object, mapper);
     const risk = object.alarm_preview?.risk_level || object.fall_decision?.risk_level || "low";
     const isTarget = object.is_target === true;
     const labelStroke = isTarget ? riskColor(risk) : "#a0a8ad";
@@ -268,6 +296,8 @@ function drawOverlay(canvas, video, result) {
     bodyBoxMs,
     highlightMs,
     objects: (result.objects || []).length,
+    mediaTime: frameMetadata?.mediaTime ?? null,
+    presentedFrames: frameMetadata?.presentedFrames ?? null,
   });
 }
 
@@ -290,9 +320,11 @@ function drawObjectFrame(ctx, bbox, object, poseState, mode) {
   const usePoseLedHighlight = ENABLE_TARGET_AURA && mode !== "bbox" && poseState?.highlightReady;
   if (usePoseLedHighlight && ENABLE_TARGET_BBOX) {
     ctx.save();
-    ctx.lineWidth = 1.8;
-    ctx.strokeStyle = withAlpha(color, 0.24);
-    ctx.fillStyle = withAlpha(color, 0.05);
+    ctx.lineWidth = 2.6;
+    ctx.strokeStyle = withAlpha(color, 0.82);
+    ctx.fillStyle = withAlpha(color, 0.08);
+    ctx.shadowColor = withAlpha(color, 0.36);
+    ctx.shadowBlur = 12;
     fillRoundedRect(ctx, bbox.x, bbox.y, bbox.width, bbox.height, 16);
     strokeRoundedRect(ctx, bbox.x, bbox.y, bbox.width, bbox.height, 16);
     ctx.restore();
@@ -356,14 +388,14 @@ function drawPoseOverlay(ctx, object, poseState, mode = "full") {
 
   if (drawSkeleton) {
     const startedAt = performance.now();
-    drawRainbowSkeleton(ctx, poseState, object);
+    drawBodyPartSkeleton(ctx, poseState, object);
     timing.skeletonMs += performance.now() - startedAt;
   }
 
   return timing;
 }
 
-function collectPoseState(object, scale, offsetX, offsetY) {
+function collectPoseState(object, mapper) {
   if (!object?.pose || !Array.isArray(object.pose.keypoints)) {
     return null;
   }
@@ -377,16 +409,21 @@ function collectPoseState(object, scale, offsetX, offsetY) {
       continue;
     }
 
+    const mappedPoint = mapper.mapPoint(x, y);
     points.set(kp.name, {
-      x: x * scale + offsetX,
-      y: y * scale + offsetY,
+      ...mapper.mapPoint(x, y),
       confidence,
+      name: kp.name,
+      rawX: mappedPoint.x,
+      rawY: mappedPoint.y,
     });
   }
 
   if (!points.size) {
     return null;
   }
+
+  maybeSmoothPosePoints(object, points);
 
   const pointList = [...points.values()];
   const poseBounds = computeBoundingBox(pointList, {
@@ -409,6 +446,47 @@ function collectPoseState(object, scale, offsetX, offsetY) {
     highlightBounds,
     highlightReady: pointList.length >= 3 && Boolean(highlightBounds),
   };
+}
+
+function maybeSmoothPosePoints(object, points) {
+  const debug = window.__VISION_DEBUG__;
+  if (!debug?.enableSkeletonSmoothing) {
+    cleanupStalePoseTracks();
+    return;
+  }
+  const trackId = object?.track_id;
+  if (!Number.isFinite(trackId)) {
+    cleanupStalePoseTracks();
+    return;
+  }
+  const now = Date.now();
+  const previous = poseSmoothingState.tracks.get(trackId) || {};
+  const nextState = {};
+  for (const [name, point] of points.entries()) {
+    const last = previous[name];
+    if (last) {
+      point.x = lerp(last.x, point.rawX, SKELETON_SMOOTHING_ALPHA);
+      point.y = lerp(last.y, point.rawY, SKELETON_SMOOTHING_ALPHA);
+    } else {
+      point.x = point.rawX;
+      point.y = point.rawY;
+    }
+    nextState[name] = { x: point.x, y: point.y, at: now };
+  }
+  poseSmoothingState.tracks.set(trackId, nextState);
+  cleanupStalePoseTracks(now);
+}
+
+function cleanupStalePoseTracks(now = Date.now()) {
+  for (const [trackId, keypoints] of poseSmoothingState.tracks.entries()) {
+    const latestAt = Math.max(
+      ...Object.values(keypoints).map((item) => Number(item?.at) || 0),
+      0,
+    );
+    if (!latestAt || now - latestAt > SKELETON_HISTORY_TTL_MS) {
+      poseSmoothingState.tracks.delete(trackId);
+    }
+  }
 }
 
 function drawTargetAura(ctx, poseState, object) {
@@ -453,7 +531,7 @@ function drawTargetAura(ctx, poseState, object) {
   ctx.restore();
 }
 
-function drawRainbowSkeleton(ctx, poseState, object) {
+function drawBodyPartSkeleton(ctx, poseState, object) {
   const isTarget = object.is_target === true;
   const risk = object.alarm_preview?.risk_level || object.fall_decision?.risk_level || "low";
   const focusColor = riskColor(risk);
@@ -480,15 +558,8 @@ function drawRainbowSkeleton(ctx, poseState, object) {
   }
 
   ctx.lineWidth = lineWidth;
-  visibleEdges.forEach((edge, index) => {
-    ctx.strokeStyle = createRainbowGradient(
-      ctx,
-      edge.a,
-      edge.b,
-      index,
-      visibleEdges.length,
-      edgeAlpha,
-    );
+  visibleEdges.forEach((edge) => {
+    ctx.strokeStyle = withAlpha(edge.accentColor, edgeAlpha);
     strokeLine(ctx, edge.a, edge.b);
   });
 
@@ -502,11 +573,11 @@ function drawRainbowSkeleton(ctx, poseState, object) {
 
   ctx.shadowBlur = isTarget ? 10 : 0;
   ctx.shadowColor = isTarget ? withAlpha(focusColor, 0.42) : "transparent";
-  ctx.fillStyle = withAlpha(BODY_PART_COLORS.keypoint, isTarget ? 0.98 : 0.78);
-  ctx.strokeStyle = withAlpha(BODY_PART_COLORS.keypointStroke, isTarget ? 0.64 : 0.44);
   ctx.lineWidth = 1.1;
 
   for (const point of poseState.pointList) {
+    ctx.fillStyle = withAlpha(colorForKeypoint(point.name), isTarget ? 0.98 : 0.78);
+    ctx.strokeStyle = withAlpha(BODY_PART_COLORS.keypointStroke, isTarget ? 0.64 : 0.44);
     ctx.beginPath();
     ctx.arc(point.x, point.y, keypointRadius, 0, Math.PI * 2);
     ctx.fill();
@@ -571,13 +642,118 @@ function collectVisibleEdges(points) {
   return edges;
 }
 
-function scaleBoundingBox(bbox, scale, offsetX, offsetY) {
-  const [x1, y1, x2, y2] = bbox;
+function colorForKeypoint(name) {
+  return KEYPOINT_PART_COLORS[name] || BODY_PART_COLORS.keypoint;
+}
+
+function createOverlayMapper(result, video, videoRect) {
+  if (!result || !videoRect.width || !videoRect.height) {
+    return null;
+  }
+
+  const dimensions = resolveOverlayDimensions(result);
+  if (!dimensions) {
+    return null;
+  }
+
+  const videoAspect = dimensions.displayWidth / dimensions.displayHeight;
+  const containerAspect = videoRect.width / videoRect.height;
+  let contentWidth;
+  let contentHeight;
+  let offsetX;
+  let offsetY;
+
+  if (containerAspect > videoAspect) {
+    contentHeight = videoRect.height;
+    contentWidth = contentHeight * videoAspect;
+    offsetX = (videoRect.width - contentWidth) / 2;
+    offsetY = 0;
+  } else {
+    contentWidth = videoRect.width;
+    contentHeight = contentWidth / videoAspect;
+    offsetX = 0;
+    offsetY = (videoRect.height - contentHeight) / 2;
+  }
+
+  const scaleX = contentWidth / dimensions.analysisWidth;
+  const scaleY = contentHeight / dimensions.analysisHeight;
+
   return {
-    x: x1 * scale + offsetX,
-    y: y1 * scale + offsetY,
-    width: (x2 - x1) * scale,
-    height: (y2 - y1) * scale,
+    dimensions,
+    contentWidth,
+    contentHeight,
+    offsetX,
+    offsetY,
+    scaleX,
+    scaleY,
+    mapPoint(x, y) {
+      return {
+        x: offsetX + x * scaleX,
+        y: offsetY + y * scaleY,
+      };
+    },
+  };
+}
+
+function resolveOverlayDimensions(result) {
+  const status = window.__VISION_APP_STATE__?.lastStatus;
+  const statusMain = status?.main_stream;
+  const statusAnalysis = status?.analysis_stream;
+
+  const analysisWidth = firstPositiveNumber(
+    result.analysis_frame_width,
+    result.frame_width,
+    statusAnalysis?.frame_width,
+  );
+  const analysisHeight = firstPositiveNumber(
+    result.analysis_frame_height,
+    result.frame_height,
+    statusAnalysis?.frame_height,
+  );
+  const displayWidth = firstPositiveNumber(
+    result.display_frame_width,
+    statusMain?.frame_width,
+    analysisWidth,
+  );
+  const displayHeight = firstPositiveNumber(
+    result.display_frame_height,
+    statusMain?.frame_height,
+    analysisHeight,
+  );
+
+  if (!analysisWidth || !analysisHeight || !displayWidth || !displayHeight) {
+    return null;
+  }
+
+  return {
+    analysisWidth,
+    analysisHeight,
+    displayWidth,
+    displayHeight,
+    displaySource: result.display_source || status?.display_source || "single",
+    analysisSource: result.analysis_source || status?.analysis_source || "single",
+  };
+}
+
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) {
+      return number;
+    }
+  }
+  return null;
+}
+
+function mapBoundingBox(bbox, mapper) {
+  const [x1, y1, x2, y2] = bbox;
+  const topLeft = mapper.mapPoint(x1, y1);
+  const bottomRight = mapper.mapPoint(x2, y2);
+  return {
+    x: topLeft.x,
+    y: topLeft.y,
+    width: bottomRight.x - topLeft.x,
+    height: bottomRight.y - topLeft.y,
   };
 }
 
@@ -633,16 +809,6 @@ function computeSkeletonLineWidth(bounds, isTarget) {
     return clamp(span / 42, 4, 8);
   }
   return clamp(span / 58, 2.4, 4.6);
-}
-
-function createRainbowGradient(ctx, from, to, index, total, alpha) {
-  const gradient = ctx.createLinearGradient(from.x, from.y, to.x, to.y);
-  const phase = performance.now() / 32;
-  const baseHue = (phase + (index / Math.max(total, 1)) * 360) % 360;
-  gradient.addColorStop(0, hsla(baseHue, 98, 62, alpha));
-  gradient.addColorStop(0.5, hsla((baseHue + 78) % 360, 100, 68, alpha));
-  gradient.addColorStop(1, hsla((baseHue + 156) % 360, 98, 62, alpha));
-  return gradient;
 }
 
 function fillEllipseGradient(ctx, bounds, color, innerAlpha, outerAlpha) {
@@ -728,12 +894,12 @@ function withAlpha(hexColor, alpha) {
   return `rgba(${red}, ${green}, ${blue}, ${clamp(alpha, 0, 1)})`;
 }
 
-function hsla(hue, saturation, lightness, alpha) {
-  return `hsla(${Math.round(hue)}, ${saturation}%, ${lightness}%, ${clamp(alpha, 0, 1)})`;
-}
-
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function lerp(from, to, alpha) {
+  return from + (to - from) * clamp(alpha, 0, 1);
 }
 
 function statAverage(values) {

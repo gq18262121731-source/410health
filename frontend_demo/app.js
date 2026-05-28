@@ -1,24 +1,57 @@
 const $ = (id) => document.getElementById(id);
+const OVERLAY_POSE_CACHE_TTL_MS = 1800;
 
 const state = {
   pc: null,
   ws: null,
   lastResult: null,
+  lastStatus: null,
+  pendingResult: null,
+  poseCache: new Map(),
   connectSeq: 0,
+  userConnected: false,
+  connectedDisplaySource: null,
+  lastDisplaySource: null,
+  autoReconnect: {
+    webrtcAttempts: 0,
+    wsAttempts: 0,
+    webrtcTimer: null,
+    wsTimer: null,
+    connecting: false,
+  },
+  videoFps: {
+    lastAt: null,
+    lastTotalFrames: null,
+    lastDroppedFrames: null,
+  },
+  videoFrameCallbackActive: false,
+  overlayFallbackTimer: null,
+  overlayFps: {
+    lastAt: null,
+    lastFrames: 0,
+  },
+  userEditedRtspUrl: false,
+  lastPlayError: null,
 };
 window.__VISION_APP_STATE__ = state;
 
 const debugState = window.__VISION_DEBUG__ || {
   overlayMode: new URLSearchParams(window.location.search).get("overlayMode") || "full",
-  showRawJson: new URLSearchParams(window.location.search).get("rawJson") !== "0",
+  showRawJson: new URLSearchParams(window.location.search).get("rawJson") === "1",
   videoSamples: [],
   rtcSamples: [],
   wsSamples: [],
   statusSamples: [],
+  errors: [],
+  longTasks: [],
   counters: {
     wsMessages: 0,
     statusUpdates: 0,
     rawJsonUpdates: 0,
+    webrtcReconnects: 0,
+    wsReconnects: 0,
+    displayFallbackSwitches: 0,
+    overlayFramesDrawn: 0,
   },
 };
 window.__VISION_DEBUG__ = debugState;
@@ -32,7 +65,7 @@ debugState.setOverlayMode = (mode) => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
   } else if (state.lastResult) {
-    drawOverlay($("overlay"), $("video"), state.lastResult);
+    drawOverlay($("video"), state.lastResult);
   }
 };
 debugState.setRawJson = (enabled) => {
@@ -47,7 +80,21 @@ debugState.reset = () => {
   debugState.rtcSamples = [];
   debugState.wsSamples = [];
   debugState.statusSamples = [];
-  debugState.counters = { wsMessages: 0, statusUpdates: 0, rawJsonUpdates: 0 };
+  debugState.errors = [];
+  debugState.longTasks = [];
+  debugState.counters = {
+    wsMessages: 0,
+    statusUpdates: 0,
+    rawJsonUpdates: 0,
+    webrtcReconnects: 0,
+    wsReconnects: 0,
+    displayFallbackSwitches: 0,
+    overlayFramesDrawn: 0,
+  };
+  state.overlayFps.lastAt = null;
+  state.overlayFps.lastFrames = 0;
+  state.pendingResult = null;
+  state.poseCache.clear();
   window.__VISION_OVERLAY_STATS__?.reset?.();
 };
 debugState.snapshot = () => ({
@@ -61,6 +108,9 @@ debugState.snapshot = () => ({
   overlay: window.__VISION_OVERLAY_STATS__?.snapshot?.() || null,
   latestVideo: debugState.videoSamples.at(-1) || null,
   latestRtc: debugState.rtcSamples.at(-1) || null,
+  errors: debugState.errors.slice(-50),
+  longTasks: debugState.longTasks.slice(-50),
+  dom: readFreezeDomSnapshot(),
 });
 
 const FALL_STATE_LABELS = {
@@ -122,26 +172,23 @@ async function startStream() {
   $("startBtn").disabled = true;
 
   try {
-    const status = await fetch(`${apiBase()}/status`).then((response) => response.json());
-    const camera = (status.cameras || []).find((item) => item.camera_id === cameraId);
-    if (camera?.running) {
-      await fetch(`${apiBase()}/stream/stop`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ camera_id: cameraId }),
-      });
-    }
-
     const response = await fetch(`${apiBase()}/stream/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ camera_id: cameraId, rtsp_url: rtspUrl }),
+      body: JSON.stringify({
+        camera_id: cameraId,
+        rtsp_url: rtspUrl,
+        main_rtsp_url: deriveMainRtspUrl(rtspUrl),
+        analysis_rtsp_url: deriveAnalysisRtspUrl(rtspUrl),
+      }),
     });
     const payload = await safeJson(response);
     $("statusBox").textContent = JSON.stringify(payload, null, 2);
     if (!response.ok) {
       throw new Error(payload?.detail || payload?.message || `stream start failed: ${response.status}`);
     }
+    state.userEditedRtspUrl = false;
+    await refreshStatus();
   } catch (error) {
     $("statusBox").textContent = String(error);
   } finally {
@@ -151,30 +198,78 @@ async function startStream() {
 
 async function connectWebRTC() {
   const cameraId = $("cameraId").value.trim() || "camera_01";
+  state.userConnected = true;
+  state.autoReconnect.connecting = true;
+  clearReconnectTimer("webrtc");
   const connectSeq = ++state.connectSeq;
   closeConnections();
+  stopOverlayLoop();
   $("connectBtn").disabled = true;
   $("webrtcState").textContent = "connecting";
+  updatePeerDebugState();
   $("wsState").textContent = "idle";
+  updateRecoveryBanner();
 
   const pc = new RTCPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
   });
   state.pc = pc;
+  updatePeerDebugState();
 
   pc.addTransceiver("video", { direction: "recvonly" });
   pc.ontrack = (event) => {
-    $("video").srcObject = event.streams[0];
+    const video = $("video");
+    const stream = event.streams?.[0] || new MediaStream([event.track]);
+    video.srcObject = stream;
+    state.lastPlayError = null;
+    updatePeerDebugState();
+    void video.play().then(() => {
+      state.lastPlayError = null;
+      updatePeerDebugState();
+    }).catch((error) => {
+      state.lastPlayError = String(error);
+      $("statusBox").textContent = `video.play failed: ${error}`;
+      updatePeerDebugState();
+    });
+    attachVideoFrameLoop();
   };
   pc.onconnectionstatechange = () => {
     if (state.pc === pc) {
       $("webrtcState").textContent = pc.connectionState;
+      updatePeerDebugState();
+      updateRecoveryBanner();
+      if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
+        scheduleWebRTCReconnect(`webrtc ${pc.connectionState}`);
+      } else if (pc.connectionState === "connected") {
+        state.autoReconnect.webrtcAttempts = 0;
+        state.connectedDisplaySource = state.lastDisplaySource
+          || state.lastStatus?.display_source_current
+          || state.lastStatus?.display_source
+          || state.connectedDisplaySource;
+        updateRecoveryBanner();
+      }
+    }
+  };
+  pc.oniceconnectionstatechange = () => {
+    if (state.pc === pc) {
+      updatePeerDebugState();
+    }
+  };
+  pc.onsignalingstatechange = () => {
+    if (state.pc === pc) {
+      updatePeerDebugState();
+    }
+  };
+  pc.onicegatheringstatechange = () => {
+    if (state.pc === pc) {
+      updatePeerDebugState();
     }
   };
 
   try {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
+    updatePeerDebugState();
     await waitForIceGatheringComplete(pc);
 
     if (!isCurrentPeer(pc, connectSeq)) {
@@ -188,6 +283,8 @@ async function connectWebRTC() {
         camera_id: cameraId,
         sdp: pc.localDescription.sdp,
         type: pc.localDescription.type,
+        prefer_latest_frame: true,
+        preferred_display_source: "analysis",
       }),
     });
     const answer = await safeJson(response);
@@ -199,15 +296,21 @@ async function connectWebRTC() {
       return;
     }
     await pc.setRemoteDescription(answer);
+    updatePeerDebugState();
     connectResults(cameraId);
   } catch (error) {
     if (state.pc === pc) {
       $("webrtcState").textContent = "failed";
       $("statusBox").textContent = String(error);
+      updatePeerDebugState();
       closeConnections();
+      state.autoReconnect.connecting = false;
+      scheduleWebRTCReconnect("webrtc offer failed");
     }
   } finally {
+    state.autoReconnect.connecting = false;
     $("connectBtn").disabled = false;
+    updateRecoveryBanner();
   }
 }
 
@@ -216,6 +319,9 @@ function isCurrentPeer(pc, connectSeq) {
 }
 
 function closeConnections() {
+  clearReconnectTimer("webrtc");
+  clearReconnectTimer("ws");
+  stopOverlayLoop();
   if (state.ws) {
     state.ws.close();
     state.ws = null;
@@ -224,6 +330,8 @@ function closeConnections() {
     state.pc.close();
     state.pc = null;
   }
+  state.connectedDisplaySource = null;
+  updatePeerDebugState();
 }
 
 function waitForIceGatheringComplete(pc) {
@@ -244,6 +352,7 @@ function waitForIceGatheringComplete(pc) {
 }
 
 function connectResults(cameraId) {
+  clearReconnectTimer("ws");
   if (state.ws) {
     state.ws.close();
   }
@@ -251,26 +360,31 @@ function connectResults(cameraId) {
   state.ws = ws;
   ws.onopen = () => {
     $("wsState").textContent = "connected";
+    state.autoReconnect.wsAttempts = 0;
+    updateRecoveryBanner();
   };
   ws.onclose = () => {
     if (state.ws === ws) {
       $("wsState").textContent = "closed";
+      scheduleWebSocketReconnect("websocket closed");
     }
   };
   ws.onerror = () => {
     if (state.ws === ws) {
       $("wsState").textContent = "error";
+      scheduleWebSocketReconnect("websocket error");
     }
   };
   ws.onmessage = (event) => {
     const startedAt = performance.now();
     const result = JSON.parse(event.data);
-    state.lastResult = result;
+    const composedResult = composeOverlayResult(result);
+    state.lastResult = composedResult;
+    state.pendingResult = composedResult;
     $("frameInfo").textContent = `${result.frame_width}x${result.frame_height} #${result.frame_seq}`;
     $("personCount").textContent = `${(result.objects || []).length}`;
     $("latency").textContent = `${result.detector?.latency_ms ?? "-"} ms`;
-    updateTargetDetails(result);
-    drawOverlay($("overlay"), $("video"), result);
+    updateTargetDetails(composedResult);
     debugState.counters.wsMessages += 1;
     pushLimited(debugState.wsSamples, {
       at: Date.now(),
@@ -278,14 +392,186 @@ function connectResults(cameraId) {
       objects: (result.objects || []).length,
       frameSeq: result.frame_seq,
     });
+    updateWsFps();
   };
+}
+
+function composeOverlayResult(result) {
+  const now = Date.now();
+  const activeTrackIds = new Set();
+  const objects = (result.objects || []).map((object) => {
+    const trackKey = poseCacheKey(object);
+    if (trackKey) {
+      activeTrackIds.add(trackKey);
+    }
+
+    const pose = object.pose;
+    if (trackKey && hasPoseKeypoints(pose)) {
+      state.poseCache.set(trackKey, {
+        pose,
+        updatedAt: now,
+        frameSeq: result.frame_seq,
+      });
+      return {
+        ...object,
+        pose,
+        overlay_pose_cached: false,
+        overlay_pose_age_ms: 0,
+        overlay_pose_expired: false,
+      };
+    }
+
+    const cached = trackKey ? state.poseCache.get(trackKey) : null;
+    if (cached && now - cached.updatedAt <= OVERLAY_POSE_CACHE_TTL_MS) {
+      return {
+        ...object,
+        pose: cached.pose,
+        overlay_pose_cached: true,
+        overlay_pose_age_ms: Math.round(now - cached.updatedAt),
+        overlay_pose_expired: false,
+      };
+    }
+
+    if (trackKey && cached) {
+      state.poseCache.delete(trackKey);
+    }
+    return {
+      ...object,
+      overlay_pose_cached: false,
+      overlay_pose_age_ms: cached ? Math.round(now - cached.updatedAt) : null,
+      overlay_pose_expired: Boolean(cached),
+    };
+  });
+
+  for (const [trackKey, cached] of state.poseCache.entries()) {
+    if (!activeTrackIds.has(trackKey) || now - cached.updatedAt > OVERLAY_POSE_CACHE_TTL_MS) {
+      state.poseCache.delete(trackKey);
+    }
+  }
+
+  return {
+    ...result,
+    objects,
+    overlay_debug: {
+      pose_cache_size: state.poseCache.size,
+      pose_cache_ttl_ms: OVERLAY_POSE_CACHE_TTL_MS,
+    },
+  };
+}
+
+function poseCacheKey(object) {
+  const trackId = object?.track_id;
+  if (trackId === null || trackId === undefined || trackId === "") {
+    return null;
+  }
+  return String(trackId);
+}
+
+function hasPoseKeypoints(pose) {
+  return Boolean(pose && Array.isArray(pose.keypoints) && pose.keypoints.length > 0);
+}
+
+function reconnectDelayMs(attempt) {
+  const steps = [1000, 2000, 5000];
+  return steps[Math.min(attempt, steps.length - 1)];
+}
+
+function clearReconnectTimer(kind) {
+  const key = kind === "ws" ? "wsTimer" : "webrtcTimer";
+  const timer = state.autoReconnect[key];
+  if (timer) {
+    clearTimeout(timer);
+    state.autoReconnect[key] = null;
+  }
+}
+
+function scheduleWebRTCReconnect(reason) {
+  if (!state.userConnected || state.autoReconnect.connecting || state.autoReconnect.webrtcTimer) {
+    updateRecoveryBanner();
+    return;
+  }
+  const attempt = state.autoReconnect.webrtcAttempts++;
+  const delay = reconnectDelayMs(attempt);
+  debugState.counters.webrtcReconnects += 1;
+  $("webrtcState").textContent = `重连中 ${Math.round(delay / 1000)}s`;
+  updateRecoveryBanner(reason);
+  state.autoReconnect.webrtcTimer = setTimeout(() => {
+    state.autoReconnect.webrtcTimer = null;
+    connectWebRTC();
+  }, delay);
+}
+
+function scheduleWebSocketReconnect(reason) {
+  if (!state.userConnected || state.autoReconnect.wsTimer) {
+    updateRecoveryBanner();
+    return;
+  }
+  const attempt = state.autoReconnect.wsAttempts++;
+  const delay = reconnectDelayMs(attempt);
+  debugState.counters.wsReconnects += 1;
+  $("wsState").textContent = `重连中 ${Math.round(delay / 1000)}s`;
+  updateRecoveryBanner(reason);
+  state.autoReconnect.wsTimer = setTimeout(() => {
+    state.autoReconnect.wsTimer = null;
+    const pcState = state.pc?.connectionState;
+    if (!state.pc || ["failed", "closed", "disconnected"].includes(pcState)) {
+      scheduleWebRTCReconnect("websocket reconnect needs webrtc");
+      return;
+    }
+    connectResults($("cameraId").value.trim() || "camera_01");
+  }, delay);
+}
+
+function updateRecoveryBanner(extraMessage = null) {
+  const banner = $("recoveryBanner");
+  if (!banner) {
+    return;
+  }
+  const status = state.lastStatus || {};
+  const messages = [];
+  const main = status.main_stream;
+  const analysis = status.analysis_stream;
+
+  if (status.diagnostics?.camera_lost) {
+    messages.push("Camera offline: stale frame hidden; waiting for fresh frame");
+  } else if (status.diagnostics?.capture_stale) {
+    messages.push("Capture stale: waiting for fresh frame");
+  }
+
+  if (state.autoReconnect.webrtcTimer || state.autoReconnect.connecting) {
+    messages.push("WebRTC 重连中");
+  }
+  if (state.autoReconnect.wsTimer) {
+    messages.push("WebSocket 重连中");
+  }
+  if (status.display_fallback_active || status.display_source_current === "analysis") {
+    messages.push("高清流恢复中，已切换稳定分析流显示");
+  } else if (main && main.stream_state !== "connected") {
+    messages.push("高清流恢复中");
+  }
+  if (analysis && analysis.stream_state !== "connected") {
+    messages.push("AI 分析流恢复中");
+  }
+  if (extraMessage) {
+    messages.push(extraMessage);
+  }
+
+  if (!messages.length) {
+    banner.hidden = true;
+    banner.textContent = "";
+    return;
+  }
+  banner.hidden = false;
+  banner.textContent = Array.from(new Set(messages)).join(" / ");
 }
 
 async function refreshStatus() {
   try {
     const startedAt = performance.now();
-    const response = await fetch(`${apiBase()}/status`);
+    const cameraId = $("cameraId").value.trim() || "camera_01";
+    const response = await fetch(`${apiBase()}/status?camera_id=${encodeURIComponent(cameraId)}`);
     const data = await response.json();
+    state.lastStatus = data;
     const jsonStartedAt = performance.now();
     if (debugState.showRawJson) {
       $("statusBox").textContent = JSON.stringify(data, null, 2);
@@ -293,6 +579,8 @@ async function refreshStatus() {
     }
     const rawJsonMs = performance.now() - jsonStartedAt;
     updateStreamState(data);
+    updateBackendSource(data);
+    syncRtspInputFromStatus(data);
     updateMetricPanel(data);
     debugState.counters.statusUpdates += 1;
     pushLimited(debugState.statusSamples, {
@@ -308,16 +596,87 @@ async function refreshStatus() {
   }
 }
 
+function syncRtspInputFromStatus(status) {
+  const input = $("rtspUrl");
+  if (!input) {
+    return;
+  }
+  const cameraId = $("cameraId").value.trim() || "camera_01";
+  const camera = (status.cameras || []).find((item) => item.camera_id === cameraId);
+  const analysisUrl = status.analysis_stream?.source_url || camera?.source_url || "";
+  if (analysisUrl && (!state.userEditedRtspUrl || !input.value.trim())) {
+    input.value = analysisUrl;
+    state.userEditedRtspUrl = false;
+  }
+}
+
+function deriveMainRtspUrl(rtspUrl) {
+  if (!rtspUrl) {
+    return null;
+  }
+  if (rtspUrl.includes("/av0_1")) {
+    return rtspUrl.replace("/av0_1", "/av0_0");
+  }
+  return rtspUrl;
+}
+
+function deriveAnalysisRtspUrl(rtspUrl) {
+  return rtspUrl || null;
+}
+
+function updateBackendSource(status) {
+  const target = $("backendSource");
+  if (!target) {
+    return;
+  }
+  const main = status.main_stream;
+  const analysis = status.analysis_stream || (status.cameras || [])[0];
+  const display = status.display_source_current || status.display_source || "single";
+  const analysisSource = status.analysis_source || "single";
+  const mainUrl = main?.source_url || "-";
+  const analysisUrl = analysis?.source_url || "-";
+  target.textContent = `显示(${display}): ${mainUrl} / AI(${analysisSource}): ${analysisUrl}`;
+}
+
 function updateStreamState(status) {
   const cameraId = $("cameraId").value.trim() || "camera_01";
   const camera = (status.cameras || []).find((item) => item.camera_id === cameraId);
   if (!camera) {
     $("streamState").textContent = "未连接";
+    updateRecoveryBanner();
     return;
   }
 
   const age = camera.frame_age_ms == null ? "-" : `${Math.round(camera.frame_age_ms)}ms`;
-  $("streamState").textContent = `${streamStateLabel(camera.stream_state)} (${age})`;
+  const display = status.display_source_current || status.display_source || "single";
+  const suffix = status.display_fallback_active ? " / 显示=分析流" : ` / 显示=${display}`;
+  const staleLabel = status.diagnostics?.camera_lost
+    ? "Camera offline"
+    : status.diagnostics?.capture_stale
+      ? "Capture stale / waiting for fresh frame"
+      : streamStateLabel(camera.stream_state);
+  $("streamState").textContent = `${staleLabel} (${age})${suffix}`;
+  maybeReconnectForDisplaySource(status);
+  updateRecoveryBanner();
+}
+
+function maybeReconnectForDisplaySource(status) {
+  const display = status.display_source_current || status.display_source || "single";
+  state.lastDisplaySource = display;
+  if (!state.userConnected || state.autoReconnect.connecting) {
+    return;
+  }
+  if (!state.connectedDisplaySource) {
+    state.connectedDisplaySource = display;
+    return;
+  }
+  if (state.connectedDisplaySource !== display) {
+    if (display === "analysis") {
+      debugState.counters.displayFallbackSwitches += 1;
+    }
+    state.connectedDisplaySource = display;
+    scheduleWebRTCReconnect(`显示流切换到 ${display}`);
+  }
 }
 
 function streamStateLabel(streamState) {
@@ -381,9 +740,142 @@ function updateFallPreview(target) {
 
 function updateMetricPanel(status) {
   const detection = (status.detection || [])[0];
-  $("detectionFps").textContent = detection?.detection_fps ?? "-";
-  $("trackingFps").textContent = status.tracking?.tracking_fps ?? "-";
-  $("poseFps").textContent = status.pose?.pose_fps ?? "-";
+  const detectionFps = detection?.detection_fps ?? null;
+  const trackingFps = status.pipeline?.tracking_worker_fps ?? status.tracking?.tracking_fps ?? null;
+  const poseFps = status.pose?.pose_fps ?? null;
+  const publishFps = status.pipeline?.result_publish_fps ?? null;
+  $("detectionFps").textContent = formatFps(detectionFps);
+  $("trackingFps").textContent = formatFps(trackingFps);
+  $("poseFps").textContent = formatFps(poseFps);
+  $("aiFps").textContent = `D:${formatFps(detectionFps)} T:${formatFps(trackingFps)} P:${formatFps(poseFps)} R:${formatFps(publishFps)}`;
+  updateWsFps();
+  updateOverlayAge();
+  updatePeerDebugState();
+}
+
+function attachVideoFrameLoop() {
+  const video = $("video");
+  if (!video) {
+    return;
+  }
+  stopOverlayLoop();
+  if (typeof video.requestVideoFrameCallback !== "function") {
+    startOverlayFallbackLoop(video);
+    return;
+  }
+  state.videoFrameCallbackActive = true;
+  const loop = (_now, metadata) => {
+    if (!state.videoFrameCallbackActive) {
+      return;
+    }
+    const result = consumePendingOverlayResult();
+    if (result) {
+      drawOverlay(video, result, metadata);
+      debugState.counters.overlayFramesDrawn += 1;
+      updateOverlayFps();
+    }
+    video.requestVideoFrameCallback(loop);
+  };
+  video.requestVideoFrameCallback(loop);
+}
+
+function stopOverlayLoop() {
+  state.videoFrameCallbackActive = false;
+  if (state.overlayFallbackTimer) {
+    clearInterval(state.overlayFallbackTimer);
+    state.overlayFallbackTimer = null;
+  }
+}
+
+function startOverlayFallbackLoop(video) {
+  if (state.overlayFallbackTimer) {
+    return;
+  }
+  const drawLatest = () => {
+    const result = consumePendingOverlayResult();
+    if (!result) {
+      return;
+    }
+    if (!video || video.readyState < 2 || video.paused || !video.videoWidth || !video.videoHeight) {
+      return;
+    }
+    drawOverlay(video, result, {
+      mediaTime: video.currentTime,
+      presentedFrames: debugState.counters.overlayFramesDrawn + 1,
+    });
+    debugState.counters.overlayFramesDrawn += 1;
+    updateOverlayFps();
+  };
+  state.overlayFallbackTimer = setInterval(drawLatest, 100);
+}
+
+function consumePendingOverlayResult() {
+  const result = state.pendingResult || state.lastResult;
+  state.pendingResult = null;
+  return result;
+}
+
+function updateWsFps() {
+  const target = $("wsFps");
+  if (!target) {
+    return;
+  }
+  const samples = debugState.wsSamples;
+  if (samples.length < 2) {
+    target.textContent = "warming up";
+    return;
+  }
+  const first = samples[0];
+  const last = samples.at(-1);
+  const elapsedSec = (last.at - first.at) / 1000;
+  if (elapsedSec <= 0) {
+    target.textContent = "-";
+    return;
+  }
+  target.textContent = `${((samples.length - 1) / elapsedSec).toFixed(1)}`;
+}
+
+function updateOverlayFps() {
+  const target = $("overlayFps");
+  if (!target) {
+    return;
+  }
+  const now = performance.now();
+  const frames = debugState.counters.overlayFramesDrawn;
+  if (state.overlayFps.lastAt == null) {
+    state.overlayFps.lastAt = now;
+    state.overlayFps.lastFrames = frames;
+    target.textContent = "warming up";
+    return;
+  }
+  const elapsedSec = (now - state.overlayFps.lastAt) / 1000;
+  const frameDelta = frames - state.overlayFps.lastFrames;
+  if (elapsedSec >= 1) {
+    target.textContent = `${(frameDelta / elapsedSec).toFixed(1)}`;
+    state.overlayFps.lastAt = now;
+    state.overlayFps.lastFrames = frames;
+  }
+}
+
+function updateOverlayAge() {
+  const target = $("overlayAge");
+  if (!target) {
+    return;
+  }
+  const timestamp = state.lastResult?.timestamp;
+  if (!timestamp) {
+    target.textContent = "-";
+    return;
+  }
+  const ageMs = Date.now() - Date.parse(timestamp);
+  target.textContent = Number.isFinite(ageMs) ? `${Math.max(0, Math.round(ageMs))}ms` : "-";
+}
+
+function formatFps(value) {
+  if (value == null || Number.isNaN(Number(value))) {
+    return "-";
+  }
+  return Number(value).toFixed(1);
 }
 
 function formatScore(value) {
@@ -526,6 +1018,46 @@ function round(value) {
   return Math.round(Number(value) * 100) / 100;
 }
 
+function pushDebugError(kind, payload) {
+  pushLimited(debugState.errors, {
+    at: Date.now(),
+    kind,
+    message: String(payload?.message || payload?.reason || payload || ""),
+    source: payload?.filename || payload?.source || null,
+    line: payload?.lineno || null,
+    col: payload?.colno || null,
+  }, 100);
+}
+
+function readFreezeDomSnapshot() {
+  const video = $("video");
+  const quality = typeof video?.getVideoPlaybackQuality === "function"
+    ? video.getVideoPlaybackQuality()
+    : null;
+  return {
+    href: window.location.href,
+    visibilityState: document.visibilityState,
+    webrtcState: $("webrtcState")?.textContent || null,
+    wsState: $("wsState")?.textContent || null,
+    videoFps: $("videoFps")?.textContent || null,
+    wsFps: $("wsFps")?.textContent || null,
+    overlayFps: $("overlayFps")?.textContent || null,
+    overlayAge: $("overlayAge")?.textContent || null,
+    videoFrames: $("videoFrames")?.textContent || null,
+    videoReadyState: $("videoReadyState")?.textContent || null,
+    videoSize: $("videoSize")?.textContent || null,
+    pcExists: $("pcExists")?.textContent || null,
+    iceConnectionState: $("iceConnectionState")?.textContent || null,
+    signalingState: $("signalingState")?.textContent || null,
+    srcObjectTracks: $("srcObjectTracks")?.textContent || null,
+    readyState: video?.readyState ?? null,
+    paused: video?.paused ?? null,
+    currentTime: video?.currentTime ?? null,
+    totalVideoFrames: quality?.totalVideoFrames ?? null,
+    droppedVideoFrames: quality?.droppedVideoFrames ?? null,
+  };
+}
+
 function sampleVideoQuality() {
   const video = $("video");
   if (!video) {
@@ -543,6 +1075,50 @@ function sampleVideoQuality() {
     droppedVideoFrames: quality?.droppedVideoFrames ?? null,
     corruptedVideoFrames: quality?.corruptedVideoFrames ?? null,
   });
+  updateVideoFps(quality);
+}
+
+function updateVideoFps(quality) {
+  const target = $("videoFps");
+  if (!target) {
+    return;
+  }
+  if (!quality || !Number.isFinite(quality.totalVideoFrames)) {
+    target.textContent = "unsupported";
+    return;
+  }
+  const now = performance.now();
+  const totalFrames = Number(quality.totalVideoFrames);
+  const droppedFrames = Number(quality.droppedVideoFrames || 0);
+  const previous = state.videoFps;
+  if (
+    previous.lastAt == null
+    || previous.lastTotalFrames == null
+    || previous.lastDroppedFrames == null
+  ) {
+    previous.lastAt = now;
+    previous.lastTotalFrames = totalFrames;
+    previous.lastDroppedFrames = droppedFrames;
+    target.textContent = "warming up";
+    return;
+  }
+  const elapsedSec = (now - previous.lastAt) / 1000;
+  const frameDelta = totalFrames - previous.lastTotalFrames;
+  const dropDelta = droppedFrames - previous.lastDroppedFrames;
+  previous.lastAt = now;
+  previous.lastTotalFrames = totalFrames;
+  previous.lastDroppedFrames = droppedFrames;
+  if (elapsedSec <= 0 || frameDelta < 0 || dropDelta < 0) {
+    target.textContent = "-";
+    return;
+  }
+  const fps = frameDelta / elapsedSec;
+  target.textContent = `${fps.toFixed(1)} (drop ${Math.round(dropDelta)})`;
+  const videoFrames = $("videoFrames");
+  if (videoFrames) {
+    videoFrames.textContent = `${Math.round(totalFrames)} / drop ${Math.round(droppedFrames)}`;
+  }
+  updatePeerDebugState();
 }
 
 async function sampleRtcStats() {
@@ -570,14 +1146,66 @@ async function sampleRtcStats() {
     if (sample) {
       pushLimited(debugState.rtcSamples, sample);
     }
+    updatePeerDebugState();
   } catch (_) {
     // Debug-only sampling must never affect the demo.
   }
 }
 
+function updatePeerDebugState() {
+  const pc = state.pc;
+  const video = $("video");
+  const srcObject = video?.srcObject || null;
+  $("pcExists").textContent = pc ? "yes" : "no";
+  $("iceConnectionState").textContent = pc?.iceConnectionState || "-";
+  $("signalingState").textContent = pc?.signalingState || "-";
+  $("iceGatheringState").textContent = pc?.iceGatheringState || "-";
+  $("hasSrcObject").textContent = srcObject ? "yes" : "no";
+  const tracks = srcObject?.getTracks?.() || [];
+  $("srcObjectTracks").textContent = tracks.length
+    ? tracks.map((track) => `${track.kind}:${track.readyState}${track.muted ? ':muted' : ''}`).join(", ")
+    : "-";
+  $("videoReadyState").textContent = video ? `${video.readyState}${state.lastPlayError ? ` / playErr` : ""}` : "-";
+  $("videoSize").textContent = video && video.videoWidth > 0 && video.videoHeight > 0
+    ? `${video.videoWidth}x${video.videoHeight}`
+    : "-";
+}
+
 $("startBtn").addEventListener("click", startStream);
 $("connectBtn").addEventListener("click", connectWebRTC);
-window.addEventListener("resize", () => drawOverlay($("overlay"), $("video"), state.lastResult));
+$("rtspUrl")?.addEventListener("input", () => {
+  state.userEditedRtspUrl = true;
+});
+window.addEventListener("beforeunload", () => {
+  state.userConnected = false;
+  stopOverlayLoop();
+  closeConnections();
+});
+window.addEventListener("resize", () => {
+  const video = $("video");
+  if (state.lastResult && video) {
+    drawOverlay(video, state.lastResult);
+  }
+});
+window.addEventListener("error", (event) => pushDebugError("error", event));
+window.addEventListener("unhandledrejection", (event) => pushDebugError("unhandledrejection", event));
+if ("PerformanceObserver" in window) {
+  try {
+    const longTaskObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        pushLimited(debugState.longTasks, {
+          at: Date.now(),
+          name: entry.name,
+          durationMs: round(entry.duration),
+          startTimeMs: round(entry.startTime),
+        }, 100);
+      }
+    });
+    longTaskObserver.observe({ entryTypes: ["longtask"] });
+  } catch (_) {
+    // Long-task telemetry is best-effort and must never affect playback.
+  }
+}
 setInterval(refreshStatus, 2000);
 setInterval(sampleVideoQuality, 1000);
 setInterval(sampleRtcStats, 1000);
