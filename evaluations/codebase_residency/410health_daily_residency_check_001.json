@@ -1,0 +1,49 @@
+{
+  "phase": "SE-1.2",
+  "project_path": "D:\\Program\\410health",
+  "created_at": "2026-05-28T01:52:38.272501+00:00",
+  "runner_created": true,
+  "git_status_checked": true,
+  "backend_pytest_executed": true,
+  "frontend_check_attempted": true,
+  "daily_report_created": true,
+  "summary_json_created": true,
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "overall_status": "failed",
+  "checks": {
+    "git_status": {
+      "command": "git status --short",
+      "cwd": "D:\\Program\\410health",
+      "exit_code": 0,
+      "status": "passed",
+      "stdout_tail": "?? docs/410health_daily_residency_check_report.md\n?? evaluations/codebase_residency/410health_daily_residency_check_001.json\n?? scripts/run_410health_daily_residency_check.py",
+      "stderr_tail": "",
+      "started_at": "2026-05-28T01:52:38.272501+00:00",
+      "completed_at": "2026-05-28T01:52:38.328542+00:00"
+    },
+    "backend_pytest": {
+      "command": "conda run -n helth pytest",
+      "cwd": "D:\\Program\\410health",
+      "exit_code": 0,
+      "status": "passed",
+      "stdout_tail": "\n\n\ntests\\test_alarm_service.py ........                                     [  8%]\n\ntests\\test_chat_agent_api.py .....                                       [ 13%]\n\ntests\\test_demo_overlay.py .........                                     [ 23%]\n\ntests\\test_device_registration_flow.py ..................                [ 42%]\n\ntests\\test_display_sample_resolution.py ......                           [ 48%]\n\ntests\\test_health_api.py .......                                         [ 55%]\n\ntests\\test_inference.py ...                                              [ 58%]\n\ntests\\test_langchain_rag_service.py .....                                [ 64%]\n\ntests\\test_omni_logic.py .....                                           [ 69%]\n\ntests\\test_rag_health.py .                                               [ 70%]\n\ntests\\test_rag_incremental.py .                                          [ 71%]\n\ntests\\test_rule_engine.py ....                                           [ 75%]\n\ntests\\test_runtime_bootstrap.py .......                                  [ 83%]\n\ntests\\test_runtime_tasks.py .                                            [ 84%]\n\ntests\\test_serial_parser.py ........                                     [ 92%]\n\ntests\\test_serial_reader.py .......                                      [100%]\n\n\n\n======================= 95 passed in 101.64s (0:01:41) ========================\n\n",
+      "stderr_tail": "",
+      "started_at": "2026-05-28T01:52:38.328542+00:00",
+      "completed_at": "2026-05-28T01:54:27.356232+00:00"
+    },
+    "frontend_check": {
+      "command": "npm run check",
+      "cwd": "D:\\Program\\410health\\frontend\\vue-dashboard",
+      "exit_code": null,
+      "status": "failed",
+      "stdout_tail": "",
+      "stderr_tail": "command not found: npm",
+      "failure_reason": "dependency/tooling missing",
+      "started_at": "2026-05-28T01:54:27.356232+00:00",
+      "completed_at": "2026-05-28T01:54:27.358242+00:00"
+    }
+  }
+}
