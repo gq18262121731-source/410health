@@ -1,0 +1,42 @@
+{
+  "phase": "SE-1.8",
+  "created_at": "2026-05-28T08:02:08.068417+00:00",
+  "project_path": "D:\\Program\\410health",
+  "assets_dir": "D:\\Program\\410health\\frontend\\vue-dashboard\\dist\\assets",
+  "threshold_bytes": 512000,
+  "oversized_js_chunks": [
+    {
+      "name": "echarts-uvSR9kx1.js",
+      "size_bytes": 823190,
+      "size_kb": 803.9,
+      "asset_type": "javascript_chunk",
+      "over_500kb": true,
+      "likely_source": "echarts charting dependency"
+    }
+  ],
+  "oversized_assets": [
+    {
+      "name": "echarts-uvSR9kx1.js",
+      "size_bytes": 823190,
+      "size_kb": 803.9,
+      "asset_type": "javascript_chunk",
+      "over_500kb": true,
+      "likely_source": "echarts charting dependency"
+    },
+    {
+      "name": "背景-BST42LBB.jpg",
+      "size_bytes": 600650,
+      "size_kb": 586.57,
+      "asset_type": "image_asset",
+      "over_500kb": true,
+      "likely_source": "large background image asset"
+    }
+  ],
+  "likely_primary_source": "echarts charting dependency",
+  "immediate_action_required": false,
+  "recommended_next_step": "No urgent fix is required. The only oversized JavaScript chunk is the isolated echarts chunk; track it as a non-blocking optimization item. If bundle size becomes a product concern, prefer lazy-loading chart-heavy views or replacing wildcard echarts imports before changing business logic.",
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false
+}
