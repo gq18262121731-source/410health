@@ -8,6 +8,7 @@ export type PageKey =
   | "agent"
   | "family"
   | "target-users"
+  | "video-bridge"
   | "model-tuning"
   | "debug"
   | "none";
@@ -19,6 +20,7 @@ const pageHash: Record<Exclude<PageKey, "none">, string> = {
   agent: "#/agent",
   family: "#/family",
   "target-users": "#/target-users",
+  "video-bridge": "#/video-bridge",
   "model-tuning": "#/model-tuning",
   debug: "#/debug",
 };
@@ -50,7 +52,7 @@ export function useHashRouting(sessionUser: Ref<SessionUser | null>) {
     if (!sessionUser.value) return [];
     if (sessionUser.value.role === "family") return ["family"];
     if (sessionUser.value.role === "community" || sessionUser.value.role === "admin") {
-      return ["overview", "topology", "members", "agent", "target-users", "model-tuning"];
+      return ["overview", "topology", "members", "agent", "target-users", "video-bridge", "model-tuning"];
     }
     return [];
   });

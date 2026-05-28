@@ -28,6 +28,12 @@ class CameraRepository {
         Map<String, dynamic>.from(response.data as Map));
   }
 
+  Future<CameraVideoBridgeStatus> getVideoBridgeStatus() async {
+    final response = await _apiClient.get('video-bridge/status');
+    return CameraVideoBridgeStatus.fromJson(
+        Map<String, dynamic>.from(response.data as Map));
+  }
+
   Future<CameraAudioStatus> getAudioStatus() async {
     final response = await _apiClient.get('camera/audio/status');
     return CameraAudioStatus.fromJson(
@@ -189,11 +195,13 @@ class CameraRepository {
 
   Future<Uint8List> getCurrentFrameSnapshot({
     CameraVideoMode mode = CameraVideoMode.raw,
+    String? bridgeSnapshotUrl,
   }) async {
-    final path = switch (mode) {
-      CameraVideoMode.processed => 'camera/processed-snapshot',
-      CameraVideoMode.raw => 'camera/snapshot',
-    };
+    final path = bridgeSnapshotUrl ??
+        switch (mode) {
+          CameraVideoMode.processed => 'camera/processed-snapshot',
+          CameraVideoMode.raw => 'camera/snapshot',
+        };
     final response = await _apiClient.get(
       path,
       options: Options(
@@ -251,18 +259,28 @@ class CameraRepository {
 
   WebSocketChannel connectFrameStream({
     CameraVideoMode mode = CameraVideoMode.raw,
+    String? bridgeStreamUrl,
   }) {
-    final path = switch (mode) {
-      CameraVideoMode.processed => '/ws/camera/processed',
-      CameraVideoMode.raw => '/ws/camera',
-    };
-    return WebSocketChannel.connect(
-        Uri.parse('${_endpointConfig.wsBaseUrl}$path'));
+    final path = bridgeStreamUrl ??
+        switch (mode) {
+          CameraVideoMode.processed => '/ws/camera/processed',
+          CameraVideoMode.raw => '/ws/camera',
+        };
+    return WebSocketChannel.connect(_resolveWebSocketUri(path));
   }
 
   WebSocketChannel connectAudioListenStream() {
     return WebSocketChannel.connect(
         Uri.parse('${_endpointConfig.wsBaseUrl}/ws/camera/audio/listen'));
+  }
+
+  Uri _resolveWebSocketUri(String source) {
+    final parsed = Uri.tryParse(source);
+    if (parsed != null && parsed.hasScheme) {
+      return parsed;
+    }
+    final path = source.startsWith('/') ? source : '/$source';
+    return Uri.parse('${_endpointConfig.wsBaseUrl}$path');
   }
 
   Map<String, CameraDetectionRuntimeStatus> _parseDetectionModelsStatus(

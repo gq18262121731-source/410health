@@ -7,6 +7,7 @@ import {
   Network,
   SquareTerminal,
   type LucideIcon,
+  Video,
   UserRoundSearch,
   UsersRound,
 } from "lucide-vue-next";
@@ -59,6 +60,12 @@ const navItems = computed<NavItem[]>(() =>
       label: "智能体工作台",
       description: "问答、分析与工具调用",
       icon: SquareTerminal,
+    },
+    {
+      page: "video-bridge" as PageKey,
+      label: "视频接入口",
+      description: "独立视频服务预埋",
+      icon: Video,
     },
     {
       page: "model-tuning" as PageKey,

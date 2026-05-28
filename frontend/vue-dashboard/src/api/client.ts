@@ -921,6 +921,63 @@ export interface CameraStreamStatusResponse {
   stream_width?: number;
 }
 
+export type VideoBridgeServiceState = "mock" | "starting" | "running" | "degraded" | "stopped" | "error" | "unknown";
+export type VideoBridgeFallState = "unknown" | "normal" | "suspected_fall" | "confirmed_fall" | "fallen" | "recovery" | "error";
+export type VideoBridgeRisk = "unknown" | "low" | "medium" | "high" | "critical";
+
+export interface VideoBridgeTarget {
+  target_id?: string | null;
+  label?: string | null;
+  matched?: boolean | null;
+  confidence?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface VideoBridgeAnalysisRecord {
+  camera_id: string;
+  stream_name: string;
+  service_state: VideoBridgeServiceState;
+  camera_lost: boolean;
+  capture_stale: boolean;
+  frame_age_ms?: number | null;
+  video_fps?: number | null;
+  overlay_fps?: number | null;
+  ws_fps?: number | null;
+  track_id?: string | null;
+  bbox?: number[] | null;
+  target?: VideoBridgeTarget | Record<string, unknown> | string | null;
+  fall_state: VideoBridgeFallState;
+  risk: VideoBridgeRisk;
+  fall_prob?: number | null;
+  snapshot_url?: string | null;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+  received_at: string;
+  stale: boolean;
+  adapter_version: string;
+}
+
+export interface VideoBridgeStatusResponse {
+  ok: boolean;
+  bridge_state: VideoBridgeServiceState;
+  adapter_version: string;
+  camera_count: number;
+  updated_at: string;
+  latest?: VideoBridgeAnalysisRecord | null;
+  cameras: VideoBridgeAnalysisRecord[];
+  notes: string[];
+}
+
+export interface VideoBridgeIngestResponse {
+  ok: boolean;
+  accepted: boolean;
+  camera_id: string;
+  stream_name: string;
+  received_at: string;
+  service_state: VideoBridgeServiceState;
+  stale: boolean;
+}
+
 export interface CameraAudioStatusResponse {
   configured: boolean;
   listen_supported: boolean;
@@ -1459,6 +1516,13 @@ export const api = {
   getCameraDetectionStreamUrl: () => `${API_BASE}/camera/stream.detect.mjpg?t=${Date.now()}`,
   getCameraPoseStreamUrl: () => `${API_BASE}/camera/stream.pose.mjpg?t=${Date.now()}`,
   getCameraProcessedStreamUrl: () => `${API_BASE}/camera/stream.processed.mjpg?t=${Date.now()}`,
+  getVideoBridgeStatus: () => requestJson<VideoBridgeStatusResponse>(`${API_BASE}/video-bridge/status`),
+  pushVideoBridgeAnalysis: (payload: Partial<VideoBridgeAnalysisRecord> & { camera_id: string }) =>
+    requestJson<VideoBridgeIngestResponse>(`${API_BASE}/video-bridge/analysis`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   cameraFrameSocket: () => new WebSocket(`${WS_BASE}/ws/camera`),
   cameraAudioSocket: () => new WebSocket(`${WS_BASE}/ws/camera/audio/listen`),
   getCameraSourceRegistration: () =>

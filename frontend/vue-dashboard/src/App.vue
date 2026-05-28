@@ -13,6 +13,7 @@ import LoginPage from "./views/LoginPage.vue";
 import MemberDevicePage from "./views/MemberDevicePage.vue";
 import ModelFinetunePage from "./views/ModelFinetunePage.vue";
 import TargetUserManagementPage from "./views/TargetUserManagementPage.vue";
+import VideoBridgePage from "./views/VideoBridgePage.vue";
 
 const {
   authError,
@@ -145,6 +146,10 @@ onUnmounted(() => {
     <ModelFinetunePage
       v-else-if="activePage === 'model-tuning'"
       :refresh-key="routeToNonce"
+    />
+
+    <VideoBridgePage
+      v-else-if="activePage === 'video-bridge'"
     />
 
     <MemberDevicePage

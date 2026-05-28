@@ -122,7 +122,7 @@ class _VideoPanelState extends State<_VideoPanel> {
   Widget build(BuildContext context) {
     final provider = context.read<CameraProvider>();
     final useLocalPreview = context.select<CameraProvider, bool>(
-      (provider) => provider.setupConfig.sourceMode == 'local',
+      (provider) => provider.usesLocalPreview,
     );
     final autoRefresh = context.select<CameraProvider, bool>(
       (provider) => provider.autoRefresh,
@@ -134,6 +134,9 @@ class _VideoPanelState extends State<_VideoPanel> {
       (provider) => provider.frameBytes,
     );
     final showingProcessedVideo = videoMode == CameraVideoMode.processed;
+    final useBridgeSource = context.select<CameraProvider, bool>(
+      (provider) => provider.usesVideoBridgeSource,
+    );
     _syncAnalysisTimer(
       autoRefresh: autoRefresh,
       useLocalPreview: useLocalPreview,
@@ -211,7 +214,8 @@ class _VideoPanelState extends State<_VideoPanel> {
                       isOnline: provider.status?.online == true,
                     ),
                   ),
-                  if (showingProcessedVideo) const _PoseSkeletonOverlay(),
+                  if (showingProcessedVideo && !useBridgeSource)
+                    const _PoseSkeletonOverlay(),
                   if (provider.audioListening)
                     Positioned(
                       left: 12,
@@ -943,13 +947,26 @@ class _DiagnosticsPanel extends StatelessWidget {
         spacing: 8,
         runSpacing: 8,
         children: <Widget>[
+          if (provider.usesVideoBridgeSource)
+            _MetricChip(
+              label: '视频服务 ${provider.videoBridgeStatus?.stateLabel ?? '检查中'}',
+            ),
           _MetricChip(
               label: '客户端 ${provider.clientFps.toStringAsFixed(1)} fps'),
           if (sourceFps > 0)
             _MetricChip(label: '源帧率 ${sourceFps.toStringAsFixed(1)} fps'),
+          if (provider.videoBridgeStatus?.latest?.overlayFps != null)
+            _MetricChip(
+              label:
+                  '合成 ${provider.videoBridgeStatus!.latest!.overlayFps!.toStringAsFixed(1)} fps',
+            ),
+          if (provider.videoBridgeStatus?.latest?.frameAgeMs != null)
+            _MetricChip(
+              label: '帧龄 ${provider.videoBridgeStatus!.latest!.frameAgeMs} ms',
+            ),
           if (latency != null)
             _MetricChip(label: '延迟 ${latency.toStringAsFixed(1)} ms'),
-          if (processedOverlay != null)
+          if (!provider.usesVideoBridgeSource && processedOverlay != null)
             _MetricChip(label: '处理流 ${processedOverlay.label}'),
           _MetricChip(label: provider.audioStatus?.listenLabel ?? '音频检测中'),
           _MetricChip(label: '观看端 ${provider.streamStatus?.clients ?? 0}'),
@@ -965,6 +982,9 @@ class _AiAnalysisPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<CameraProvider>();
+    if (provider.usesVideoBridgeSource) {
+      return const _BridgeAnalysisPanel();
+    }
     final poseStatus = provider.poseDetectionStatus;
     final fallStatus = provider.fallDetectionStatus;
     final poseLatest = provider.poseLatest;
@@ -1113,6 +1133,87 @@ class _AiAnalysisPanel extends StatelessWidget {
     final minute = time.minute.toString().padLeft(2, '0');
     final second = time.second.toString().padLeft(2, '0');
     return '$hour:$minute:$second';
+  }
+}
+
+class _BridgeAnalysisPanel extends StatelessWidget {
+  const _BridgeAnalysisPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final bridge = context.watch<CameraProvider>().videoBridgeStatus;
+    final latest = bridge?.latest;
+    final riskColor = latest?.hasRisk == true
+        ? AppColors.error
+        : latest?.risk == 'medium'
+            ? AppColors.warning
+            : AppColors.success;
+    final fallProb = latest?.fallProb == null
+        ? '--'
+        : '${(latest!.fallProb! * 100).clamp(0, 100).toStringAsFixed(0)}%';
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Text(
+            '视频服务风险状态',
+            style: TextStyle(
+              color: AppColors.textMain,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: <Widget>[
+              _MetricChip(label: 'bridge ${bridge?.stateLabel ?? '检查中'}'),
+              _MetricChip(label: 'adapter ${bridge?.adapterVersion ?? '--'}'),
+              _MetricChip(label: '摄像头 ${latest?.cameraId ?? '--'}'),
+              _MetricChip(label: '流 ${latest?.streamName ?? '--'}'),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _AnalysisRow(
+            label: 'service',
+            value: latest?.serviceStateLabel ?? '等待视频服务',
+            color: latest?.isOnline == true
+                ? AppColors.success
+                : AppColors.warning,
+          ),
+          _AnalysisRow(
+            label: 'target',
+            value: latest?.targetLabel ?? '等待目标识别',
+            color: AppColors.primary,
+          ),
+          _AnalysisRow(
+            label: 'fall risk',
+            value: latest == null
+                ? '等待视频服务风险数据'
+                : '${latest.riskLabel} · ${latest.fallStateLabel} · $fallProb',
+            color: riskColor,
+          ),
+          _AnalysisRow(
+            label: 'track',
+            value: latest?.trackId ?? '暂无 track_id',
+            color: AppColors.textSub,
+          ),
+          _AnalysisRow(
+            label: 'snapshot',
+            value: latest?.snapshotUrl ?? '等待视频服务快照 URL',
+            color: AppColors.textSub,
+          ),
+        ],
+      ),
+    );
   }
 }
 

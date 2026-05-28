@@ -68,6 +68,8 @@ from backend.services.target_pose_service import TargetPoseService
 from backend.services.target_user_service import TargetUserService
 from backend.services.target_user_fall_service import TargetUserFallService
 from backend.services.user_service import UserService
+from backend.services.video_adapter import VideoAnalysisAdapter
+from backend.services.video_bridge_service import VideoBridgeService
 from backend.services.voice_service import VoiceService
 from backend.services.warning_service import WarningService
 from backend.services.websocket_manager import WebSocketManager
@@ -423,6 +425,7 @@ _external_camera_bridge_service = ExternalCameraBridgeService(
     data_root=_settings.data_dir,
     target_user_fall_service=_target_user_fall_service,
 )
+_video_bridge_service = VideoBridgeService(VideoAnalysisAdapter())
 _realtime_detector = RealtimeAnomalyDetector(
     window_size=_settings.realtime_window_size,
     zscore_threshold=_settings.zscore_threshold,
@@ -2045,6 +2048,10 @@ def get_single_frame_fall_state() -> dict[str, object]:
 
 def get_external_camera_bridge_service() -> ExternalCameraBridgeService:
     return _external_camera_bridge_service
+
+
+def get_video_bridge_service() -> VideoBridgeService:
+    return _video_bridge_service
 
 
 def get_data_generator() -> SyntheticHealthDataGenerator:

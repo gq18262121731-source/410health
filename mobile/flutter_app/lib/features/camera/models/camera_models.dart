@@ -102,6 +102,202 @@ class CameraStreamStatus {
   double get displayFps => sourceFps > 0 ? sourceFps : measuredFps;
 }
 
+class CameraVideoBridgeStatus {
+  final String bridgeState;
+  final String adapterVersion;
+  final int cameraCount;
+  final DateTime? updatedAt;
+  final CameraVideoBridgeRecord? latest;
+  final List<CameraVideoBridgeRecord> cameras;
+  final List<String> notes;
+
+  const CameraVideoBridgeStatus({
+    required this.bridgeState,
+    required this.adapterVersion,
+    required this.cameraCount,
+    this.updatedAt,
+    this.latest,
+    required this.cameras,
+    required this.notes,
+  });
+
+  factory CameraVideoBridgeStatus.fromJson(Map<String, dynamic> json) {
+    final latestMap = _toMap(json['latest']);
+    return CameraVideoBridgeStatus(
+      bridgeState: json['bridge_state']?.toString() ?? 'unknown',
+      adapterVersion: json['adapter_version']?.toString() ?? 'unknown',
+      cameraCount: _toInt(json['camera_count']) ?? 0,
+      updatedAt: DateTime.tryParse(json['updated_at']?.toString() ?? ''),
+      latest: latestMap == null
+          ? null
+          : CameraVideoBridgeRecord.fromJson(latestMap),
+      cameras: _toList(json['cameras'])
+          .map(_toMap)
+          .whereType<Map<String, dynamic>>()
+          .map(CameraVideoBridgeRecord.fromJson)
+          .toList(growable: false),
+      notes: _toList(json['notes'])
+          .map((item) => item?.toString() ?? '')
+          .where((item) => item.isNotEmpty)
+          .toList(growable: false),
+    );
+  }
+
+  bool get isOnline =>
+      bridgeState == 'running' ||
+      bridgeState == 'mock' ||
+      bridgeState == 'degraded';
+
+  String get stateLabel {
+    return switch (bridgeState) {
+      'mock' => '预埋占位',
+      'starting' => '启动中',
+      'running' => '运行中',
+      'degraded' => '降级运行',
+      'stopped' => '已停止',
+      'error' => '异常',
+      _ => '未知',
+    };
+  }
+}
+
+class CameraVideoBridgeRecord {
+  final String cameraId;
+  final String streamName;
+  final String serviceState;
+  final bool cameraLost;
+  final bool captureStale;
+  final int? frameAgeMs;
+  final double? videoFps;
+  final double? overlayFps;
+  final double? wsFps;
+  final String streamType;
+  final String? streamUrl;
+  final String? trackId;
+  final List<double> bbox;
+  final Map<String, dynamic>? target;
+  final String fallState;
+  final String risk;
+  final double? fallProb;
+  final String? snapshotUrl;
+  final DateTime? timestamp;
+  final DateTime? receivedAt;
+  final bool stale;
+  final String adapterVersion;
+  final Map<String, dynamic> metadata;
+
+  const CameraVideoBridgeRecord({
+    required this.cameraId,
+    required this.streamName,
+    required this.serviceState,
+    required this.cameraLost,
+    required this.captureStale,
+    this.frameAgeMs,
+    this.videoFps,
+    this.overlayFps,
+    this.wsFps,
+    required this.streamType,
+    this.streamUrl,
+    this.trackId,
+    required this.bbox,
+    this.target,
+    required this.fallState,
+    required this.risk,
+    this.fallProb,
+    this.snapshotUrl,
+    this.timestamp,
+    this.receivedAt,
+    required this.stale,
+    required this.adapterVersion,
+    required this.metadata,
+  });
+
+  factory CameraVideoBridgeRecord.fromJson(Map<String, dynamic> json) {
+    return CameraVideoBridgeRecord(
+      cameraId: json['camera_id']?.toString() ?? '',
+      streamName: json['stream_name']?.toString() ?? 'primary',
+      serviceState: json['service_state']?.toString() ?? 'unknown',
+      cameraLost: json['camera_lost'] == true,
+      captureStale: json['capture_stale'] == true,
+      frameAgeMs: _toInt(json['frame_age_ms']),
+      videoFps: _toDouble(json['video_fps']),
+      overlayFps: _toDouble(json['overlay_fps']),
+      wsFps: _toDouble(json['ws_fps']),
+      streamType: json['stream_type']?.toString() ?? 'ws_image',
+      streamUrl: json['stream_url']?.toString(),
+      trackId: json['track_id']?.toString(),
+      bbox: _toDoubleList(json['bbox']),
+      target: _toMap(json['target']),
+      fallState: json['fall_state']?.toString() ?? 'unknown',
+      risk: json['risk']?.toString() ?? 'unknown',
+      fallProb: _toDouble(json['fall_prob']),
+      snapshotUrl: json['snapshot_url']?.toString(),
+      timestamp: DateTime.tryParse(json['timestamp']?.toString() ?? ''),
+      receivedAt: DateTime.tryParse(json['received_at']?.toString() ?? ''),
+      stale: json['stale'] == true,
+      adapterVersion: json['adapter_version']?.toString() ?? 'unknown',
+      metadata: _toMap(json['metadata']) ?? const <String, dynamic>{},
+    );
+  }
+
+  bool get isOnline =>
+      !cameraLost &&
+      !stale &&
+      (serviceState == 'running' ||
+          serviceState == 'mock' ||
+          serviceState == 'degraded');
+
+  bool get hasRisk => risk == 'high' || risk == 'critical';
+
+  String get serviceStateLabel {
+    return switch (serviceState) {
+      'mock' => '占位源',
+      'starting' => '启动中',
+      'running' => '运行中',
+      'degraded' => '降级运行',
+      'stopped' => '已停止',
+      'error' => '异常',
+      _ => '未知',
+    };
+  }
+
+  String get riskLabel {
+    return switch (risk) {
+      'low' => '低风险',
+      'medium' => '中风险',
+      'high' => '高风险',
+      'critical' => '紧急风险',
+      _ => '未知风险',
+    };
+  }
+
+  String get fallStateLabel {
+    return switch (fallState) {
+      'normal' => '未见跌倒',
+      'suspected_fall' => '疑似跌倒',
+      'confirmed_fall' => '已确认跌倒',
+      'fallen' => '倒地',
+      'recovery' => '恢复中',
+      'error' => '分析异常',
+      _ => '等待分析',
+    };
+  }
+
+  String get targetLabel {
+    final targetMap = target;
+    if (targetMap == null) return '未识别目标';
+    final label = targetMap['label']?.toString();
+    final targetId =
+        targetMap['target_id']?.toString() ?? targetMap['user_id']?.toString();
+    final matched = targetMap['matched'] == true;
+    if (targetId != null && targetId.isNotEmpty) {
+      return matched ? '已匹配 $targetId' : targetId;
+    }
+    if (label != null && label.isNotEmpty) return label;
+    return matched ? '已匹配目标' : '未匹配目标';
+  }
+}
+
 class CameraOverlayStatus {
   final String type;
   final bool hasRenderableOverlay;
@@ -132,10 +328,10 @@ class CameraOverlayStatus {
       posePayloadValid: json['pose_payload_valid'] == true,
       poseFallbackValid: json['pose_fallback_valid'] == true,
       poseTrackCount: _toInt(json['pose_track_count']) ?? 0,
-      fallPayloadValid: json['fall_payload_valid'] == true ||
-          json['event_valid'] == true,
-      fallFallbackValid: json['fall_fallback_valid'] == true ||
-          json['fallback_valid'] == true,
+      fallPayloadValid:
+          json['fall_payload_valid'] == true || json['event_valid'] == true,
+      fallFallbackValid:
+          json['fall_fallback_valid'] == true || json['fallback_valid'] == true,
       poseFallbackRunning: json['pose_fallback_running'] == true,
       fallFallbackRunning: json['fall_fallback_running'] == true,
     );

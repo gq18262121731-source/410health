@@ -12,6 +12,7 @@ class CameraProvider extends ChangeNotifier {
 
   CameraStatus? status;
   CameraStreamStatus? streamStatus;
+  CameraVideoBridgeStatus? videoBridgeStatus;
   CameraAudioStatus? audioStatus;
   CameraDetectionRuntimeStatus? fallDetectionStatus;
   CameraDetectionRuntimeStatus? poseDetectionStatus;
@@ -95,7 +96,7 @@ class CameraProvider extends ChangeNotifier {
       return;
     }
     _closeFrameStream(clearFrame: true);
-    if (setupConfig.sourceMode != 'local') {
+    if (usesVideoBridgeSource || setupConfig.sourceMode != 'local') {
       if (showingProcessedVideo) {
         unawaited(_prepareProcessedVideoAndStartStream());
       } else {
@@ -116,6 +117,25 @@ class CameraProvider extends ChangeNotifier {
 
   bool get showingProcessedVideo => videoMode == CameraVideoMode.processed;
 
+  bool get usesVideoBridgeSource => showingProcessedVideo;
+
+  bool get usesLocalPreview =>
+      setupConfig.sourceMode == 'local' && !usesVideoBridgeSource;
+
+  String? get _bridgeFrameStreamUrl {
+    final latest = videoBridgeStatus?.latest;
+    if (latest == null || latest.streamType != 'ws_image') {
+      return null;
+    }
+    final url = latest.streamUrl?.trim();
+    return url == null || url.isEmpty ? null : url;
+  }
+
+  String? get _bridgeSnapshotUrl {
+    final url = videoBridgeStatus?.latest?.snapshotUrl?.trim();
+    return url == null || url.isEmpty ? null : url;
+  }
+
   String get frameAnalysisLabel {
     if (aiAnalysisRunning) return '正在调用接口';
     if (lastAiAnalysisAt != null) {
@@ -125,7 +145,15 @@ class CameraProvider extends ChangeNotifier {
   }
 
   String get streamLabel {
-    if (autoRefresh && setupConfig.sourceMode == 'local') {
+    if (usesVideoBridgeSource) {
+      if (!autoRefresh) return '已暂停';
+      if (hasFrame) {
+        return '视频服务 ${clientFps.toStringAsFixed(1)} fps';
+      }
+      if (isConnecting) return '连接视频服务';
+      return videoBridgeStatus?.stateLabel ?? '等待视频服务';
+    }
+    if (autoRefresh && usesLocalPreview) {
       return showingProcessedVideo ? '本地处理预览' : '本地原始预览';
     }
     if (!autoRefresh) return '已暂停';
@@ -138,6 +166,13 @@ class CameraProvider extends ChangeNotifier {
 
   String get processedOverlayNotice {
     if (!showingProcessedVideo) return '';
+    if (usesVideoBridgeSource) {
+      final latest = videoBridgeStatus?.latest;
+      final state = videoBridgeStatus?.stateLabel ?? '检查中';
+      final fps = latest?.videoFps ?? latest?.wsFps;
+      final fpsText = fps == null ? '' : ' · ${fps.toStringAsFixed(1)} fps';
+      return '独立视频服务 $state$fpsText，画面标注由视频端合成，家属端仅播放与展示状态';
+    }
     final overlay = streamStatus?.processedOverlay;
     if (processedOverlayMessage != null &&
         (overlay == null || !overlay.hasRenderableOverlay)) {
@@ -154,9 +189,26 @@ class CameraProvider extends ChangeNotifier {
     return '处理后视频使用同源画面；未检测到人体时会显示原画面并持续重试';
   }
 
-  String get endpointLabel => status?.endpoint ?? '等待后端摄像头配置';
+  String get endpointLabel {
+    if (usesVideoBridgeSource) {
+      final latest = videoBridgeStatus?.latest;
+      final url = latest?.streamUrl;
+      if (url != null && url.isNotEmpty) return url;
+      final name = latest?.streamName ?? 'primary';
+      return 'video_bridge · $name';
+    }
+    return status?.endpoint ?? '等待后端摄像头配置';
+  }
 
   String get fallDecisionNotice {
+    if (usesVideoBridgeSource) {
+      final latest = videoBridgeStatus?.latest;
+      if (latest == null) return '等待视频服务风险状态';
+      final prob = latest.fallProb == null
+          ? ''
+          : ' · 概率 ${(latest.fallProb! * 100).clamp(0, 100).toStringAsFixed(0)}%';
+      return '${latest.riskLabel} · ${latest.fallStateLabel}$prob';
+    }
     final fall = fallDetectionStatus;
     if (fall == null) return '';
     final lead = fall.decisionStatusLabel;
@@ -185,7 +237,20 @@ class CameraProvider extends ChangeNotifier {
 
   Future<void> refreshStatus() async {
     try {
-      status = await _repository.getStatus();
+      if (usesVideoBridgeSource) {
+        videoBridgeStatus = await _repository.getVideoBridgeStatus();
+        final latest = videoBridgeStatus?.latest;
+        status = CameraStatus(
+          configured: true,
+          online: videoBridgeStatus?.isOnline == true,
+          error:
+              latest?.isOnline == true ? null : videoBridgeStatus?.stateLabel,
+          path: latest?.streamUrl,
+          source: 'video_bridge',
+        );
+      } else {
+        status = await _repository.getStatus();
+      }
       if (status?.online == true) {
         errorMessage = null;
       } else if (status?.error != null) {
@@ -250,7 +315,7 @@ class CameraProvider extends ChangeNotifier {
       await refreshDiagnostics();
       if (autoRefresh) {
         _closeFrameStream(clearFrame: true);
-        if (setupConfig.sourceMode != 'local') {
+        if (usesVideoBridgeSource || setupConfig.sourceMode != 'local') {
           if (showingProcessedVideo) {
             unawaited(_prepareProcessedVideoAndStartStream());
           } else {
@@ -273,22 +338,33 @@ class CameraProvider extends ChangeNotifier {
     try {
       if (setupConfig.sourceMode == 'local') {
         final results = await Future.wait<Object>([
+          _repository.getVideoBridgeStatus(),
           _repository.getDetectionModelsStatus(),
           _repository.getFrameAnalysisStatus(),
         ]);
+        videoBridgeStatus = results[0] as CameraVideoBridgeStatus;
         final detectionModels =
-            results[0] as Map<String, CameraDetectionRuntimeStatus>;
+            results[1] as Map<String, CameraDetectionRuntimeStatus>;
         fallDetectionStatus ??= detectionModels['fall_detection'];
         poseDetectionStatus ??= detectionModels['pose_detection'];
-        frameAnalysisStatus = results[1] as CameraFrameAnalysisStatus;
-        status ??= const CameraStatus(
+        frameAnalysisStatus = results[2] as CameraFrameAnalysisStatus;
+        final bridgeLatest = videoBridgeStatus?.latest;
+        status = CameraStatus(
           configured: true,
-          online: true,
-          source: 'browser_local_preview',
+          online: usesVideoBridgeSource
+              ? videoBridgeStatus?.isOnline == true
+              : true,
+          source:
+              usesVideoBridgeSource ? 'video_bridge' : 'browser_local_preview',
+          path: usesVideoBridgeSource ? bridgeLatest?.streamUrl : null,
         );
-        streamStatus ??= const CameraStreamStatus(
-          sourceFps: 0,
-          measuredFps: 0,
+        streamStatus = CameraStreamStatus(
+          sourceFps: usesVideoBridgeSource
+              ? (bridgeLatest?.videoFps ?? 0)
+              : (streamStatus?.sourceFps ?? 0),
+          measuredFps: usesVideoBridgeSource
+              ? (bridgeLatest?.wsFps ?? 0)
+              : (streamStatus?.measuredFps ?? 0),
           clients: 1,
         );
         audioStatus ??= const CameraAudioStatus(
@@ -301,14 +377,30 @@ class CameraProvider extends ChangeNotifier {
         return;
       }
       final results = await Future.wait<Object>([
-        _repository.getStatus(),
+        if (usesVideoBridgeSource)
+          _repository.getVideoBridgeStatus()
+        else
+          _repository.getStatus(),
         _repository.getStreamStatus(),
         _repository.getAudioStatus(),
         _repository.getDetectionModelsStatus(),
         _repository.getPoseDetectionLatest(),
         _repository.getFrameAnalysisStatus(),
       ]);
-      status = results[0] as CameraStatus;
+      if (usesVideoBridgeSource) {
+        videoBridgeStatus = results[0] as CameraVideoBridgeStatus;
+        final latest = videoBridgeStatus?.latest;
+        status = CameraStatus(
+          configured: true,
+          online: videoBridgeStatus?.isOnline == true,
+          error:
+              latest?.isOnline == true ? null : videoBridgeStatus?.stateLabel,
+          path: latest?.streamUrl,
+          source: 'video_bridge',
+        );
+      } else {
+        status = results[0] as CameraStatus;
+      }
       streamStatus = results[1] as CameraStreamStatus;
       audioStatus = results[2] as CameraAudioStatus;
       final detectionModels =
@@ -387,7 +479,7 @@ class CameraProvider extends ChangeNotifier {
   void startFrameRefresh() {
     if (autoRefresh) return;
     autoRefresh = true;
-    if (setupConfig.sourceMode != 'local') {
+    if (usesVideoBridgeSource || setupConfig.sourceMode != 'local') {
       if (showingProcessedVideo) {
         unawaited(_prepareProcessedVideoAndStartStream());
       } else {
@@ -440,7 +532,8 @@ class CameraProvider extends ChangeNotifier {
     if (!showingProcessedVideo && setupConfig.sourceMode == 'local') {
       poseLatest = null;
     }
-    if (autoRefresh && setupConfig.sourceMode != 'local') {
+    if (autoRefresh &&
+        (usesVideoBridgeSource || setupConfig.sourceMode != 'local')) {
       _closeFrameStream(clearFrame: true);
       if (showingProcessedVideo) {
         unawaited(_prepareProcessedVideoAndStartStream());
@@ -453,11 +546,41 @@ class CameraProvider extends ChangeNotifier {
   }
 
   Future<void> _prepareProcessedVideoAndStartStream() async {
-    await _ensureProcessedVideoModels();
-    if (autoRefresh && setupConfig.sourceMode != 'local') {
+    await _refreshVideoBridgeStatus();
+    if (!usesVideoBridgeSource) {
+      await _ensureProcessedVideoModels();
+    }
+    if (autoRefresh &&
+        (usesVideoBridgeSource || setupConfig.sourceMode != 'local')) {
       _startFrameStream();
     }
-    unawaited(_primeProcessedOverlayIfNeeded(force: true));
+    if (!usesVideoBridgeSource) {
+      unawaited(_primeProcessedOverlayIfNeeded(force: true));
+    }
+  }
+
+  Future<void> _refreshVideoBridgeStatus() async {
+    try {
+      videoBridgeStatus = await _repository.getVideoBridgeStatus();
+      final latest = videoBridgeStatus?.latest;
+      if (usesVideoBridgeSource) {
+        status = CameraStatus(
+          configured: true,
+          online: videoBridgeStatus?.isOnline == true,
+          error:
+              latest?.isOnline == true ? null : videoBridgeStatus?.stateLabel,
+          path: latest?.streamUrl,
+          source: 'video_bridge',
+        );
+      }
+      errorMessage = null;
+      _notifyIfAlive();
+    } catch (error) {
+      if (usesVideoBridgeSource) {
+        errorMessage = _formatError(error, fallback: '视频服务状态加载失败');
+        _notifyIfAlive();
+      }
+    }
   }
 
   Future<void> _ensureProcessedVideoModels() async {
@@ -478,6 +601,7 @@ class CameraProvider extends ChangeNotifier {
 
   Future<void> _primeProcessedOverlayIfNeeded({bool force = false}) async {
     if (!showingProcessedVideo ||
+        usesVideoBridgeSource ||
         setupConfig.sourceMode == 'local' ||
         _processedOverlayPrimeInFlight) {
       return;
@@ -500,9 +624,8 @@ class CameraProvider extends ChangeNotifier {
       final poseSeeded = result['pose_seeded'] == true;
       final fallSeeded = result['fall_seeded'] == true;
       if (poseSeeded || fallSeeded) {
-        processedOverlayMessage = poseSeeded
-            ? '处理后标注已生成：骨架 $poseTracks 个'
-            : '处理后标注已生成：跌倒框';
+        processedOverlayMessage =
+            poseSeeded ? '处理后标注已生成：骨架 $poseTracks 个' : '处理后标注已生成：跌倒框';
       } else {
         processedOverlayMessage = '当前帧未检测到可绘制目标，处理流会继续刷新';
       }
@@ -519,6 +642,7 @@ class CameraProvider extends ChangeNotifier {
   Future<void> analyzeBrowserFrame(Uint8List imageBytes) async {
     final now = DateTime.now();
     if (!autoRefresh ||
+        usesVideoBridgeSource ||
         !showingProcessedVideo ||
         imageBytes.isEmpty ||
         (!singleFramePoseEnabled && !singleFrameFallEnabled) ||
@@ -717,9 +841,7 @@ class CameraProvider extends ChangeNotifier {
     if (_disposed) {
       return;
     }
-    if (!autoRefresh ||
-        setupConfig.sourceMode == 'local' ||
-        _frameChannel != null) {
+    if (!autoRefresh || usesLocalPreview || _frameChannel != null) {
       return;
     }
     isConnecting = true;
@@ -727,7 +849,10 @@ class CameraProvider extends ChangeNotifier {
     _notifyIfAlive();
 
     try {
-      _frameChannel = _repository.connectFrameStream(mode: videoMode);
+      _frameChannel = _repository.connectFrameStream(
+        mode: videoMode,
+        bridgeStreamUrl: usesVideoBridgeSource ? _bridgeFrameStreamUrl : null,
+      );
       _frameSubscription = _frameChannel!.stream.listen(
         _handleFrame,
         onError: (Object error) {
@@ -757,7 +882,7 @@ class CameraProvider extends ChangeNotifier {
     _lastFrameReceivedAt = DateTime.now();
     isConnecting = false;
     errorMessage = null;
-    if (showingProcessedVideo) {
+    if (showingProcessedVideo && !usesVideoBridgeSource) {
       unawaited(_primeProcessedOverlayIfNeeded());
     }
     _recordFrame();
@@ -765,7 +890,7 @@ class CameraProvider extends ChangeNotifier {
   }
 
   void _ensureSnapshotFallbackTimer() {
-    if (_snapshotFallbackTimer != null || setupConfig.sourceMode == 'local') {
+    if (_snapshotFallbackTimer != null || usesLocalPreview) {
       return;
     }
     _snapshotFallbackTimer = Timer.periodic(
@@ -775,9 +900,7 @@ class CameraProvider extends ChangeNotifier {
   }
 
   Future<void> _refreshSnapshotFallbackIfNeeded({bool force = false}) async {
-    if (!autoRefresh ||
-        setupConfig.sourceMode == 'local' ||
-        _snapshotFallbackInFlight) {
+    if (!autoRefresh || usesLocalPreview || _snapshotFallbackInFlight) {
       return;
     }
     final now = DateTime.now();
@@ -791,7 +914,10 @@ class CameraProvider extends ChangeNotifier {
 
     _snapshotFallbackInFlight = true;
     try {
-      final bytes = await _repository.getCurrentFrameSnapshot(mode: videoMode);
+      final bytes = await _repository.getCurrentFrameSnapshot(
+        mode: videoMode,
+        bridgeSnapshotUrl: usesVideoBridgeSource ? _bridgeSnapshotUrl : null,
+      );
       if (bytes.isEmpty) return;
       frameBytes = bytes;
       _lastFrameReceivedAt = DateTime.now();
@@ -838,7 +964,7 @@ class CameraProvider extends ChangeNotifier {
       return;
     }
     _closeFrameStream(clearFrame: false);
-    if (!autoRefresh || setupConfig.sourceMode == 'local') {
+    if (!autoRefresh || usesLocalPreview) {
       return;
     }
     isConnecting = true;
