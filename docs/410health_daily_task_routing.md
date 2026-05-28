@@ -8,8 +8,8 @@ overall_status = passed
 backend_status = passed
 frontend_status = passed
 task_count = 2
-blocking_task_count = 1
-recommended_next_owner = safety_officer_lobster
+blocking_task_count = 0
+recommended_next_owner = workflow_engineer_lobster
 ```
 
 The Software Open Claw task router converts the latest daily check into owner-specific next actions.
@@ -18,13 +18,13 @@ The Software Open Claw task router converts the latest daily check into owner-sp
 
 | Task | Owner | Priority | Reason | Leader Approval |
 | --- | --- | --- | --- | --- |
-| inspect_dirty_workspace | safety_officer_lobster | `high` | git_status_has_uncommitted_or_untracked_changes | no |
+| continue_observation | workflow_engineer_lobster | `normal` | daily_ops_chain_passed | no |
 | track_vite_chunk_size_warning | workflow_engineer_lobster | `low` | vite_chunk_size_warning_only | no |
 
 ## Current Decision
 
 ```text
-primary_action = Inspect changed files before authorizing any code task.
+primary_action = Continue normal daily Software Open Claw observation.
 ```
 
 ## Boundary
