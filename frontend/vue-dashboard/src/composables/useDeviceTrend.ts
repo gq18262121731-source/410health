@@ -4,17 +4,6 @@ import { mergeHealthSample, mergeHealthSeries } from "../domain/healthSampleMerg
 
 const DISPLAY_READY_SERIAL_PACKET_TYPES = new Set(["response_ab", "response_a", "response_a_only", "response_b", "broadcast", "legacy_response", "legacy_response_a", "legacy_response_b"]);
 
-function parseBloodPressure(value?: string | null): { sbp: number | null; dbp: number | null } {
-  if (!value) return { sbp: null, dbp: null };
-  const [sbpRaw, dbpRaw] = value.split("/", 2);
-  const sbp = Number.parseInt(sbpRaw ?? "", 10);
-  const dbp = Number.parseInt(dbpRaw ?? "", 10);
-  return {
-    sbp: Number.isFinite(sbp) ? sbp : null,
-    dbp: Number.isFinite(dbp) ? dbp : null,
-  };
-}
-
 export function isDisplayReadySample(sample: HealthSample | null | undefined, ingestMode?: string | null): sample is HealthSample {
   if (!sample) return false;
   if (ingestMode === "serial" || sample.source === "serial") {
