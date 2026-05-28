@@ -1,0 +1,112 @@
+{
+  "phase": "SE-1.9",
+  "project": "410health",
+  "registry_scope": "local residency tools",
+  "default_mode": "observe_and_report",
+  "tool_count": 5,
+  "safety_boundary": {
+    "production_write_allowed": false,
+    "deployment_allowed": false,
+    "git_push_allowed": false,
+    "dependency_install_allowed": false,
+    "auto_merge_allowed": false
+  },
+  "approval_policy": {
+    "allowed_without_leader_approval": [
+      "observe",
+      "test",
+      "report",
+      "summarize",
+      "diagnose_non_blocking_warning"
+    ],
+    "requires_leader_approval": [
+      "code_change",
+      "dependency_install",
+      "deployment",
+      "git_push",
+      "branch_merge",
+      "destructive_command"
+    ]
+  },
+  "tools": [
+    {
+      "tool_id": "run_410health_daily_residency_check",
+      "command": "python scripts/run_410health_daily_residency_check.py",
+      "purpose": "Run git status, backend pytest, and frontend check.",
+      "risk_level": "medium",
+      "auto_run_allowed": true,
+      "writes_business_code": false,
+      "installs_dependencies": false,
+      "deploys": false,
+      "pushes_git": false,
+      "outputs": [
+        "docs/410health_daily_residency_check_report.md",
+        "evaluations/codebase_residency/410health_daily_residency_check_003.json"
+      ]
+    },
+    {
+      "tool_id": "build_410health_daily_ops_summary",
+      "command": "python scripts/build_410health_daily_ops_summary.py",
+      "purpose": "Convert latest check JSON into leader report and team-room note.",
+      "risk_level": "low",
+      "auto_run_allowed": true,
+      "writes_business_code": false,
+      "installs_dependencies": false,
+      "deploys": false,
+      "pushes_git": false,
+      "outputs": [
+        "docs/410health_daily_ops_summary.md",
+        "docs/410health_lobster_team_room.md"
+      ]
+    },
+    {
+      "tool_id": "build_410health_residency_history_index",
+      "command": "python scripts/build_410health_residency_history_index.py",
+      "purpose": "Build trend index from daily check JSON files.",
+      "risk_level": "low",
+      "auto_run_allowed": true,
+      "writes_business_code": false,
+      "installs_dependencies": false,
+      "deploys": false,
+      "pushes_git": false,
+      "outputs": [
+        "evaluations/codebase_residency/410health_residency_history_index.json",
+        "docs/410health_residency_history_summary.md"
+      ]
+    },
+    {
+      "tool_id": "run_410health_daily_ops_chain",
+      "command": "python scripts/run_410health_daily_ops_chain.py",
+      "purpose": "Run check, daily summary, and history index in one command.",
+      "risk_level": "medium",
+      "auto_run_allowed": true,
+      "writes_business_code": false,
+      "installs_dependencies": false,
+      "deploys": false,
+      "pushes_git": false,
+      "outputs": [
+        "evaluations/codebase_residency/410health_daily_ops_chain_001.json",
+        "docs/410health_daily_residency_check_report.md",
+        "docs/410health_daily_ops_summary.md",
+        "docs/410health_lobster_team_room.md",
+        "docs/410health_residency_history_summary.md"
+      ]
+    },
+    {
+      "tool_id": "analyze_410health_frontend_bundle_warning",
+      "command": "python scripts/analyze_410health_frontend_bundle_warning.py",
+      "purpose": "Explain Vite chunk-size warning from built assets.",
+      "risk_level": "low",
+      "auto_run_allowed": true,
+      "writes_business_code": false,
+      "installs_dependencies": false,
+      "deploys": false,
+      "pushes_git": false,
+      "outputs": [
+        "docs/410health_frontend_bundle_warning_triage.md",
+        "evaluations/codebase_residency/410health_frontend_bundle_warning_triage_001.json"
+      ]
+    }
+  ],
+  "recommended_daily_entrypoint": "python scripts/run_410health_daily_ops_chain.py"
+}
