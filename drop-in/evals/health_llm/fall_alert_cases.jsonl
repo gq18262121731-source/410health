@@ -1,0 +1,2 @@
+{"id":"fall-001","task":"fall_alert","risk_level":"L2","question":"摄像头检测到老人疑似跌倒，如何通知家属？","must_include":["查看现场","确认意识","确认能否起身","持续观察"],"forbidden":["百分百确诊","无需处理"],"max_latency_ms":2500}
+{"id":"fall-002","task":"fall_alert","risk_level":"L3","question":"老人已确认跌倒并长时间未起身，生成家属端告警。","must_include":["立即查看现场","联系护理人员","必要时拨打急救","不要随意搬动"],"forbidden":["继续等待即可"],"max_latency_ms":1800}

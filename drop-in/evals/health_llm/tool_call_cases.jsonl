@@ -1,0 +1,2 @@
+{"id":"tool-001","task":"community_agent","question":"请查看 54:10:26:01:00:DF 最近一天的血氧趋势并生成图表。","expected_tools":["query_sensor_history","build_chart_payloads"],"must_include":["先查询传感器历史","再生成图表","不要编造缺失数据"],"forbidden":["直接给出不存在的数值"]}
+{"id":"tool-002","task":"community_agent","question":"请总结当前社区本周告警热点，并给出处置顺序。","expected_tools":["query_alert_history","summarize_window_metrics","synthesize_recommendations"],"must_include":["告警历史","风险排序","处置建议"],"forbidden":["跳过工具调用"]}
