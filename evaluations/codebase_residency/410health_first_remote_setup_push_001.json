@@ -1,0 +1,30 @@
+{
+  "phase": "SE-3.4",
+  "result": "blocked",
+  "blocker": "github_network_connectivity",
+  "remote_added": true,
+  "remote_name": "origin",
+  "remote_url": "https://github.com/gq18262121731-source/410health.git",
+  "remote_inspection": {
+    "command": "git ls-remote origin",
+    "status": "failed",
+    "errors": [
+      "Recv failure: Connection was reset",
+      "Failed to connect to github.com port 443"
+    ]
+  },
+  "push_attempted": false,
+  "push_result": "not_attempted",
+  "force_push_attempted": false,
+  "pre_push_validation": {
+    "npm_run_check": "passed",
+    "daily_autopilot": "passed",
+    "blocking_task_count": 0
+  },
+  "backup_created": true,
+  "backup_path": "D:/Program/410health_backups/410health_pre_remote_push_20260601_161720",
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "pat_stored": false,
+  "next_step": "Retry git ls-remote origin when GitHub network access is available; push only after remote state is confirmed."
+}
