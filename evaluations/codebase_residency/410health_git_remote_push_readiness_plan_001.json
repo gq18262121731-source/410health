@@ -1,0 +1,50 @@
+{
+  "phase": "SE-3.3",
+  "mode": "plan_only",
+  "result": "ready_for_leader_review",
+  "project_path": "D:/Program/410health",
+  "current_branch": "master",
+  "working_tree_clean": true,
+  "remote_configured": false,
+  "remote_added": false,
+  "push_attempted": false,
+  "recommended_remote": {
+    "remote_name": "origin",
+    "remote_type": "private Git repository",
+    "default_branch": "master",
+    "protected_master_required": true
+  },
+  "push_strategy": {
+    "direct_push_master": "prohibited_without_explicit_leader_approval",
+    "feature_branch_push": "allowed_after_leader_approval",
+    "first_push_recommendation": "master_only",
+    "push_all_lobster_branches": "defer_until_remote_review_policy_confirmed"
+  },
+  "required_pre_push_checks": [
+    "git status",
+    "git log --oneline -n 5",
+    "python scripts/run_410health_daily_autopilot.py",
+    "npm run check --prefix frontend/vue-dashboard"
+  ],
+  "expected_pre_push_results": {
+    "git_status": "clean",
+    "daily_autopilot": "passed",
+    "frontend_check": "passed",
+    "backend_pytest": "95 passed",
+    "blocking_task_count": 0
+  },
+  "backup_required_before_first_push": true,
+  "backup_path_pattern": "D:/Program/410health_backups/410health_pre_remote_push_<timestamp>",
+  "leader_approval_required_for": [
+    "remote_repository_url",
+    "remote_privacy",
+    "master_push",
+    "lobster_branch_push_policy",
+    "tag_policy",
+    "branch_protection_policy",
+    "first_push_scope"
+  ],
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "business_code_changed": false
+}
