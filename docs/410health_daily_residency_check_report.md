@@ -4,7 +4,7 @@
 
 ```text
 project = D:\Program\410health
-created_at = 2026-06-01T02:11:53.132510+00:00
+created_at = 2026-06-01T02:38:28.440816+00:00
 overall_status = passed
 business_code_changed = false
 frontend_failure_reason = none
@@ -64,7 +64,7 @@ tests\test_serial_reader.py .......                                      [100%]
 
 
 
-======================= 95 passed in 107.09s (0:01:47) ========================
+======================= 95 passed in 101.78s (0:01:41) ========================
 
 
 ```
@@ -90,7 +90,7 @@ tests\test_serial_reader.py .......                                      [100%]
 
 [36mvite v6.4.2 [32mbuilding for production...[36m[39m
 transforming...
-[32m✓[39m 2483 modules transformed.
+[32m✓[39m 2476 modules transformed.
 rendering chunks...
 computing gzip size...
 [2mdist/[22m[32mindex.html                  [39m[1m[2m  1.00 kB[22m[1m[22m[2m │ gzip:   0.58 kB[22m
@@ -98,11 +98,11 @@ computing gzip size...
 [2mdist/[22m[32massets/社区-DZuva8oZ.png      [39m[1m[2m165.37 kB[22m[1m[22m
 [2mdist/[22m[32massets/家人-PiVEYYcF.png      [39m[1m[2m187.50 kB[22m[1m[22m
 [2mdist/[22m[32massets/背景-BST42LBB.jpg      [39m[1m[2m600.65 kB[22m[1m[22m
-[2mdist/[22m[35massets/index-CWabLZDF.css   [39m[1m[2m149.17 kB[22m[1m[22m[2m │ gzip:  26.12 kB[22m
-[2mdist/[22m[36massets/index-CnSZujhV.js    [39m[1m[2m195.31 kB[22m[1m[22m[2m │ gzip:  61.60 kB[22m
-[2mdist/[22m[36massets/vendor-C6rcS8xd.js   [39m[1m[2m403.52 kB[22m[1m[22m[2m │ gzip: 150.88 kB[22m
-[2mdist/[22m[36massets/echarts-uvSR9kx1.js  [39m[1m[33m823.19 kB[39m[22m[2m │ gzip: 270.32 kB[22m
-[32m✓ built in 7.09s[39m
+[2mdist/[22m[35massets/index-lrODQCvv.css   [39m[1m[2m149.17 kB[22m[1m[22m[2m │ gzip:  26.12 kB[22m
+[2mdist/[22m[36massets/index-BWSAVPVr.js    [39m[1m[2m195.34 kB[22m[1m[22m[2m │ gzip:  61.61 kB[22m
+[2mdist/[22m[36massets/vendor-D13T46Hj.js   [39m[1m[2m358.75 kB[22m[1m[22m[2m │ gzip: 133.82 kB[22m
+[2mdist/[22m[36massets/echarts-DD6hS6mV.js  [39m[1m[2m414.50 kB[22m[1m[22m[2m │ gzip: 139.82 kB[22m
+[32m✓ built in 6.42s[39m
 ```
 
 ## Notes

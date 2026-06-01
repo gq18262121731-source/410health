@@ -1,6 +1,6 @@
 {
   "phase": "SE-2.5",
-  "created_at": "2026-06-01T02:14:04.192970+00:00",
+  "created_at": "2026-06-01T02:40:33.458442+00:00",
   "source_routing": "evaluations/codebase_residency/410health_daily_task_routing_001.json",
   "triage_status": "no_action_required",
   "leader_decision_needed": false,
@@ -15,14 +15,6 @@
       "priority": "normal",
       "reason": "daily_ops_chain_passed",
       "action": "Continue normal daily Software Open Claw observation.",
-      "leader_approval_required": false
-    },
-    {
-      "task_id": "track_vite_chunk_size_warning",
-      "owner": "workflow_engineer_lobster",
-      "priority": "low",
-      "reason": "vite_chunk_size_warning_only",
-      "action": "Keep in optimization backlog; do not block daily operations.",
       "leader_approval_required": false
     }
   ],

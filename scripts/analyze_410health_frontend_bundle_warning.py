@@ -105,6 +105,29 @@ def main() -> int:
         f"- `{asset['name']}`: {asset['size_kb']} KB, likely source = {asset['likely_source']}"
         for asset in oversized_js_chunks
     ) or "- None"
+    if oversized_js_chunks:
+        status_note = (
+            "The current non-blocking warning is caused by an oversized JavaScript chunk, not by a failed "
+            "frontend check. Typecheck, lint, and build are passing."
+        )
+        interpretation = (
+            "The main bundle warning comes from the isolated `echarts` chunk. The existing Vite config already "
+            "separates `echarts` and generic vendor code with `manualChunks`, so this warning is visible but not "
+            "currently blocking daily residency checks."
+        )
+        action_now = "no urgent code change"
+        next_step = "track as optimization backlog"
+    else:
+        status_note = (
+            "No JavaScript chunk currently exceeds the Vite 500 KB warning threshold. Typecheck, lint, and build "
+            "are passing."
+        )
+        interpretation = (
+            "The previous `echarts` JavaScript chunk warning is resolved for the current build output. The large "
+            "background image remains over 500 KB, but it is an image asset rather than a JavaScript chunk."
+        )
+        action_now = "none"
+        next_step = "continue daily autopilot monitoring"
 
     REPORT_PATH.write_text(
         f"""# 410health Frontend Bundle Warning Triage
@@ -119,7 +142,7 @@ oversized_js_chunks = {len(oversized_js_chunks)}
 likely_primary_source = {summary["likely_primary_source"]}
 ```
 
-The current non-blocking warning is caused by an oversized JavaScript chunk, not by a failed frontend check. Typecheck, lint, and build are passing.
+{status_note}
 
 ## Oversized JavaScript Chunks
 
@@ -133,16 +156,14 @@ The current non-blocking warning is caused by an oversized JavaScript chunk, not
 
 ## Interpretation
 
-The main bundle warning comes from the isolated `echarts` chunk. The existing Vite config already separates `echarts` and generic vendor code with `manualChunks`, so this warning is visible but not currently blocking daily residency checks.
-
-The large background image is also over 500 KB, but the Vite warning shown during build is primarily about JavaScript chunk size after minification.
+{interpretation}
 
 ## Recommendation
 
 ```text
-action_now = no urgent code change
+action_now = {action_now}
 owner = workflow_engineer_lobster
-next_step = track as optimization backlog
+next_step = {next_step}
 ```
 
 If optimization is later approved, the smallest useful options are:
