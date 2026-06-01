@@ -4,7 +4,7 @@
 
 ```text
 project = D:\Program\410health
-created_at = 2026-06-01T02:44:50.656795+00:00
+created_at = 2026-06-01T02:48:17.342411+00:00
 overall_status = passed
 business_code_changed = false
 frontend_failure_reason = none
@@ -21,7 +21,7 @@ frontend_failure_reason = none
 ## Git Status
 
 ```text
- M evaluations/codebase_residency/410health_frontend_bundle_warning_triage_001.json
+clean
 ```
 
 ## Backend Pytest Tail
@@ -64,7 +64,7 @@ tests\test_serial_reader.py .......                                      [100%]
 
 
 
-======================= 95 passed in 101.59s (0:01:41) ========================
+======================= 95 passed in 101.88s (0:01:41) ========================
 
 
 ```
@@ -102,7 +102,7 @@ computing gzip size...
 [2mdist/[22m[36massets/index-CLiEOIty.js    [39m[1m[2m195.34 kB[22m[1m[22m[2m │ gzip:  61.61 kB[22m
 [2mdist/[22m[36massets/vendor-D13T46Hj.js   [39m[1m[2m358.75 kB[22m[1m[22m[2m │ gzip: 133.82 kB[22m
 [2mdist/[22m[36massets/echarts-DD6hS6mV.js  [39m[1m[2m414.50 kB[22m[1m[22m[2m │ gzip: 139.82 kB[22m
-[32m✓ built in 6.44s[39m
+[32m✓ built in 6.35s[39m
 ```
 
 ## Notes
