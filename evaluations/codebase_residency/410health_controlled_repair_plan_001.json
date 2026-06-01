@@ -1,0 +1,49 @@
+{
+  "phase": "SE-3.0",
+  "created_at": "2026-06-01T02:29:32.178940+00:00",
+  "mode": "plan_only",
+  "plan_created": true,
+  "task_id": "vite_chunk_size_warning",
+  "risk": "medium",
+  "problem_source": "echarts charting dependency",
+  "observed_chunk": "echarts-uvSR9kx1.js",
+  "observed_size_kb": 803.9,
+  "current_impact": {
+    "severity": "non_blocking",
+    "blocks_daily_autopilot": false,
+    "leader_decision_needed_now": false
+  },
+  "recommended_branch": "lobster/optimize-vite-chunk-size-001",
+  "leader_approval_required": true,
+  "allowed_scope": [
+    "frontend/vue-dashboard/src/components/agent/AgentChartAttachment.vue",
+    "frontend/vue-dashboard/src/components/*Chart*.vue",
+    "frontend/vue-dashboard/vite.config.ts",
+    "docs/410health_frontend_bundle_warning_triage.md",
+    "evaluations/codebase_residency/410health_frontend_bundle_warning_triage_001.json"
+  ],
+  "prohibited_actions": [
+    "Do not install dependencies.",
+    "Do not deploy.",
+    "Do not push.",
+    "Do not auto-merge.",
+    "Do not rewrite unrelated frontend routes.",
+    "Do not change backend business code."
+  ],
+  "verification_commands": [
+    "npm run check --prefix frontend/vue-dashboard",
+    "python scripts/run_410health_daily_autopilot.py",
+    "python scripts/analyze_410health_frontend_bundle_warning.py"
+  ],
+  "rollback_plan": [
+    "git checkout master",
+    "git branch -D lobster/optimize-vite-chunk-size-001",
+    "If merged later and regression appears, revert the merge commit with git revert <merge_commit> after leader approval."
+  ],
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "branch_created": false,
+  "merge_attempted": false
+}
