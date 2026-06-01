@@ -1,6 +1,34 @@
 <script setup lang="ts">
-import * as echarts from "echarts";
+import {
+  BarChart,
+  LineChart,
+  PieChart,
+  type BarSeriesOption,
+  type LineSeriesOption,
+  type PieSeriesOption,
+} from "echarts/charts";
+import {
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+  type GridComponentOption,
+  type LegendComponentOption,
+  type TooltipComponentOption,
+} from "echarts/components";
+import { type ComposeOption, graphic, init, use, type ECharts } from "echarts/core";
+import { CanvasRenderer } from "echarts/renderers";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+
+use([BarChart, CanvasRenderer, GridComponent, LegendComponent, LineChart, PieChart, TooltipComponent]);
+
+type AgentChartOption = ComposeOption<
+  | BarSeriesOption
+  | LineSeriesOption
+  | PieSeriesOption
+  | GridComponentOption
+  | LegendComponentOption
+  | TooltipComponentOption
+>;
 
 type ChartAttachment = {
   id: string;
@@ -15,7 +43,7 @@ const props = defineProps<{
 }>();
 
 const chartRef = ref<HTMLDivElement | null>(null);
-let chartInstance: echarts.ECharts | null = null;
+let chartInstance: ECharts | null = null;
 
 /** Detect whether the chart is a pie or donut */
 function isPieChart(option: Record<string, unknown>): boolean {
@@ -152,7 +180,7 @@ function applyEchartsTheme(option: Record<string, unknown>): Record<string, unkn
           ...s,
           lineStyle: { width: 2.8, color: BIORENDER_PALETTE[i % BIORENDER_PALETTE.length], ...(s.lineStyle as object ?? {}) },
           areaStyle: s.type === "line" ? {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            color: new graphic.LinearGradient(0, 0, 0, 1, [
               { offset: 0, color: (BIORENDER_PALETTE[i % BIORENDER_PALETTE.length] + "44") },
               { offset: 1, color: (BIORENDER_PALETTE[i % BIORENDER_PALETTE.length] + "05") },
             ]),
@@ -205,9 +233,9 @@ function applyEchartsTheme(option: Record<string, unknown>): Record<string, unkn
 
 function renderChart() {
   if (!chartRef.value) return;
-  chartInstance ??= echarts.init(chartRef.value, undefined, { renderer: "canvas" });
+  chartInstance ??= init(chartRef.value, undefined, { renderer: "canvas" });
   const base = (props.chart.echarts_option ?? {}) as Record<string, unknown>;
-  chartInstance.setOption(applyEchartsTheme(base) as echarts.EChartsCoreOption, true);
+  chartInstance.setOption(applyEchartsTheme(base) as AgentChartOption, true);
   chartInstance.resize();
 }
 
