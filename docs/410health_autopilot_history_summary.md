@@ -4,8 +4,8 @@
 
 ```text
 phase = SE-2.8
-run_count = 4
-latest_run_id = 20260601_104817
+run_count = 6
+latest_run_id = 20260601_110118
 latest_status = passed
 latest_blocking_task_count = 0
 latest_leader_decision_needed = false
@@ -23,12 +23,14 @@ This summary reads timestamped autopilot records and reports the recent Software
 | 20260601_103828 | `passed` | 0 | no | workflow_engineer_lobster |
 | 20260601_104450 | `needs_attention` | 1 | no | safety_officer_lobster |
 | 20260601_104817 | `passed` | 0 | no | workflow_engineer_lobster |
+| 20260601_105832 | `needs_attention` | 1 | no | safety_officer_lobster |
+| 20260601_110118 | `passed` | 0 | no | workflow_engineer_lobster |
 
 ## Counts
 
 ```text
-status_counts = {'passed': 3, 'needs_attention': 1}
-blocking_run_count = 1
+status_counts = {'passed': 4, 'needs_attention': 2}
+blocking_run_count = 2
 leader_decision_run_count = 0
 ```
 
