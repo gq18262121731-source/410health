@@ -1,0 +1,24 @@
+{
+  "phase": "SE-3.6",
+  "result": "passed",
+  "branch": "docs/software-open-claw-remote-workflow-trial",
+  "remote_branch": "origin/docs/software-open-claw-remote-workflow-trial",
+  "remote_push": "passed",
+  "daily_autopilot": "passed",
+  "blocking_task_count": 0,
+  "business_code_changed": false,
+  "backend_code_changed": false,
+  "frontend_code_changed": false,
+  "master_push_attempted": false,
+  "main_push_attempted": false,
+  "lobster_branches_pushed": false,
+  "force_push_attempted": false,
+  "deployment_attempted": false,
+  "dependency_install_attempted": false,
+  "leader_decision_needed": true,
+  "next_decision": [
+    "create_pr",
+    "merge_docs_trial",
+    "delete_remote_trial_branch_after_review"
+  ]
+}
