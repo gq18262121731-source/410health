@@ -1,6 +1,6 @@
 {
   "phase": "SE-1.6",
-  "created_at": "2026-06-01T02:14:04.038881+00:00",
+  "created_at": "2026-06-01T02:40:33.307096+00:00",
   "project_path": "D:\\Program\\410health",
   "run_count": 3,
   "overall_status_counts": {
@@ -11,13 +11,11 @@
     "failed": 2,
     "passed": 1
   },
-  "warning_counts": {
-    "vite_chunk_size_warning": 1
-  },
+  "warning_counts": {},
   "latest_status": "passed",
   "latest_backend_status": "passed",
   "latest_frontend_status": "passed",
-  "latest_backend_result": "95 passed in 107.09s (0:01:47)",
+  "latest_backend_result": "95 passed in 101.78s (0:01:41)",
   "health_trend": "improving",
   "runs": [
     {
@@ -52,16 +50,14 @@
     },
     {
       "source_file": "evaluations/codebase_residency/410health_daily_residency_check_003.json",
-      "created_at": "2026-06-01T02:11:53.132510+00:00",
+      "created_at": "2026-06-01T02:38:28.440816+00:00",
       "overall_status": "passed",
       "git_status": "passed",
       "backend_status": "passed",
       "frontend_status": "passed",
-      "backend_result": "95 passed in 107.09s (0:01:47)",
+      "backend_result": "95 passed in 101.78s (0:01:41)",
       "frontend_command": "npm run check",
-      "warnings": [
-        "vite_chunk_size_warning"
-      ],
+      "warnings": [],
       "business_code_changed": false,
       "dependency_install_attempted": false,
       "deployment_attempted": false,

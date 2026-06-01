@@ -18,7 +18,6 @@ Autopilot found no blocking issue.
 | Task | Owner | Priority | Reason | Leader Approval |
 | --- | --- | --- | --- | --- |
 | continue_observation | workflow_engineer_lobster | `normal` | daily_ops_chain_passed | no |
-| track_vite_chunk_size_warning | workflow_engineer_lobster | `low` | vite_chunk_size_warning_only | no |
 
 ## Recommended Next Action
 
