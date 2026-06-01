@@ -1,0 +1,53 @@
+{
+  "phase": "SE-3.5",
+  "mode": "policy_only",
+  "result": "ready_for_leader_review",
+  "remote_collaboration": "enabled",
+  "remote_name": "origin",
+  "remote_url": "https://github.com/gq18262121731-source/410health.git",
+  "local_master": "a5395c8",
+  "tracking_branch": "origin/master",
+  "main_master_policy": {
+    "main": "existing remote history branch; do not rewrite",
+    "master": "current Software Open Claw 410health mainline",
+    "default_branch_recommendation": "defer_decision",
+    "reconciliation_required_before_default_change": true
+  },
+  "branch_naming": {
+    "preferred_remote_prefixes": [
+      "feature/",
+      "fix/",
+      "docs/",
+      "software-open-claw/"
+    ],
+    "lobster_branch_policy": "historical local branches; do not push by default"
+  },
+  "push_rules": {
+    "direct_push_master": "prohibited_without_explicit_approval",
+    "direct_push_main": "prohibited",
+    "force_push": "prohibited",
+    "push_all_branches": "prohibited",
+    "push_tags": "release_approval_required"
+  },
+  "merge_rules": {
+    "pull_request_required": "recommended",
+    "leader_approval_required": true,
+    "pre_merge_checks": [
+      "python scripts/run_410health_daily_autopilot.py",
+      "npm run check --prefix frontend/vue-dashboard"
+    ]
+  },
+  "rollback_strategy": [
+    "git revert pushed commits",
+    "restore from local backup if repository state is corrupted",
+    "recover from remote branch history"
+  ],
+  "remote_branch_created": false,
+  "default_branch_changed": false,
+  "branch_protection_changed": false,
+  "tag_created": false,
+  "push_attempted": false,
+  "deployment_attempted": false,
+  "dependency_install_attempted": false,
+  "note": "git ls-remote --heads origin retry failed due GitHub 443 connectivity during this phase; local tracking state and prior successful push confirm origin/master."
+}
