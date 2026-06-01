@@ -4,6 +4,7 @@
 
 ```text
 phase = SE-2.6
+run_id = 20260601_101152
 autopilot_status = passed
 daily_ops_chain = passed
 task_routing = passed
