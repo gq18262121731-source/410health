@@ -8,7 +8,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SUMMARY_PATH = ROOT / "evaluations" / "codebase_residency" / "410health_daily_autopilot_001.json"
+SUMMARY_DIR = ROOT / "evaluations" / "codebase_residency"
+LATEST_SUMMARY_PATH = SUMMARY_DIR / "410health_daily_autopilot_latest.json"
+LEGACY_SUMMARY_PATH = SUMMARY_DIR / "410health_daily_autopilot_001.json"
 REPORT_PATH = ROOT / "docs" / "410health_daily_autopilot_report.md"
 ROUTING_PATH = ROOT / "evaluations" / "codebase_residency" / "410health_daily_task_routing_001.json"
 TRIAGE_PATH = ROOT / "evaluations" / "codebase_residency" / "410health_autopilot_triage_note_001.json"
@@ -59,7 +61,9 @@ def _run(command: list[str], name: str) -> dict[str, object]:
 
 def main() -> int:
     created_at = datetime.now(timezone.utc).isoformat()
-    SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_summary_path = SUMMARY_DIR / f"410health_daily_autopilot_{run_id}.json"
+    SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     step_results = [_run(step["command"], step["name"]) for step in STEPS]
@@ -79,6 +83,7 @@ def main() -> int:
 
     summary = {
         "phase": "SE-2.6",
+        "run_id": run_id,
         "created_at": created_at,
         "project_path": str(ROOT),
         "autopilot_status": autopilot_status,
@@ -100,11 +105,16 @@ def main() -> int:
             "task_routing": "evaluations/codebase_residency/410health_daily_task_routing_001.json",
             "triage_note": "evaluations/codebase_residency/410health_autopilot_triage_note_001.json",
             "autopilot_report": "docs/410health_daily_autopilot_report.md",
-            "autopilot_summary": "evaluations/codebase_residency/410health_daily_autopilot_001.json",
+            "autopilot_summary": str(run_summary_path.relative_to(ROOT)).replace("\\", "/"),
+            "autopilot_latest": str(LATEST_SUMMARY_PATH.relative_to(ROOT)).replace("\\", "/"),
+            "autopilot_legacy": str(LEGACY_SUMMARY_PATH.relative_to(ROOT)).replace("\\", "/"),
         },
     }
 
-    SUMMARY_PATH.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary_text = json.dumps(summary, ensure_ascii=False, indent=2)
+    run_summary_path.write_text(summary_text, encoding="utf-8")
+    LATEST_SUMMARY_PATH.write_text(summary_text, encoding="utf-8")
+    LEGACY_SUMMARY_PATH.write_text(summary_text, encoding="utf-8")
 
     task_rows = "\n".join(
         "| {task_id} | {owner} | `{priority}` | {reason} |".format(
@@ -123,6 +133,7 @@ def main() -> int:
 
 ```text
 phase = SE-2.6
+run_id = {run_id}
 autopilot_status = {autopilot_status}
 daily_ops_chain = {summary["daily_ops_chain"]}
 task_routing = {summary["task_routing"]}
@@ -162,7 +173,8 @@ git_push_attempted = false
     print(f"recommended_next_owner={recommended_owner}")
     print(f"autopilot_status={autopilot_status}")
     print(f"report={REPORT_PATH}")
-    print(f"summary={SUMMARY_PATH}")
+    print(f"summary={run_summary_path}")
+    print(f"latest={LATEST_SUMMARY_PATH}")
     return 0 if autopilot_status == "passed" else 1
 
 
