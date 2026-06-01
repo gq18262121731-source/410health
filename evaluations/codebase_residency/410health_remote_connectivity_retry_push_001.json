@@ -1,0 +1,24 @@
+{
+  "phase": "SE-3.4R",
+  "result": "passed",
+  "remote_url": "https://github.com/gq18262121731-source/410health.git",
+  "git_ls_remote": "passed",
+  "remote_master_existed_before_push": false,
+  "push_target": "master",
+  "push_result": "passed",
+  "tracking_branch": "origin/master",
+  "local_master": "8a10d925dde2f15dfe7f4a83313f9af1b43dfbfa",
+  "origin_master": "8a10d925dde2f15dfe7f4a83313f9af1b43dfbfa",
+  "pre_push_validation": {
+    "npm_run_check": "passed",
+    "daily_autopilot": "passed"
+  },
+  "backup_created": true,
+  "backup_path": "D:/Program/410health_backups/410health_pre_remote_push_20260601_161720",
+  "force_push_attempted": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "pat_stored": false,
+  "all_lobster_branches_pushed": false,
+  "lobster_branch_push_policy": "deferred_until_remote_review_workflow_approved"
+}
