@@ -1,0 +1,32 @@
+{
+  "phase": "SE-3.7",
+  "result": "blocked",
+  "branch": "docs/software-open-claw-remote-workflow-trial",
+  "remote_branch": "origin/docs/software-open-claw-remote-workflow-trial",
+  "create_pr": "blocked",
+  "merge_docs_trial": "not_attempted",
+  "delete_remote_trial_branch": "not_attempted",
+  "blockers": [
+    {
+      "type": "github_api_permission",
+      "detail": "GitHub API 422: must be a collaborator"
+    },
+    {
+      "type": "local_cli_unavailable",
+      "detail": "gh CLI is not installed or not on PATH"
+    },
+    {
+      "type": "intermittent_remote_connectivity",
+      "detail": "git ls-remote failed with Recv failure: Connection was reset"
+    }
+  ],
+  "business_code_changed": false,
+  "master_push_attempted": false,
+  "main_push_attempted": false,
+  "lobster_branches_pushed": false,
+  "force_push_attempted": false,
+  "deployment_attempted": false,
+  "dependency_install_attempted": false,
+  "remote_branch_deleted": false,
+  "required_next_step": "Create PR with a GitHub collaborator account or authenticated gh CLI, then merge and delete the trial branch after review."
+}
