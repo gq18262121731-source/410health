@@ -3,12 +3,12 @@
 ## Executive Summary
 
 ```text
-created_at = 2026-05-28T09:20:04.796934+00:00
+created_at = 2026-06-01T02:07:34.362141+00:00
 run_count = 3
 latest_status = passed
 latest_backend = passed
 latest_frontend = passed
-latest_backend_result = 95 passed in 101.90s (0:01:41)
+latest_backend_result = 95 passed in 101.21s (0:01:41)
 health_trend = improving
 ```
 
@@ -28,7 +28,7 @@ warning_counts = {'vite_chunk_size_warning': 1}
 | --- | --- | --- | --- | --- | --- |
 | 2026-05-28T01:52:38.272501+00:00 | `failed` | `passed` | `failed` | 95 passed in 101.64s (0:01:41) | none |
 | 2026-05-28T02:26:51.197689+00:00 | `failed` | `passed` | `failed` | 95 passed in 102.51s (0:01:42) | none |
-| 2026-05-28T09:17:56.804470+00:00 | `passed` | `passed` | `passed` | 95 passed in 101.90s (0:01:41) | vite_chunk_size_warning |
+| 2026-06-01T02:05:29.778618+00:00 | `passed` | `passed` | `passed` | 95 passed in 101.21s (0:01:41) | vite_chunk_size_warning |
 
 ## Current Watch Item
 

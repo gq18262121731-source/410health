@@ -3,15 +3,18 @@
 ## Summary
 
 ```text
-phase = SE-2.2
+phase = SE-2.6
 autopilot_status = passed
 daily_ops_chain = passed
 task_routing = passed
+triage_note = passed
+triage_status = no_action_required
+leader_decision_needed = false
 blocking_task_count = 0
 recommended_next_owner = workflow_engineer_lobster
 ```
 
-The daily autopilot ran the Software Open Claw operating chain and task router in one command.
+The daily autopilot ran the Software Open Claw operating chain, task router, and triage note generator in one command.
 
 ## Routed Tasks
 
