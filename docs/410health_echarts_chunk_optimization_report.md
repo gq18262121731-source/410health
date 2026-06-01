@@ -35,6 +35,10 @@ The chart behavior remains scoped to existing chart rendering. No backend code, 
 npm run check --prefix frontend/vue-dashboard = passed
 python scripts/analyze_410health_frontend_bundle_warning.py = passed
 oversized_js_chunks = 0
+python scripts/run_410health_daily_autopilot.py = passed
+backend_pytest = 95 passed
+frontend_check = passed
+blocking_task_count = 0
 ```
 
 ## Boundary

@@ -24,7 +24,11 @@
   ],
   "validation": {
     "npm_run_check_prefix_frontend_vue_dashboard": "passed",
-    "bundle_warning_triage": "passed"
+    "bundle_warning_triage": "passed",
+    "daily_autopilot": "passed",
+    "backend_pytest": "95 passed",
+    "frontend_check": "passed",
+    "blocking_task_count": 0
   },
   "frontend_code_changed": true,
   "backend_business_code_changed": false,
