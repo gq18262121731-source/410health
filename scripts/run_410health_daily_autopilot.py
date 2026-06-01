@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SUMMARY_PATH = ROOT / "evaluations" / "codebase_residency" / "410health_daily_autopilot_001.json"
 REPORT_PATH = ROOT / "docs" / "410health_daily_autopilot_report.md"
 ROUTING_PATH = ROOT / "evaluations" / "codebase_residency" / "410health_daily_task_routing_001.json"
+TRIAGE_PATH = ROOT / "evaluations" / "codebase_residency" / "410health_autopilot_triage_note_001.json"
 
 
 STEPS = [
@@ -21,6 +22,10 @@ STEPS = [
     {
         "name": "task_routing",
         "command": [sys.executable, "scripts/route_410health_daily_tasks.py"],
+    },
+    {
+        "name": "triage_note",
+        "command": [sys.executable, "scripts/build_410health_autopilot_triage_note.py"],
     },
 ]
 
@@ -61,19 +66,27 @@ def main() -> int:
     routing = {}
     if ROUTING_PATH.exists():
         routing = json.loads(ROUTING_PATH.read_text(encoding="utf-8"))
+    triage = {}
+    if TRIAGE_PATH.exists():
+        triage = json.loads(TRIAGE_PATH.read_text(encoding="utf-8"))
 
     blocking_task_count = int(routing.get("blocking_task_count", 0)) if routing else None
     recommended_owner = routing.get("recommended_next_owner", "unknown") if routing else "unknown"
+    triage_status = triage.get("triage_status", "unknown") if triage else "unknown"
+    leader_decision_needed = bool(triage.get("leader_decision_needed", False)) if triage else False
     all_steps_passed = all(step["status"] == "passed" for step in step_results)
     autopilot_status = "passed" if all_steps_passed and (blocking_task_count in {0, None}) else "needs_attention"
 
     summary = {
-        "phase": "SE-2.2",
+        "phase": "SE-2.6",
         "created_at": created_at,
         "project_path": str(ROOT),
         "autopilot_status": autopilot_status,
         "daily_ops_chain": step_results[0]["status"],
         "task_routing": step_results[1]["status"],
+        "triage_note": step_results[2]["status"],
+        "triage_status": triage_status,
+        "leader_decision_needed": leader_decision_needed,
         "blocking_task_count": blocking_task_count,
         "recommended_next_owner": recommended_owner,
         "business_code_changed": False,
@@ -85,6 +98,7 @@ def main() -> int:
         "artifacts": {
             "daily_ops_chain": "evaluations/codebase_residency/410health_daily_ops_chain_001.json",
             "task_routing": "evaluations/codebase_residency/410health_daily_task_routing_001.json",
+            "triage_note": "evaluations/codebase_residency/410health_autopilot_triage_note_001.json",
             "autopilot_report": "docs/410health_daily_autopilot_report.md",
             "autopilot_summary": "evaluations/codebase_residency/410health_daily_autopilot_001.json",
         },
@@ -108,15 +122,18 @@ def main() -> int:
 ## Summary
 
 ```text
-phase = SE-2.2
+phase = SE-2.6
 autopilot_status = {autopilot_status}
 daily_ops_chain = {summary["daily_ops_chain"]}
 task_routing = {summary["task_routing"]}
+triage_note = {summary["triage_note"]}
+triage_status = {triage_status}
+leader_decision_needed = {str(leader_decision_needed).lower()}
 blocking_task_count = {blocking_task_count}
 recommended_next_owner = {recommended_owner}
 ```
 
-The daily autopilot ran the Software Open Claw operating chain and task router in one command.
+The daily autopilot ran the Software Open Claw operating chain, task router, and triage note generator in one command.
 
 ## Routed Tasks
 
@@ -139,6 +156,8 @@ git_push_attempted = false
     print("410HEALTH DAILY AUTOPILOT")
     print(f"daily_ops_chain={summary['daily_ops_chain']}")
     print(f"task_routing={summary['task_routing']}")
+    print(f"triage_note={summary['triage_note']}")
+    print(f"triage_status={triage_status}")
     print(f"blocking_task_count={blocking_task_count}")
     print(f"recommended_next_owner={recommended_owner}")
     print(f"autopilot_status={autopilot_status}")
