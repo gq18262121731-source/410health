@@ -20,7 +20,7 @@ def main() -> int:
     parser.add_argument("--password", default="410410410")
     parser.add_argument("--username", default="admin")
     parser.add_argument("--rtsp-port", type=int, default=10554)
-    parser.add_argument("--api-host", default="127.0.0.1")
+    parser.add_argument("--api-host", default="0.0.0.0")
     parser.add_argument("--api-port", type=int, default=8000)
     parser.add_argument("--python", default=DEFAULT_PYTHON)
     parser.add_argument("--no-wait", action="store_true")
