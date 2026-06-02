@@ -1,0 +1,60 @@
+Environment Snapshot
+Generated: 2026-06-02T08:58:14+08:00
+
+System
+- Workspace: D:\vision_service
+- Shell: Windows PowerShell 5.1.26100.8457
+- OS: Microsoft Windows 11 Home, version 10.0.26200, 64-bit
+- Time zone: China Standard Time
+- Sandbox: workspace-write
+- Writable roots: D:\vision_service, C:\tmp
+- Network: restricted
+
+Project
+- Git repository: yes
+- Current branch: master
+- Working tree: dirty
+- Change summary: 43 modified, 9 deleted, 34 untracked, 86 total
+
+Top-level directories
+- .git
+- .venv
+- .venv311
+- app
+- data
+- datasets
+- docs
+- frontend_demo
+- identity_service
+- logs
+- scripts
+- tests
+- Ultralytics
+
+Top-level files
+- .env.example
+- .gitignore
+- README.md
+- requirements.txt
+- requirements-identity.txt
+- requirements-behavior-poc.txt
+- yolov8n.pt
+- yolov8n-pose.pt
+
+Tools
+- git: F:\Git\cmd\git.exe, git version 2.51.1.windows.1
+- rg: C:\Users\13010\AppData\Local\OpenAI\Codex\bin\ada252862d154cdd\rg.exe, ripgrep 15.1.0
+- python: C:\Users\13010\anaconda3\python.exe, Python 3.9.13
+- .venv python: .\.venv\Scripts\python.exe, Python 3.9.13
+- .venv311 python: .\.venv311\Scripts\python.exe, Python 3.11.7
+- node: C:\Program Files\nodejs\node.exe, v24.12.0
+- npm: C:\Program Files\nodejs\npm.ps1, 11.6.2
+- pnpm: C:\Users\13010\AppData\Roaming\npm\pnpm.ps1, 10.27.0
+- yarn: not found
+- dotnet: C:\Program Files\dotnet\dotnet.exe, no .NET SDK found by dotnet --version
+- flutter: D:\tools\flutter\bin\flutter.bat, Flutter 3.41.9
+- dart: D:\tools\flutter\bin\dart.bat, Dart SDK 3.11.5
+
+Notes
+- Full environment variables were intentionally not captured to avoid recording secrets.
+- This is a point-in-time snapshot and may drift as files, branches, packages, or tools change.

@@ -15,7 +15,7 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 IDENTITY_DIR = ROOT / "identity_service"
-DEMO_URL = "http://127.0.0.1:8000/demo?v=phase53"
+DEMO_URL = "http://127.0.0.1:8000/demo?v=phase5-dual"
 
 
 def _print(message: str) -> None:
@@ -112,13 +112,36 @@ def main() -> int:
         {
             "ENABLE_TRACKING": "true",
             "ENABLE_IDENTITY_BINDING": "true",
+            "IDENTITY_BINDING_ASYNC": "true",
             "IDENTITY_SERVICE_URL": "http://127.0.0.1:8100",
             "IDENTITY_REQUEST_TIMEOUT_MS": "1000",
+            "ENABLE_DUAL_STREAM": "true",
+            "DEFAULT_RTSP_URL": "rtsp://admin:你的密码@192.168.8.254:10554/tcp/av0_1",
+            "MAIN_STREAM_URL": "rtsp://admin:你的密码@192.168.8.254:10554/tcp/av0_0",
+            "ANALYSIS_STREAM_URL": "rtsp://admin:你的密码@192.168.8.254:10554/tcp/av0_1",
+            "CAPTURE_BACKEND": "subprocess_opencv",
+            "MAIN_CAPTURE_BACKEND": "subprocess_opencv",
+            "ANALYSIS_CAPTURE_BACKEND": "subprocess_opencv",
+            "CAPTURE_PROCESS_FRAME_TIMEOUT_MS": "2000",
+            "CAPTURE_PROCESS_RESTART_MS": "500",
+            "CAPTURE_JPEG_QUALITY": "60",
+            "CAPTURE_PROCESS_OUTPUT_HEIGHT": "720",
+            "CAPTURE_PROCESS_WRITE_FPS": "10",
+            "MAIN_CAPTURE_JPEG_QUALITY": "55",
+            "MAIN_CAPTURE_PROCESS_OUTPUT_HEIGHT": "720",
+            "MAIN_CAPTURE_PROCESS_WRITE_FPS": "8",
+            "DISPLAY_FALLBACK_TO_ANALYSIS": "true",
+            "DISPLAY_FALLBACK_FRAME_AGE_MS": "1500",
+            "DISPLAY_FALLBACK_MIN_HOLD_MS": "10000",
+            "YOLO_DEVICE": "cuda:0",
+            "YOLO_IMGSZ": "512",
+            "DETECTION_INTERVAL_MS": "125",
             "ENABLE_POSE": "true",
             "POSE_PROVIDER": "yolo",
             "POSE_WORKER_FPS": "1",
             "POSE_FPS": "1",
             "YOLO_POSE_IMGSZ": "320",
+            "YOLO_POSE_DEVICE": "cuda:0",
             "POSE_SKIP_WHEN_INFERENCE_BUSY": "true",
             "POSE_MAX_INFERENCE_MS": "1500",
             "POSE_SLOW_INFERENCE_CIRCUIT_BREAKER_COUNT": "3",
@@ -152,6 +175,8 @@ def main() -> int:
     _print("")
     _print("[ready] Phase 5 test stack is running.")
     _print(f"[demo]  {DEMO_URL}")
+    _print("[stream] main av0_0 is used for WebRTC display.")
+    _print("[stream] analysis av0_1 is used for AI. Replace '你的密码' in env/script before real use if needed.")
     _print("[stop]  Press Ctrl+C in this window to stop both services.")
     _print("")
     webbrowser.open(DEMO_URL)

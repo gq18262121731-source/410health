@@ -19,6 +19,8 @@ from app.services.stream_service import StreamService
 from app.services.temporal_service import TemporalService
 from app.services.tracking_service import TrackingService
 from app.services.tracking_worker_service import TrackingWorkerService
+from app.services.video_bridge_publisher_service import VideoBridgePublisherService
+from app.services.watchdog_service import WatchdogService
 from app.streaming.peer_manager import PeerManager
 from app.streaming.result_channel_manager import ResultChannelManager
 
@@ -44,8 +46,14 @@ class Runtime:
     stream_service: StreamService
     peer_manager: PeerManager
     status_service: StatusService
+    watchdog_service: WatchdogService | None = None
+    video_bridge_publisher_service: VideoBridgePublisherService | None = None
 
     async def shutdown(self) -> None:
+        if self.watchdog_service is not None:
+            self.watchdog_service.stop()
+        if self.video_bridge_publisher_service is not None:
+            self.video_bridge_publisher_service.stop_all()
         self.result_publisher_service.stop_all()
         self.pose_worker_service.stop_all()
         self.identity_binding_worker_service.stop_all()

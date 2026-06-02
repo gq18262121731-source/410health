@@ -1,0 +1,21 @@
+cases:
+  - case_id: standing_fixture
+    video_path: tests/fixtures/identity_self_loop.mp4
+    label: normal
+    expected_max_state: unstable
+    expected_confirmed: false
+    notes: "Small local fixture used as a no-camera smoke regression case."
+
+  - case_id: hard_negative_bus_person
+    video_path: tests/fixtures/person_bus_loop.mp4
+    label: hard_negative
+    expected_max_state: falling
+    expected_confirmed: false
+    notes: "Person fixture with non-fall motion/background complexity; must not confirm."
+
+  - case_id: ur_fall_01
+    video_path: datasets/ur_fall/videos/fall-01.mp4
+    label: fall
+    expected_max_state: falling
+    expected_confirmed: false
+    notes: "UR Fall sample. Current rule preview is expected to reach at least falling, not necessarily confirmed."

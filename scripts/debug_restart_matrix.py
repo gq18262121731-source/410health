@@ -17,7 +17,7 @@ from debug_backend_runtime import collect_sample, summarize
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = ROOT / "logs" / "runtime_debug"
-RTSP_URL = "rtsp://admin:admin@192.168.8.254:554/tcp/av0_1"
+RTSP_URL = "rtsp://admin:admin@192.168.8.254:10554/tcp/av0_1"
 
 
 def main() -> int:

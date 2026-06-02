@@ -92,6 +92,10 @@ class RealtimeResultStore:
         with self._lock:
             return self._published.get(camera_id)
 
+    def all_latest_published(self) -> list[VisionResult]:
+        with self._lock:
+            return list(self._published.values())
+
     def clear_camera(self, camera_id: str) -> None:
         with self._lock:
             self._detections.pop(camera_id, None)

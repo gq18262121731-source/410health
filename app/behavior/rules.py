@@ -58,15 +58,18 @@ class BehaviorRules:
     @staticmethod
     def _is_sitting(features: BehaviorFeatures) -> bool:
         aspect = features.bbox_aspect_ratio or 0.0
-        if aspect < 0.35:
+        if aspect < 0.45:
             return False
         if features.shoulder_y is None or features.hip_y is None or features.ankle_y is None:
             return False
         body_height = abs(features.ankle_y - (features.head_y or features.shoulder_y))
         torso_height = abs(features.hip_y - features.shoulder_y)
+        lower_body_height = abs(features.ankle_y - features.hip_y)
         if body_height <= 1:
             return False
-        return torso_height / body_height < 0.45
+        torso_ratio = torso_height / body_height
+        lower_body_ratio = lower_body_height / body_height
+        return torso_ratio < 0.35 and lower_body_ratio <= 0.42
 
     @staticmethod
     def _is_walking(features: BehaviorFeatures) -> bool:

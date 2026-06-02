@@ -19,6 +19,9 @@ class DetectorStatus:
     loaded: bool = False
     model_name: str | None = None
     last_error: str | None = None
+    lock_wait_avg_ms: float | None = None
+    lock_wait_p95_ms: float | None = None
+    last_lock_wait_ms: float | None = None
 
 
 class PersonDetector:
@@ -38,6 +41,7 @@ class YoloPersonDetector(PersonDetector):
             loaded=False,
             model_name=settings.yolo_model_path,
         )
+        self._lock_wait_ms: list[float] = []
         if settings.detection_enabled:
             self._load()
 
@@ -68,9 +72,11 @@ class YoloPersonDetector(PersonDetector):
         if self.settings.yolo_device:
             kwargs["device"] = self.settings.yolo_device
 
-        with ultralytics_inference_lock(blocking=True) as acquired:
+        with ultralytics_inference_lock(blocking=True) as lock_state:
+            acquired, wait_ms = lock_state
             if not acquired:
                 return []
+            self._record_lock_wait(wait_ms)
             results = self._model.predict(frame, **kwargs)
         if not results:
             return []
@@ -94,7 +100,21 @@ class YoloPersonDetector(PersonDetector):
         return detections
 
     def status(self) -> DetectorStatus:
-        return DetectorStatus(**self._status.__dict__)
+        status = DetectorStatus(**self._status.__dict__)
+        wait_values = list(self._lock_wait_ms)
+        if wait_values:
+            ordered = sorted(wait_values)
+            status.lock_wait_avg_ms = round(sum(ordered) / len(ordered), 2)
+            p95_index = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * 0.95))))
+            status.lock_wait_p95_ms = round(ordered[p95_index], 2)
+            status.last_lock_wait_ms = round(ordered[-1], 2)
+        return status
+
+    def _record_lock_wait(self, wait_ms: float) -> None:
+        rounded = round(wait_ms, 2)
+        self._lock_wait_ms.append(rounded)
+        if len(self._lock_wait_ms) > 120:
+            self._lock_wait_ms = self._lock_wait_ms[-120:]
 
 
 class NoopPersonDetector(PersonDetector):
@@ -118,3 +138,5 @@ class DetectionRunStats:
     inference_latency_ms: float | None = None
     last_error: str | None = None
     last_detected_at: float | None = None
+    loop_latency_ms: float | None = None
+    lock_wait_ms: float | None = None

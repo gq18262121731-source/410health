@@ -33,6 +33,14 @@ class Settings:
 
     default_camera_id: str = os.getenv("DEFAULT_CAMERA_ID", "camera_01")
     default_rtsp_url: str | None = os.getenv("DEFAULT_RTSP_URL") or None
+    enable_dual_stream: bool = _get_bool("ENABLE_DUAL_STREAM", False)
+    main_stream_url: str | None = os.getenv("MAIN_STREAM_URL") or None
+    analysis_stream_url: str | None = os.getenv("ANALYSIS_STREAM_URL") or None
+    main_capture_backend: str = os.getenv("MAIN_CAPTURE_BACKEND", "subprocess_opencv")
+    analysis_capture_backend: str = os.getenv("ANALYSIS_CAPTURE_BACKEND", "subprocess_opencv")
+    display_fallback_to_analysis: bool = _get_bool("DISPLAY_FALLBACK_TO_ANALYSIS", True)
+    display_fallback_frame_age_ms: int = _get_int("DISPLAY_FALLBACK_FRAME_AGE_MS", 1500)
+    display_fallback_min_hold_ms: int = _get_int("DISPLAY_FALLBACK_MIN_HOLD_MS", 10000)
     mock_camera_enabled: bool = _get_bool("MOCK_CAMERA_ENABLED", True)
     mock_camera_width: int = _get_int("MOCK_CAMERA_WIDTH", 1280)
     mock_camera_height: int = _get_int("MOCK_CAMERA_HEIGHT", 720)
@@ -52,6 +60,9 @@ class Settings:
     capture_jpeg_quality: int = _get_int("CAPTURE_JPEG_QUALITY", 60)
     capture_process_output_height: int = _get_int("CAPTURE_PROCESS_OUTPUT_HEIGHT", 720)
     capture_process_write_fps: float = _get_float("CAPTURE_PROCESS_WRITE_FPS", 10.0)
+    main_capture_jpeg_quality: int = _get_int("MAIN_CAPTURE_JPEG_QUALITY", 55)
+    main_capture_process_output_height: int = _get_int("MAIN_CAPTURE_PROCESS_OUTPUT_HEIGHT", 720)
+    main_capture_process_write_fps: float = _get_float("MAIN_CAPTURE_PROCESS_WRITE_FPS", 8.0)
     capture_process_max_restarts: int = _get_int("CAPTURE_PROCESS_MAX_RESTARTS", 0)
     opencv_capture_buffersize: int = _get_int("OPENCV_CAPTURE_BUFFERSIZE", 1)
     opencv_ffmpeg_capture_options: str = os.getenv("OPENCV_FFMPEG_CAPTURE_OPTIONS", "")
@@ -61,7 +72,7 @@ class Settings:
     detection_enabled: bool = _get_bool("DETECTION_ENABLED", True)
     yolo_model_path: str = os.getenv("YOLO_MODEL_PATH", "yolov8n.pt")
     yolo_confidence: float = _get_float("YOLO_CONFIDENCE", 0.35)
-    yolo_imgsz: int = _get_int("YOLO_IMGSZ", 640)
+    yolo_imgsz: int = _get_int("YOLO_IMGSZ", 512)
     yolo_device: str | None = os.getenv("YOLO_DEVICE") or None
     detection_interval_ms: int = _get_int("DETECTION_INTERVAL_MS", 200)
 
@@ -100,8 +111,12 @@ class Settings:
     pose_fps: float = _get_float("POSE_FPS", 3.0)
     yolo_pose_model_path: str = os.getenv("YOLO_POSE_MODEL_PATH", "yolov8n-pose.pt")
     yolo_pose_confidence: float = _get_float("YOLO_POSE_CONFIDENCE", 0.25)
-    yolo_pose_imgsz: int = _get_int("YOLO_POSE_IMGSZ", 640)
+    yolo_pose_imgsz: int = _get_int("YOLO_POSE_IMGSZ", 320)
     yolo_pose_device: str | None = os.getenv("YOLO_POSE_DEVICE") or None
+    pose_target_only: bool = _get_bool("POSE_TARGET_ONLY", False)
+    pose_fallback_to_largest_track: bool = _get_bool("POSE_FALLBACK_TO_LARGEST_TRACK", True)
+    pose_fallback_to_detection: bool = _get_bool("POSE_FALLBACK_TO_DETECTION", True)
+    pose_fallback_min_confidence: float = _get_float("POSE_FALLBACK_MIN_CONFIDENCE", 0.35)
     pose_crop_padding_ratio: float = _get_float("POSE_CROP_PADDING_RATIO", 0.08)
     pose_skip_when_inference_busy: bool = _get_bool("POSE_SKIP_WHEN_INFERENCE_BUSY", True)
     pose_max_inference_ms: int = _get_int("POSE_MAX_INFERENCE_MS", 1500)
@@ -118,6 +133,25 @@ class Settings:
     result_publish_fps: float = _get_float("RESULT_PUBLISH_FPS", 10.0)
     pose_result_ttl_ms: int = _get_int("POSE_RESULT_TTL_MS", 1500)
     behavior_result_ttl_ms: int = _get_int("BEHAVIOR_RESULT_TTL_MS", 1500)
+
+    watchdog_enabled: bool = _get_bool("WATCHDOG_ENABLED", True)
+    watchdog_check_interval_ms: int = _get_int("WATCHDOG_CHECK_INTERVAL_MS", 1000)
+    watchdog_worker_heartbeat_timeout_ms: int = _get_int("WATCHDOG_WORKER_HEARTBEAT_TIMEOUT_MS", 5000)
+    watchdog_capture_stale_ms: int = _get_int("WATCHDOG_CAPTURE_STALE_MS", 3000)
+    watchdog_max_restart_count: int = _get_int("WATCHDOG_MAX_RESTART_COUNT", 3)
+    watchdog_restart_window_ms: int = _get_int("WATCHDOG_RESTART_WINDOW_MS", 60000)
+
+    video_bridge_enabled: bool = _get_bool("VIDEO_BRIDGE_ENABLED", False)
+    video_bridge_url: str = os.getenv(
+        "VIDEO_BRIDGE_URL",
+        "http://127.0.0.1:8000/api/v1/video-bridge/analysis",
+    )
+    video_bridge_fall_event_url: str = os.getenv(
+        "VIDEO_BRIDGE_FALL_EVENT_URL",
+        "http://192.168.8.251:18080/api/v1/video-bridge/fall-events",
+    )
+    video_bridge_fps: float = _get_float("VIDEO_BRIDGE_FPS", 1.0)
+    video_bridge_timeout_seconds: float = _get_float("VIDEO_BRIDGE_TIMEOUT_SECONDS", 2.0)
 
     enable_temporal: bool = _get_bool("ENABLE_TEMPORAL", False)
     feature_window_size: int = _get_int("FEATURE_WINDOW_SIZE", 32)

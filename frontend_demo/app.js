@@ -32,6 +32,11 @@ const state = {
   },
   userEditedRtspUrl: false,
   lastPlayError: null,
+  autoConnectStarted: false,
+  overlayDisplay: {
+    showBbox: true,
+    showPose: true,
+  },
 };
 window.__VISION_APP_STATE__ = state;
 
@@ -68,6 +73,16 @@ debugState.setOverlayMode = (mode) => {
     drawOverlay($("video"), state.lastResult);
   }
 };
+debugState.setOverlayDisplay = (options = {}) => {
+  if (typeof options.showBbox === "boolean") {
+    state.overlayDisplay.showBbox = options.showBbox;
+  }
+  if (typeof options.showPose === "boolean") {
+    state.overlayDisplay.showPose = options.showPose;
+  }
+  syncOverlayControls();
+  redrawLatestOverlay();
+};
 debugState.setRawJson = (enabled) => {
   debugState.showRawJson = Boolean(enabled);
   const box = $("statusBox");
@@ -99,6 +114,7 @@ debugState.reset = () => {
 };
 debugState.snapshot = () => ({
   overlayMode: debugState.overlayMode,
+  overlayDisplay: { ...state.overlayDisplay },
   showRawJson: debugState.showRawJson,
   counters: debugState.counters,
   video: summarizeVideo(debugState.videoSamples),
@@ -193,6 +209,52 @@ async function startStream() {
     $("statusBox").textContent = String(error);
   } finally {
     $("startBtn").disabled = false;
+  }
+}
+
+async function triggerManualFallEvent() {
+  const cameraId = $("cameraId").value.trim() || "camera_01";
+  const button = $("manualFallBtn");
+  if (button) {
+    button.disabled = true;
+  }
+  setManualFallStatus("告警发送中...");
+
+  try {
+    const response = await fetch(`${apiBase()}/integration/video-bridge/fall-events/manual`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        camera_id: cameraId,
+        source: "vision_demo_manual_risk",
+        event_type: "fall_risk_detected",
+        state: "suspected_fall",
+        risk: "medium",
+        fall_prob: 0.72,
+        fall_score: 0.72,
+        metadata: {
+          trigger: "video_demo_button",
+          operator: "manual_test",
+          display_label: "疑似风险告警",
+          page_url: window.location.href,
+        },
+      }),
+    });
+    const payload = await safeJson(response);
+    $("statusBox").textContent = JSON.stringify(payload, null, 2);
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(responseErrorMessage(payload, `fall event failed: ${response.status}`));
+    }
+
+    const alarm = payload?.alarm_id ? `已生成告警 ${payload.alarm_id}` : "告警已受理";
+    const pushed = payload?.pushed === false ? " / 推送排队中" : " / 已推送";
+    setManualFallStatus(`${alarm}${pushed}`, "ok");
+  } catch (error) {
+    setManualFallStatus(String(error), "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
   }
 }
 
@@ -582,6 +644,7 @@ async function refreshStatus() {
     updateBackendSource(data);
     syncRtspInputFromStatus(data);
     updateMetricPanel(data);
+    maybeAutoConnectVideo(data);
     debugState.counters.statusUpdates += 1;
     pushLimited(debugState.statusSamples, {
       at: Date.now(),
@@ -593,6 +656,30 @@ async function refreshStatus() {
     });
   } catch (error) {
     $("statusBox").textContent = String(error);
+  }
+}
+
+function maybeAutoConnectVideo(status) {
+  if (state.autoConnectStarted || state.autoReconnect.connecting) {
+    return;
+  }
+  const cameraId = $("cameraId").value.trim() || "camera_01";
+  const camera = (status.cameras || []).find((item) => item.camera_id === cameraId);
+  const pcState = state.pc?.connectionState;
+  const hasUsablePeer = state.pc && !["failed", "closed", "disconnected"].includes(pcState);
+  if (hasUsablePeer) {
+    return;
+  }
+  if (
+    status.service_status === "running"
+    && camera?.running
+    && camera.connected
+    && camera.frame_width
+    && camera.frame_height
+    && (camera.frame_age_ms == null || camera.frame_age_ms < 3000)
+  ) {
+    state.autoConnectStarted = true;
+    connectWebRTC();
   }
 }
 
@@ -934,6 +1021,25 @@ async function safeJson(response) {
   }
 }
 
+function responseErrorMessage(payload, fallback) {
+  if (typeof payload?.detail === "string") {
+    return payload.detail;
+  }
+  if (payload?.detail?.message) {
+    return payload.detail.message;
+  }
+  return payload?.message || fallback;
+}
+
+function setManualFallStatus(message, className = "") {
+  const target = $("manualFallStatus");
+  if (!target) {
+    return;
+  }
+  target.textContent = message;
+  target.className = ["manual-fall-status", className].filter(Boolean).join(" ");
+}
+
 function pushLimited(items, item, limit = 600) {
   items.push(item);
   if (items.length > limit) {
@@ -1043,6 +1149,8 @@ function readFreezeDomSnapshot() {
     wsFps: $("wsFps")?.textContent || null,
     overlayFps: $("overlayFps")?.textContent || null,
     overlayAge: $("overlayAge")?.textContent || null,
+    showBbox: state.overlayDisplay.showBbox,
+    showPose: state.overlayDisplay.showPose,
     videoFrames: $("videoFrames")?.textContent || null,
     videoReadyState: $("videoReadyState")?.textContent || null,
     videoSize: $("videoSize")?.textContent || null,
@@ -1056,6 +1164,24 @@ function readFreezeDomSnapshot() {
     totalVideoFrames: quality?.totalVideoFrames ?? null,
     droppedVideoFrames: quality?.droppedVideoFrames ?? null,
   };
+}
+
+function syncOverlayControls() {
+  const bboxToggle = $("showBboxToggle");
+  const poseToggle = $("showPoseToggle");
+  if (bboxToggle) {
+    bboxToggle.checked = state.overlayDisplay.showBbox;
+  }
+  if (poseToggle) {
+    poseToggle.checked = state.overlayDisplay.showPose;
+  }
+}
+
+function redrawLatestOverlay() {
+  const video = $("video");
+  if (state.lastResult && video) {
+    drawOverlay(video, state.lastResult);
+  }
 }
 
 function sampleVideoQuality() {
@@ -1173,8 +1299,17 @@ function updatePeerDebugState() {
 
 $("startBtn").addEventListener("click", startStream);
 $("connectBtn").addEventListener("click", connectWebRTC);
+$("manualFallBtn")?.addEventListener("click", triggerManualFallEvent);
 $("rtspUrl")?.addEventListener("input", () => {
   state.userEditedRtspUrl = true;
+});
+$("showBboxToggle")?.addEventListener("change", (event) => {
+  state.overlayDisplay.showBbox = event.target.checked;
+  redrawLatestOverlay();
+});
+$("showPoseToggle")?.addEventListener("change", (event) => {
+  state.overlayDisplay.showPose = event.target.checked;
+  redrawLatestOverlay();
 });
 window.addEventListener("beforeunload", () => {
   state.userConnected = false;
@@ -1182,10 +1317,7 @@ window.addEventListener("beforeunload", () => {
   closeConnections();
 });
 window.addEventListener("resize", () => {
-  const video = $("video");
-  if (state.lastResult && video) {
-    drawOverlay(video, state.lastResult);
-  }
+  redrawLatestOverlay();
 });
 window.addEventListener("error", (event) => pushDebugError("error", event));
 window.addEventListener("unhandledrejection", (event) => pushDebugError("unhandledrejection", event));
@@ -1209,4 +1341,5 @@ if ("PerformanceObserver" in window) {
 setInterval(refreshStatus, 2000);
 setInterval(sampleVideoQuality, 1000);
 setInterval(sampleRtcStats, 1000);
+syncOverlayControls();
 refreshStatus();

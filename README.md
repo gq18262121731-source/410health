@@ -57,11 +57,66 @@ Invoke-RestMethod http://127.0.0.1:8000/stream/start `
 - `GET /status`
 - `POST /stream/start`
 - `POST /stream/stop`
+- `GET /integration/results/latest`
+- `GET /integration/results/{camera_id}/latest`
 - `POST /webrtc/offer`
 - `WS /ws/results?camera_id=camera_01`
 - `POST /identity/enroll`
 - `GET /identity/list`
 - `DELETE /identity/{person_id}`
+
+## LAN Integration
+
+If another server on the same LAN only needs AI results and does not need to render video,
+use the polling-friendly integration endpoints instead of WebRTC/WebSocket.
+
+Run the service on a LAN-accessible host and bind to all interfaces:
+
+```powershell
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Then the other server can call:
+
+- `GET http://<vision-host>:8000/integration/results/latest`
+- `GET http://<vision-host>:8000/integration/results/camera_01/latest`
+
+Single-camera response example:
+
+```json
+{
+  "ok": true,
+  "camera_id": "camera_01",
+  "has_result": true,
+  "result": {
+    "type": "vision_result",
+    "camera_id": "camera_01",
+    "timestamp": "2026-05-27T06:25:31.123+00:00",
+    "frame_seq": 128,
+    "frame_width": 1280,
+    "frame_height": 720,
+    "objects": [
+      {
+        "label": "person",
+        "confidence": 0.94,
+        "bbox": [120, 80, 420, 680],
+        "track_id": 3,
+        "is_target": true,
+        "person_id": null,
+        "person_name": null,
+        "identity_state": "target_locked"
+      }
+    ],
+    "detector": {
+      "latency_ms": 42.7
+    }
+  },
+  "message": "ok"
+}
+```
+
+If the camera exists but no result has been published yet, `has_result` returns `false`.
+If the camera ID does not exist, the service returns `404`.
 
 ## Config
 

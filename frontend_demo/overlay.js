@@ -214,6 +214,9 @@ const KEYPOINT_PART_COLORS = {
 function drawOverlay(video, result, frameMetadata = null) {
   const debug = window.__VISION_DEBUG__;
   const mode = debug?.overlayMode || "full";
+  const display = window.__VISION_APP_STATE__?.overlayDisplay || {};
+  const showBbox = display.showBbox !== false;
+  const showPose = display.showPose !== false;
   const totalStart = performance.now();
   let skeletonMs = 0;
   let bodyBoxMs = 0;
@@ -234,10 +237,12 @@ function drawOverlay(video, result, frameMetadata = null) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, rect.width, rect.height);
 
-  if (mode === "off") {
+  if (mode === "off" || (!showBbox && !showPose)) {
     overlayStats.record({
       at: Date.now(),
       mode,
+      showBbox,
+      showPose,
       totalMs: performance.now() - totalStart,
       skeletonMs,
       bodyBoxMs,
@@ -252,6 +257,8 @@ function drawOverlay(video, result, frameMetadata = null) {
     overlayStats.record({
       at: Date.now(),
       mode,
+      showBbox,
+      showPose,
       totalMs: performance.now() - totalStart,
       skeletonMs,
       bodyBoxMs,
@@ -276,21 +283,27 @@ function drawOverlay(video, result, frameMetadata = null) {
     const labelStroke = isTarget ? riskColor(risk) : "#a0a8ad";
     const textColor = isTarget ? "#06120b" : "#dfe7e3";
 
-    drawObjectFrame(ctx, bbox, object, poseState, mode);
+    if (showBbox) {
+      drawObjectFrame(ctx, bbox, object, poseState, mode);
+    }
 
-    if (mode !== "bbox") {
+    if (showPose && mode !== "bbox") {
       const timing = drawPoseOverlay(ctx, object, poseState, mode);
       skeletonMs += timing.skeletonMs;
       bodyBoxMs += timing.bodyBoxMs;
       highlightMs += timing.highlightMs;
     }
 
-    drawObjectLabel(ctx, bbox, object, labelStroke, textColor);
+    if (showBbox) {
+      drawObjectLabel(ctx, bbox, object, labelStroke, textColor);
+    }
   }
 
   overlayStats.record({
     at: Date.now(),
     mode,
+    showBbox,
+    showPose,
     totalMs: performance.now() - totalStart,
     skeletonMs,
     bodyBoxMs,

@@ -5,8 +5,11 @@ import time
 
 from app.core.config import Settings
 from app.core.logger import get_logger
+from app.camera.source_manager import CameraSourceManager
 from app.detection.realtime_result_store import ObjectSnapshot, RealtimeResultStore
+from app.detection.result_store import ResultStore
 from app.monitoring.metrics import FPSMeter
+from app.monitoring.worker_health import WorkerHealthSnapshot, WorkerHealthTracker
 from app.schemas.common import utc_now_iso
 from app.schemas.vision_result import DetectedObject, VisionResult
 from app.services.temporal_service import TemporalService
@@ -20,18 +23,23 @@ class ResultPublisherService:
         self,
         settings: Settings,
         realtime_store: RealtimeResultStore,
+        result_store: ResultStore,
         result_channels: ResultChannelManager,
         temporal_service: TemporalService | None = None,
+        source_manager: CameraSourceManager | None = None,
     ) -> None:
         self.settings = settings
         self.realtime_store = realtime_store
+        self.result_store = result_store
         self.result_channels = result_channels
         self.temporal_service = temporal_service
+        self.source_manager = source_manager
         self._workers: dict[str, threading.Thread] = {}
         self._stops: dict[str, threading.Event] = {}
         self._fps: dict[str, FPSMeter] = {}
         self._last_error: dict[str, str | None] = {}
         self._last_detection_to_publish_lag_ms: dict[str, float | None] = {}
+        self._health: dict[str, WorkerHealthTracker] = {}
         self._lock = threading.Lock()
 
     def start_for_camera(self, camera_id: str) -> None:
@@ -48,6 +56,7 @@ class ResultPublisherService:
             )
             self._stops[camera_id] = stop_event
             self._fps[camera_id] = FPSMeter()
+            self._health.setdefault(camera_id, WorkerHealthTracker()).mark_restart()
             self._workers[camera_id] = worker
             worker.start()
 
@@ -59,6 +68,22 @@ class ResultPublisherService:
             stop_event.set()
         if worker and worker.is_alive():
             worker.join(timeout=3)
+
+    def restart_for_camera(self, camera_id: str) -> bool:
+        with self._lock:
+            stop_event = self._stops.get(camera_id)
+            worker = self._workers.get(camera_id)
+        if stop_event:
+            stop_event.set()
+        if worker and worker.is_alive():
+            worker.join(timeout=3)
+        if worker and worker.is_alive():
+            return False
+        with self._lock:
+            self._stops.pop(camera_id, None)
+            self._workers.pop(camera_id, None)
+        self.start_for_camera(camera_id)
+        return True
 
     def stop_all(self) -> None:
         for camera_id in list(self._workers.keys()):
@@ -77,25 +102,37 @@ class ResultPublisherService:
         with self._lock:
             return self._last_error.get(camera_id)
 
+    def health(self, camera_id: str) -> WorkerHealthSnapshot:
+        with self._lock:
+            worker = self._workers.get(camera_id)
+            health = self._health.setdefault(camera_id, WorkerHealthTracker())
+        return health.snapshot(worker_alive=bool(worker and worker.is_alive()))
+
     def _run_loop(self, camera_id: str, stop_event: threading.Event) -> None:
         interval = 1 / max(self.settings.result_publish_fps, 1)
         logger.info("result_publisher_started camera_id=%s", camera_id)
         while not stop_event.is_set():
+            tick_started = time.perf_counter()
             try:
                 result = self._build_result(camera_id)
                 if result is not None:
                     self.realtime_store.update_published(result)
+                    self.result_store.update(result)
                     self.result_channels.publish(result)
+                    latency_ms = (time.perf_counter() - tick_started) * 1000
                     with self._lock:
                         self._fps.setdefault(camera_id, FPSMeter()).tick()
                         self._last_error[camera_id] = None
+                        self._health.setdefault(camera_id, WorkerHealthTracker()).mark_success(latency_ms)
                 else:
                     with self._lock:
                         self._last_error[camera_id] = None
+                        self._health.setdefault(camera_id, WorkerHealthTracker()).mark_heartbeat()
             except Exception as exc:
                 logger.exception("result_publisher_error camera_id=%s", camera_id)
                 with self._lock:
                     self._last_error[camera_id] = str(exc)
+                    self._health.setdefault(camera_id, WorkerHealthTracker()).mark_error(str(exc))
             stop_event.wait(interval)
         logger.info("result_publisher_stopped camera_id=%s", camera_id)
 
@@ -120,12 +157,20 @@ class ResultPublisherService:
             with self._lock:
                 self._last_detection_to_publish_lag_ms[camera_id] = lag_ms
 
+        frame_metadata = self._frame_metadata(camera_id, base.frame_width, base.frame_height)
+
         return VisionResult(
             camera_id=camera_id,
             timestamp=utc_now_iso(),
             frame_seq=base.frame_seq,
             frame_width=base.frame_width,
             frame_height=base.frame_height,
+            analysis_frame_width=frame_metadata["analysis_frame_width"],
+            analysis_frame_height=frame_metadata["analysis_frame_height"],
+            display_frame_width=frame_metadata["display_frame_width"],
+            display_frame_height=frame_metadata["display_frame_height"],
+            display_source=frame_metadata["display_source"],
+            analysis_source=frame_metadata["analysis_source"],
             objects=objects,
             detector=detector,
         )
@@ -163,3 +208,51 @@ class ResultPublisherService:
         if ttl_ms <= 0:
             return True
         return (time.monotonic() - snapshot.monotonic_at) * 1000 <= ttl_ms
+
+    def _frame_metadata(self, camera_id: str, fallback_width: int, fallback_height: int) -> dict:
+        analysis_width = fallback_width
+        analysis_height = fallback_height
+        display_width = fallback_width
+        display_height = fallback_height
+        display_source = "single"
+        analysis_source = "single"
+
+        runtime = self.source_manager.get_runtime(camera_id) if self.source_manager else None
+        if runtime is None:
+            return {
+                "analysis_frame_width": analysis_width,
+                "analysis_frame_height": analysis_height,
+                "display_frame_width": display_width,
+                "display_frame_height": display_height,
+                "display_source": display_source,
+                "analysis_source": analysis_source,
+            }
+
+        if runtime.dual_stream_enabled:
+            if self.source_manager is not None:
+                display_source, _ = self.source_manager.display_state(camera_id)
+            else:
+                display_source = runtime.display_source_current or "main"
+            analysis_source = "analysis"
+
+        analysis_status = runtime.analysis_worker.status() if runtime.analysis_worker else None
+        if display_source == "analysis":
+            display_status = analysis_status
+        else:
+            display_status = runtime.main_worker.status() if runtime.main_worker else analysis_status
+
+        if analysis_status and analysis_status.frame_width and analysis_status.frame_height:
+            analysis_width = analysis_status.frame_width
+            analysis_height = analysis_status.frame_height
+        if display_status and display_status.frame_width and display_status.frame_height:
+            display_width = display_status.frame_width
+            display_height = display_status.frame_height
+
+        return {
+            "analysis_frame_width": analysis_width,
+            "analysis_frame_height": analysis_height,
+            "display_frame_width": display_width,
+            "display_frame_height": display_height,
+            "display_source": display_source,
+            "analysis_source": analysis_source,
+        }

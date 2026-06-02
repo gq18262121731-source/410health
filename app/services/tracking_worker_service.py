@@ -7,6 +7,7 @@ from app.core.config import Settings
 from app.core.logger import get_logger
 from app.detection.realtime_result_store import DetectionSnapshot, ObjectSnapshot, RealtimeResultStore
 from app.monitoring.metrics import FPSMeter
+from app.monitoring.worker_health import WorkerHealthSnapshot, WorkerHealthTracker
 from app.schemas.vision_result import DetectedObject
 from app.services.identity_binding_service import IdentityBindingService
 from app.services.tracking_service import TrackingService
@@ -32,6 +33,7 @@ class TrackingWorkerService:
         self._last_error: dict[str, str | None] = {}
         self._last_detection_seq: dict[str, int] = {}
         self._last_tracking_snapshot: dict[str, ObjectSnapshot] = {}
+        self._health: dict[str, WorkerHealthTracker] = {}
         self._lock = threading.Lock()
 
     def start_for_camera(self, camera_id: str) -> None:
@@ -48,6 +50,7 @@ class TrackingWorkerService:
             )
             self._stops[camera_id] = stop_event
             self._fps[camera_id] = FPSMeter()
+            self._health.setdefault(camera_id, WorkerHealthTracker()).mark_restart()
             self._workers[camera_id] = worker
             worker.start()
 
@@ -75,19 +78,29 @@ class TrackingWorkerService:
         with self._lock:
             return self._last_error.get(camera_id)
 
+    def health(self, camera_id: str) -> WorkerHealthSnapshot:
+        with self._lock:
+            worker = self._workers.get(camera_id)
+            health = self._health.setdefault(camera_id, WorkerHealthTracker())
+        return health.snapshot(worker_alive=bool(worker and worker.is_alive()))
+
     def _run_loop(self, camera_id: str, stop_event: threading.Event) -> None:
         interval = 1 / max(self.settings.tracking_worker_fps, 1)
         logger.info("tracking_worker_started camera_id=%s", camera_id)
         while not stop_event.is_set():
+            tick_started = time.perf_counter()
             try:
                 self._tick(camera_id)
+                latency_ms = (time.perf_counter() - tick_started) * 1000
                 with self._lock:
                     self._fps.setdefault(camera_id, FPSMeter()).tick()
                     self._last_error[camera_id] = None
+                    self._health.setdefault(camera_id, WorkerHealthTracker()).mark_success(latency_ms)
             except Exception as exc:
                 logger.exception("tracking_worker_error camera_id=%s", camera_id)
                 with self._lock:
                     self._last_error[camera_id] = str(exc)
+                    self._health.setdefault(camera_id, WorkerHealthTracker()).mark_error(str(exc))
             stop_event.wait(interval)
         logger.info("tracking_worker_stopped camera_id=%s", camera_id)
 

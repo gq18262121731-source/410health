@@ -7,6 +7,8 @@ class WebRTCOfferRequest(BaseModel):
     camera_id: str
     sdp: str
     type: str
+    prefer_latest_frame: bool = False
+    preferred_display_source: str | None = None
 
 
 class WebRTCOfferResponse(BaseModel):
@@ -23,4 +25,3 @@ class IceCandidateRequest(BaseModel):
 class AckResponse(BaseModel):
     ok: bool
     message: str = "ack"
-

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import identity_api, rest_api, status_api, webrtc_api, ws_api
+from app.api import frame_api, identity_api, integration_api, rest_api, status_api, webrtc_api, ws_api
 from app.camera.source_manager import CameraSourceManager
 from app.core.config import get_settings
 from app.core.logger import configure_logging, get_logger
@@ -28,6 +28,8 @@ from app.services.stream_service import StreamService
 from app.services.temporal_service import TemporalService
 from app.services.tracking_service import TrackingService
 from app.services.tracking_worker_service import TrackingWorkerService
+from app.services.video_bridge_publisher_service import VideoBridgePublisherService
+from app.services.watchdog_service import WatchdogService
 from app.integration.identity_client import IdentityClient
 from app.streaming.peer_manager import PeerManager
 from app.streaming.result_channel_manager import ResultChannelManager
@@ -79,8 +81,23 @@ async def lifespan(app: FastAPI):
     result_publisher_service = ResultPublisherService(
         settings=settings,
         realtime_store=realtime_store,
+        result_store=result_store,
         result_channels=result_channels,
         temporal_service=temporal_service,
+        source_manager=source_manager,
+    )
+    video_bridge_publisher_service = VideoBridgePublisherService(
+        settings=settings,
+        realtime_store=realtime_store,
+        source_manager=source_manager,
+        result_publisher_service=result_publisher_service,
+    )
+    watchdog_service = WatchdogService(
+        settings=settings,
+        source_manager=source_manager,
+        detection_service=detection_service,
+        pose_worker_service=pose_worker_service,
+        result_publisher_service=result_publisher_service,
     )
     stream_service = StreamService(
         settings=settings,
@@ -94,6 +111,7 @@ async def lifespan(app: FastAPI):
         identity_binding_worker_service=identity_binding_worker_service,
         pose_worker_service=pose_worker_service,
         result_publisher_service=result_publisher_service,
+        video_bridge_publisher_service=video_bridge_publisher_service,
     )
     peer_manager = PeerManager(settings=settings, source_manager=source_manager)
     status_service = StatusService(
@@ -108,9 +126,11 @@ async def lifespan(app: FastAPI):
         identity_binding_service=identity_binding_service,
         identity_binding_worker_service=identity_binding_worker_service,
         pose_service=pose_service,
+        pose_worker_service=pose_worker_service,
         behavior_service=behavior_service,
         temporal_service=temporal_service,
         result_publisher_service=result_publisher_service,
+        watchdog_service=watchdog_service,
     )
     runtime = Runtime(
         settings=settings,
@@ -132,6 +152,8 @@ async def lifespan(app: FastAPI):
         stream_service=stream_service,
         peer_manager=peer_manager,
         status_service=status_service,
+        watchdog_service=watchdog_service,
+        video_bridge_publisher_service=video_bridge_publisher_service,
     )
     app.state.runtime = runtime
 
@@ -141,6 +163,8 @@ async def lifespan(app: FastAPI):
             logger.info("default_stream_started camera_id=%s", settings.default_camera_id)
         except Exception:
             logger.exception("default_stream_start_failed")
+
+    runtime.watchdog_service.start()
 
     try:
         yield
@@ -159,6 +183,9 @@ def create_app() -> FastAPI:
     )
     app.include_router(status_api.router)
     app.include_router(rest_api.router)
+    app.include_router(frame_api.router)
+    app.include_router(frame_api.ws_router)
+    app.include_router(integration_api.router)
     app.include_router(webrtc_api.router)
     app.include_router(ws_api.router)
     app.include_router(identity_api.router)

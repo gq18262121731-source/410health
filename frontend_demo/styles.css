@@ -85,6 +85,26 @@ label {
   line-height: 1.45;
 }
 
+.source-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(8, 12, 13, 0.58);
+}
+
+.source-title {
+  color: #9aacaa;
+  font-size: 12px;
+}
+
+.source-value {
+  color: #eef4f1;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 input {
   width: 100%;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -94,9 +114,34 @@ input {
   outline: none;
 }
 
+.overlay-controls {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(8, 12, 13, 0.58);
+}
+
+.overlay-controls h2 {
+  margin-bottom: 0;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #dbe9e3;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  width: auto;
+  accent-color: #6bb08d;
+}
+
 .actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -111,6 +156,45 @@ button {
 
 button:hover {
   background: #84c5a4;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.64;
+}
+
+.danger-action {
+  background: #ff9f43;
+  color: #160b03;
+}
+
+.danger-action:hover {
+  background: #ffb86b;
+}
+
+.manual-fall-status {
+  min-height: 18px;
+  color: #9aacaa;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.manual-fall-status.ok {
+  color: #72e58f;
+}
+
+.manual-fall-status.error {
+  color: #ff6b6d;
+}
+
+.recovery-banner {
+  border: 1px solid rgba(244, 211, 94, 0.42);
+  background: rgba(82, 61, 12, 0.78);
+  color: #f9e79f;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 dl {

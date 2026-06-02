@@ -32,7 +32,12 @@ def drain_stderr(stream: TextIO | None, on_line) -> None:
     if stream is None:
         return
     try:
-        for line in iter(stream.readline, ""):
+        while True:
+            line = stream.readline()
+            if not line:
+                break
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="replace")
             line = line.strip()
             if line:
                 on_line(line)

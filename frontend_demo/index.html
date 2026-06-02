@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Vision Service Demo</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -20,16 +21,42 @@
         </label>
         <label>
           RTSP URL
-          <input id="rtspUrl" value="rtsp://admin:你的密码@192.168.8.248:10554/tcp/av0_1" />
+          <input id="rtspUrl" value="" />
           <span class="hint">请将“你的密码”替换为摄像头明文密码；截图时不要暴露真实密码。</span>
         </label>
+        <div class="source-card">
+          <div class="source-title">后端实际来源</div>
+          <div id="backendSource" class="source-value">等待 /status...</div>
+        </div>
         <div class="actions">
           <button id="startBtn">Start</button>
           <button id="connectBtn">Connect</button>
+          <button id="manualFallBtn" class="danger-action">疑似风险告警</button>
         </div>
+        <div id="manualFallStatus" class="manual-fall-status">idle</div>
+        <section class="overlay-controls" aria-label="Overlay display controls">
+          <h2>Overlay</h2>
+          <label class="toggle-row">
+            <input id="showBboxToggle" type="checkbox" checked />
+            <span>人体检测框显示</span>
+          </label>
+          <label class="toggle-row">
+            <input id="showPoseToggle" type="checkbox" checked />
+            <span>骨架显示</span>
+          </label>
+        </section>
+        <div id="recoveryBanner" class="recovery-banner" hidden></div>
         <dl>
           <dt>WebRTC</dt>
           <dd id="webrtcState">idle</dd>
+          <dt>PC Exists</dt>
+          <dd id="pcExists">-</dd>
+          <dt>ICE Conn</dt>
+          <dd id="iceConnectionState">-</dd>
+          <dt>Signal</dt>
+          <dd id="signalingState">-</dd>
+          <dt>ICE Gather</dt>
+          <dd id="iceGatheringState">-</dd>
           <dt>WebSocket</dt>
           <dd id="wsState">idle</dd>
           <dt>Stream</dt>
@@ -40,6 +67,26 @@
           <dd id="personCount">0</dd>
           <dt>Latency</dt>
           <dd id="latency">-</dd>
+          <dt>Video FPS</dt>
+          <dd id="videoFps">-</dd>
+          <dt>WS FPS</dt>
+          <dd id="wsFps">-</dd>
+          <dt>Overlay FPS</dt>
+          <dd id="overlayFps">-</dd>
+          <dt>Overlay Age</dt>
+          <dd id="overlayAge">-</dd>
+          <dt>Video Frames</dt>
+          <dd id="videoFrames">-</dd>
+          <dt>Src Object</dt>
+          <dd id="hasSrcObject">-</dd>
+          <dt>Tracks</dt>
+          <dd id="srcObjectTracks">-</dd>
+          <dt>ReadyState</dt>
+          <dd id="videoReadyState">-</dd>
+          <dt>Video Size</dt>
+          <dd id="videoSize">-</dd>
+          <dt>AI FPS</dt>
+          <dd id="aiFps">-</dd>
         </dl>
         <section class="inspector">
           <h2>目标详情</h2>
@@ -80,7 +127,7 @@
         <pre id="statusBox">{}</pre>
       </aside>
     </main>
-    <script src="./overlay.js?v=state-reset"></script>
-    <script src="./app.js?v=state-reset"></script>
+    <script src="./overlay.js?v=video-manual-fall-event"></script>
+    <script src="./app.js?v=video-manual-fall-event"></script>
   </body>
 </html>

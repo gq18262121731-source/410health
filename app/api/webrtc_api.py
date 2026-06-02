@@ -19,6 +19,8 @@ async def webrtc_offer(
             camera_id=request.camera_id,
             sdp=request.sdp,
             type_=request.type,
+            prefer_latest_frame=request.prefer_latest_frame,
+            preferred_display_source=request.preferred_display_source,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -28,4 +30,3 @@ async def webrtc_offer(
 @router.post("/webrtc/candidate", response_model=AckResponse)
 async def webrtc_candidate(request: IceCandidateRequest) -> AckResponse:
     return AckResponse(ok=True, message="trickle ICE is reserved for a later phase")
-

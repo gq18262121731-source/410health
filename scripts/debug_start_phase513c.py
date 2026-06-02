@@ -22,7 +22,9 @@ def start_identity():
 def start_vision():
     env = os.environ.copy()
     env.update({
-        "DEFAULT_RTSP_URL": "rtsp://admin:admin@192.168.8.254:554/tcp/av0_1",
+        "DEFAULT_RTSP_URL": "rtsp://admin:admin@192.168.8.254:10554/tcp/av0_1",
+        "MAIN_STREAM_URL": "rtsp://admin:admin@192.168.8.254:10554/tcp/av0_0",
+        "ANALYSIS_STREAM_URL": "rtsp://admin:admin@192.168.8.254:10554/tcp/av0_1",
         "MOCK_CAMERA_ENABLED": "false",
         "ENABLE_TRACKING": "true",
         "ENABLE_IDENTITY_BINDING": "true",

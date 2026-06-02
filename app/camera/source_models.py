@@ -14,4 +14,8 @@ def mask_source_url(source_url: str | None) -> str | None:
 class CameraSourceConfig:
     camera_id: str
     source_url: str
-
+    main_source_url: str | None = None
+    analysis_source_url: str | None = None
+    output_height: int | None = None
+    jpeg_quality: int | None = None
+    write_fps: float | None = None

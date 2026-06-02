@@ -39,6 +39,7 @@ class FrameBuffer:
     def __init__(self, camera_id: str) -> None:
         self.camera_id = camera_id
         self._lock = threading.Lock()
+        self._updated = threading.Condition(self._lock)
         self._packet: FramePacket | None = None
         self._seq = 0
 
@@ -52,8 +53,21 @@ class FrameBuffer:
                 frame=frame,
             )
             self._packet = packet
+            self._updated.notify_all()
             return packet
 
     def latest(self) -> FramePacket | None:
         with self._lock:
             return self._packet
+
+    def wait_for_next(self, last_seq: int, timeout_sec: float) -> FramePacket | None:
+        deadline = time.monotonic() + max(timeout_sec, 0.0)
+        with self._updated:
+            while True:
+                packet = self._packet
+                if packet is not None and packet.seq > last_seq:
+                    return packet
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._packet
+                self._updated.wait(timeout=remaining)

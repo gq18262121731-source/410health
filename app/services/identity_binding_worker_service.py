@@ -85,7 +85,7 @@ class IdentityBindingWorkerService:
         if tracking is None or not tracking.objects:
             self.identity_binding_service.refresh_health()
             return
-        buffer = self.source_manager.get_buffer(camera_id)
+        buffer = self.source_manager.get_analysis_buffer(camera_id)
         packet = buffer.latest() if buffer else None
         if packet is None:
             self.identity_binding_service.refresh_health()

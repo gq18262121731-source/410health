@@ -13,7 +13,7 @@ from app.camera.reconnect_policy import ReconnectPolicy
 from app.camera.source_models import CameraSourceConfig
 from app.core.config import Settings
 from app.core.logger import get_logger
-from app.monitoring.metrics import FPSMeter
+from app.monitoring.metrics import FPSMeter, LatencyMeter
 
 logger = get_logger(__name__)
 
@@ -31,6 +31,7 @@ class CaptureWorkerStatus:
     capture_fps: float = 0.0
     reconnect_count: int = 0
     read_latency_ms: float | None = None
+    read_latency_avg_ms: float | None = None
     read_latency_max_ms: float | None = None
     read_timeout_count: int = 0
     stale_count: int = 0
@@ -38,6 +39,8 @@ class CaptureWorkerStatus:
     last_read_completed_at: str | None = None
     consecutive_slow_reads: int = 0
     reconnect_reason: str | None = None
+    last_restart_at: str | None = None
+    last_restart_reason: str | None = None
     capture_backend: str = "opencv"
     capture_process_alive: bool = False
     capture_process_pid: int | None = None
@@ -45,6 +48,12 @@ class CaptureWorkerStatus:
     capture_process_last_frame_age_ms: float | None = None
     capture_process_last_error: str | None = None
     capture_process_last_exit_code: int | None = None
+    capture_process_last_log: str | None = None
+    capture_process_last_failure_reason: str | None = None
+    capture_process_open_started_at: str | None = None
+    capture_process_opened_at: str | None = None
+    capture_process_first_frame_at: str | None = None
+    capture_process_source_fps: float | None = None
     capture_ipc_decode_errors: int = 0
     capture_ipc_dropped_frames: int = 0
     capture_output_width: int | None = None
@@ -66,6 +75,7 @@ class CaptureWorker:
         self._thread: threading.Thread | None = None
         self._status = CaptureWorkerStatus()
         self._fps = FPSMeter()
+        self._read_latency = LatencyMeter()
         self._lock = threading.Lock()
         self._policy = ReconnectPolicy(
             initial_delay_sec=settings.reconnect_initial_delay_sec,
@@ -109,6 +119,7 @@ class CaptureWorker:
             status.last_frame_at = packet.captured_at_iso
         status.stream_state = self._derive_stream_state(status)
         status.capture_fps = self._fps.fps
+        status.read_latency_avg_ms = self._read_latency.avg_ms
         return status
 
     def _run(self) -> None:
@@ -186,6 +197,8 @@ class CaptureWorker:
                 delay = self._policy.next_delay()
                 with self._lock:
                     self._status.reconnect_count += 1
+                    self._status.last_restart_at = datetime.now(timezone.utc).isoformat()
+                    self._status.last_restart_reason = self._status.reconnect_reason
                 logger.warning(
                     "camera_reconnect_scheduled camera_id=%s delay_sec=%.2f error=%s",
                     self.config.camera_id,
@@ -393,6 +406,8 @@ class CaptureWorker:
         now = datetime.now(timezone.utc).isoformat()
         with self._lock:
             self._status.read_latency_ms = round(latency_ms, 2)
+            self._read_latency.add(latency_ms)
+            self._status.read_latency_avg_ms = self._read_latency.avg_ms
             self._status.read_latency_max_ms = round(
                 max(latency_ms, self._status.read_latency_max_ms or 0.0),
                 2,

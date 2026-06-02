@@ -26,5 +26,11 @@ class VisionResult(BaseModel):
     frame_seq: int
     frame_width: int
     frame_height: int
+    analysis_frame_width: int | None = None
+    analysis_frame_height: int | None = None
+    display_frame_width: int | None = None
+    display_frame_height: int | None = None
+    display_source: str | None = None
+    analysis_source: str | None = None
     objects: list[DetectedObject] = Field(default_factory=list)
     detector: dict = Field(default_factory=dict)

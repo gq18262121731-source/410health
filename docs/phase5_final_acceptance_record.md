@@ -10,14 +10,20 @@ Phase 5 的目标是完成规则版跌倒判定闭环，并把它接入当前实
 - 公开数据集规则验收。
 - Identity Binding 异步化，解除 TrackingWorker 热路径阻塞。
 - Capture Isolation 第一版，使用 `subprocess_opencv` 隔离 RTSP/OpenCV capture 风险。
+- Dual Stream Runtime：主码流高清显示，子码流 AI 分析。
 
 ## 2. 当前系统能力
 当前系统链路：
 
 ```text
-RTSP
+RTSP main_stream (/tcp/av0_0)
 -> subprocess_opencv capture child process
--> FrameBuffer latest-frame
+-> main FrameBuffer latest-frame
+-> WebRTC display
+
+RTSP analysis_stream (/tcp/av0_1)
+-> subprocess_opencv capture child process
+-> analysis FrameBuffer latest-frame
 -> YOLO detect
 -> TrackingWorker
 -> Async IdentityBindingWorker
@@ -25,13 +31,14 @@ RTSP
 -> Behavior
 -> Temporal rule preview
 -> ResultPublisher
--> WebRTC + WebSocket frontend demo
+-> WebSocket frontend overlay
 ```
 
 当前具备能力：
 
 - 真实 RTSP 摄像头输入。
 - Capture 子进程隔离，主进程不直接承受 OpenCV `cap.read()` 长阻塞。
+- 双流运行时：`av0_0` 只用于高清显示，`av0_1` 只用于 AI 分析。
 - `FrameBuffer(maxsize=1)` latest-frame 语义。
 - YOLO person detection。
 - TrackingWorker 高频目标状态输出。
@@ -126,7 +133,17 @@ Phase 5.13C connected_ratio: 99.48%
 ## 6. 当前推荐运行配置
 比赛/测试阶段推荐配置：
 
+当前 RTSP 基线固定为 `10554` 端口；除非有明确指令，不允许自动回退到
+`554`、自动尝试 `8554`、混用多个 RTSP 端口，或使用 `192.168.8.246`
+作为当前验收基线。
+
 ```text
+ENABLE_DUAL_STREAM=true
+MAIN_STREAM_URL=rtsp://admin:你的密码@192.168.8.254:10554/tcp/av0_0
+ANALYSIS_STREAM_URL=rtsp://admin:你的密码@192.168.8.254:10554/tcp/av0_1
+MAIN_CAPTURE_BACKEND=subprocess_opencv
+ANALYSIS_CAPTURE_BACKEND=subprocess_opencv
+
 CAPTURE_BACKEND=subprocess_opencv
 CAPTURE_PROCESS_FRAME_TIMEOUT_MS=2000
 CAPTURE_PROCESS_RESTART_MS=500
@@ -153,12 +170,38 @@ RESULT_PUBLISH_FPS=10
 
 说明：`CAPTURE_PROCESS_MAX_RESTARTS=0` 表示 unlimited。
 
+双流说明：
+
+- `av0_0` 只用于 WebRTC 高清显示。
+- `av0_1` 只用于 Detection / Tracking / Pose / Behavior / Temporal。
+- AI 不再使用主码流 `av0_0`。
+- fallback 暂不启用，如后续真实演示需要再进入单独阶段。
+
+Phase 5.15F 双流 30 分钟长稳验收：
+
+```text
+main_connected_ratio: 99.94%
+main_max_frame_age_ms: 2953ms
+main_frame_age > 3000ms: 0
+
+analysis_connected_ratio: 99.83%
+analysis_max_frame_age_ms: 4156ms
+analysis_frame_age > 3000ms: 2
+
+tracking_worker_fps avg/min: 10.699 / 7.80
+result_publish_fps avg/min: 9.174 / 7.21
+pipeline_errors: 0
+temporal_errors: 0
+```
+
 ## 7. 当前边界
 当前系统仍有以下边界：
 
 - `subprocess_opencv` 仍然使用 OpenCV，只是隔离到了子进程。
 - capture 子进程异常退出或重启后，仍可能出现几秒连接窗口。
 - 当前 capture 输出为 720p、JPEG quality 60、10fps，优先稳定而非画质。
+- 双流 overlay 使用主/子码流比例映射；快速移动时可能因主/子码流时间差出现轻微滞后。
+- fallback 仍未启用：主流或分析流断开时，后续可单独做 fallback 阶段。
 - Temporal 仍是规则 preview，不是最终智能模型。
 - `fallen_candidate / fallen_confirmed` 仍偏保守。
 - 公开数据集规模仍小，不能作为正式算法泛化能力证明。
@@ -170,7 +213,7 @@ Phase 5 封版建议：
 ```text
 Phase 5 AI pipeline 可以封版。
 Phase 5 runtime 可以阶段性封版。
-当前比赛/测试建议使用 CAPTURE_BACKEND=subprocess_opencv。
+当前比赛/测试建议使用 dual stream + subprocess_opencv。
 ```
 
 暂不进入 `ffmpeg subprocess` backend，除非后续真实演示仍出现不可接受 stale，或需要更强的 RTSP low-latency/reconnect 可控性。
