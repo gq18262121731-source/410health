@@ -150,8 +150,13 @@ function fallReviewAction(alarm: AlarmRecord) {
 }
 
 function fallSnapshotAvailable(alarm: AlarmRecord) {
-  const path = fallEvent(alarm)?.snapshot_path;
-  return typeof path === "string" && path.trim().length > 0;
+  const event = fallEvent(alarm);
+  const path = event?.snapshot_path;
+  const directUrl = event?.snapshot_url;
+  return (
+    (typeof directUrl === "string" && directUrl.trim().length > 0) ||
+    (typeof path === "string" && path.trim().length > 0)
+  );
 }
 
 function isSeriousFallAlarm(alarm: AlarmRecord) {

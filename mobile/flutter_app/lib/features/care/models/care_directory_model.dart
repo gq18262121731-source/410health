@@ -20,6 +20,7 @@ class CareDirectoryElder {
   final String apartment;
   final String deviceMac;
   final List<String> deviceMacs;
+  final String? cameraId;
 
   CareDirectoryElder({
     required this.id,
@@ -27,6 +28,7 @@ class CareDirectoryElder {
     required this.apartment,
     required this.deviceMac,
     required this.deviceMacs,
+    required this.cameraId,
   });
 
   factory CareDirectoryElder.fromJson(Map<String, dynamic> json) {
@@ -36,6 +38,7 @@ class CareDirectoryElder {
       apartment: json['apartment'] as String? ?? '--',
       deviceMac: json['device_mac'] as String? ?? '',
       deviceMacs: List<String>.from(json['device_macs'] ?? const []),
+      cameraId: json['camera_id'] as String?,
     );
   }
 }

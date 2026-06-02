@@ -147,6 +147,51 @@ class CareProvider extends ChangeNotifier {
     }
   }
 
+  Future<bool> bindElderCamera({
+    required String elderId,
+    required String cameraId,
+  }) async {
+    if (_isMutating) return false;
+    stopAutoRefresh();
+    _isMutating = true;
+    _errorMessage = null;
+    _notifyIfAlive();
+
+    try {
+      await _repository.bindElderCamera(elderId: elderId, cameraId: cameraId);
+      await fetchProfile(silent: true, notify: false);
+      return true;
+    } catch (error) {
+      _errorMessage = _extractApiErrorMessage(error, '绑定摄像头失败，请稍后重试');
+      return false;
+    } finally {
+      _isMutating = false;
+      _notifyIfAlive();
+    }
+  }
+
+  Future<bool> unbindElderCamera({
+    required String elderId,
+  }) async {
+    if (_isMutating) return false;
+    stopAutoRefresh();
+    _isMutating = true;
+    _errorMessage = null;
+    _notifyIfAlive();
+
+    try {
+      await _repository.unbindElderCamera(elderId: elderId);
+      await fetchProfile(silent: true, notify: false);
+      return true;
+    } catch (error) {
+      _errorMessage = _extractApiErrorMessage(error, '解绑摄像头失败，请稍后重试');
+      return false;
+    } finally {
+      _isMutating = false;
+      _notifyIfAlive();
+    }
+  }
+
   void startAutoRefresh({Duration interval = const Duration(seconds: 4)}) {
     if (!_sessionManager.isAuthenticated) {
       return;

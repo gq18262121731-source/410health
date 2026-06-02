@@ -194,7 +194,8 @@ const fallScoreLabel = computed(() => {
 
 const fallSnapshotUrl = computed(() => {
   const path = stringValue(fallEvent(primaryFallAlarm.value)?.snapshot_path);
-  return path ? api.getCameraFallSnapshotUrl(path) : "";
+  const directUrl = stringValue(fallEvent(primaryFallAlarm.value)?.snapshot_url);
+  return directUrl || path ? api.getCameraFallSnapshotUrl(directUrl || path) : "";
 });
 
 const fallRiskTitle = computed(() => {

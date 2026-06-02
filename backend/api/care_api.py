@@ -4,18 +4,21 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException
+from pydantic import BaseModel
 
 from backend.dependencies import (
     get_alarm_service,
     get_care_service,
     get_data_analysis_service,
     get_device_service,
+    get_elder_camera_binding_service,
     get_display_latest_sample,
     get_effective_device_ingest_mode,
     get_score_repo,
     get_stream_service,
     get_user_service,
     require_session_user,
+    get_camera_source_registry,
 )
 from backend.models.auth_model import SessionUser
 from backend.models.care_model import (
@@ -42,6 +45,10 @@ from backend.models.user_model import UserRole
 
 
 router = APIRouter(prefix="/care", tags=["care"])
+
+
+class ElderCameraBindingRequest(BaseModel):
+    camera_id: str
 
 
 def _require_authenticated_user(authorization: str | None) -> SessionUser:
@@ -568,6 +575,12 @@ async def get_family_directory(family_id: str) -> CareDirectory:
 async def get_access_profile(authorization: str | None = Header(default=None)) -> CareAccessProfile:
     user = _require_authenticated_user(authorization)
     elder_ids, devices = _user_bound_devices(user)
+    directory = get_care_service().get_directory()
+    elder_camera_ids = [
+        elder.camera_id
+        for elder in directory.elders
+        if elder.id in elder_ids and elder.camera_id
+    ]
 
     if user.role not in {UserRole.ELDER, UserRole.FAMILY}:
         return CareAccessProfile(
@@ -578,6 +591,7 @@ async def get_access_profile(authorization: str | None = Header(default=None)) -
             binding_state="not_applicable",
             bound_device_macs=[],
             related_elder_ids=[],
+            related_camera_ids=[],
             capabilities=CareFeatureAccess(
                 basic_advice=False,
                 device_metrics=False,
@@ -605,12 +619,59 @@ async def get_access_profile(authorization: str | None = Header(default=None)) -
         binding_state=binding_state,
         bound_device_macs=[device.mac_address for device in devices],
         related_elder_ids=elder_ids,
+        related_camera_ids=elder_camera_ids,
         capabilities=capabilities,
         basic_advice=_basic_advice(user, binding_state),
         device_metrics=_device_metrics(devices) if devices else [],
         health_evaluations=_health_evaluations(devices) if devices else [],
         health_reports=_health_reports(devices) if devices else [],
     )
+
+
+@router.put("/elders/{elder_id}/camera-binding")
+async def bind_elder_camera(
+    elder_id: str,
+    payload: ElderCameraBindingRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    user = _require_authenticated_user(authorization)
+    care_service = get_care_service()
+    directory = care_service.get_directory()
+    elder = next((item for item in directory.elders if item.id == elder_id), None)
+    if elder is None:
+        raise HTTPException(status_code=404, detail="ELDER_NOT_FOUND")
+    if user.role == UserRole.ELDER and user.id != elder_id:
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+    if user.role == UserRole.FAMILY and elder_id not in care_service.resolve_family_elder_ids(user.id):
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+    if user.role not in {UserRole.ELDER, UserRole.FAMILY, UserRole.COMMUNITY, UserRole.ADMIN}:
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+    try:
+        get_camera_source_registry().get_source(payload.camera_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="CAMERA_SOURCE_NOT_FOUND") from exc
+    result = get_elder_camera_binding_service().set_camera_id(elder_id, payload.camera_id)
+    return {"ok": True, **result}
+
+
+@router.delete("/elders/{elder_id}/camera-binding")
+async def unbind_elder_camera(
+    elder_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    user = _require_authenticated_user(authorization)
+    care_service = get_care_service()
+    directory = care_service.get_directory()
+    elder = next((item for item in directory.elders if item.id == elder_id), None)
+    if elder is None:
+        raise HTTPException(status_code=404, detail="ELDER_NOT_FOUND")
+    if user.role == UserRole.ELDER and user.id != elder_id:
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+    if user.role == UserRole.FAMILY and elder_id not in care_service.resolve_family_elder_ids(user.id):
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+    if user.role not in {UserRole.ELDER, UserRole.FAMILY, UserRole.COMMUNITY, UserRole.ADMIN}:
+        raise HTTPException(status_code=403, detail="FORBIDDEN")
+    return {"ok": True, **get_elder_camera_binding_service().clear_camera_id(elder_id)}
 
 
 @router.get("/community/dashboard", response_model=CommunityDashboardSummary)

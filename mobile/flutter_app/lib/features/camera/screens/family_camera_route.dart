@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../care/providers/care_provider.dart';
 import '../providers/camera_provider.dart';
 import 'family_camera_screen.dart';
 
@@ -25,6 +26,11 @@ class _FamilyCameraRouteState extends State<FamilyCameraRoute> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _cameraProvider ??= context.read<CameraProvider>();
+    final careProfile = context.read<CareProvider>().profile;
+    final preferredCameraId = careProfile?.relatedCameraIds.isNotEmpty == true
+        ? careProfile!.relatedCameraIds.first
+        : null;
+    _cameraProvider?.setPreferredCameraId(preferredCameraId);
     if (!_started) {
       _started = true;
       _cameraProvider?.start();
@@ -34,6 +40,7 @@ class _FamilyCameraRouteState extends State<FamilyCameraRoute> {
   @override
   void dispose() {
     _cameraProvider?.stopFrameRefresh();
+    _cameraProvider?.setPreferredCameraId(null);
     super.dispose();
   }
 

@@ -82,3 +82,14 @@ docs/change_backups/
 backend/workers/__pycache__/
 mobile/flutter_app/lib/features/alarm/widgets/*_copy.dart
 mobile/flutter_app/lib/features/alarm/widgets/*_excerpt.dart
+
+# Local runtime and acceptance artifacts
+.env.local
+*.log
+*.pid
+health/
+artifacts/
+apk_acceptance_*.png
+apk_acceptance_*.xml
+fall_alarm_loop_pc.png
+video_bridge_placeholder.png

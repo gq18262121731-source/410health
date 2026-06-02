@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+import requests
 
 from backend.config import get_settings
 from backend.dependencies import (
@@ -65,6 +66,33 @@ class CameraSetupConfigRequest(BaseModel):
     camera_stream_rtsp_path: str | None = None
     camera_audio_rtsp_path: str | None = None
     camera_onvif_port: int | None = None
+
+
+def _capture_vision_service_latest_frame() -> tuple[bytes, dict[str, str]] | None:
+    settings = get_settings()
+    if not settings.vision_service_poll_enabled:
+        return None
+    url = f"{settings.vision_service_base_url.rstrip('/')}/stream/frame/latest"
+    params = {
+        "camera_id": settings.vision_service_camera_id or "camera_01",
+        "source": "display",
+    }
+    try:
+        response = requests.get(url, params=params, timeout=settings.vision_service_timeout_seconds)
+        response.raise_for_status()
+    except requests.RequestException:
+        return None
+    if "jpeg" not in response.headers.get("content-type", "").lower():
+        return None
+    return (
+        response.content,
+        {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Camera-Source": "vision-service-latest-frame",
+        },
+    )
 
 
 class PoseDetectionConfigRequest(BaseModel):
@@ -561,6 +589,22 @@ async def camera_setup_test_snapshot(payload: CameraSetupConfigRequest) -> Respo
                 "in the browser; backend OpenCV test snapshots are disabled"
             ),
         )
+    frame = get_camera_source_frame_hub("active").latest_frame()
+    if frame and len(frame) > 100:
+        return Response(
+            content=frame,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "X-Camera-Source": "vision-service-frame-cache",
+            },
+        )
+    vision_frame = await asyncio.to_thread(_capture_vision_service_latest_frame)
+    if vision_frame is not None:
+        image_bytes, headers = vision_frame
+        return Response(content=image_bytes, media_type="image/jpeg", headers=headers)
     try:
         image_bytes, headers = await asyncio.to_thread(CameraService(settings).capture_jpeg)
     except RuntimeError as exc:
@@ -1003,6 +1047,22 @@ async def camera_snapshot() -> Response:
     active = get_camera_source_registry().active_source()
     active_settings = get_camera_source_settings(active.camera_id)
     service = CameraService(active_settings)
+    frame = get_camera_source_frame_hub("active").latest_frame()
+    if frame and len(frame) > 100:
+        return Response(
+            content=frame,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "X-Camera-Source": "active-stream-cache",
+            },
+        )
+    vision_frame = await asyncio.to_thread(_capture_vision_service_latest_frame)
+    if vision_frame is not None:
+        image_bytes, headers = vision_frame
+        return Response(content=image_bytes, media_type="image/jpeg", headers=headers)
     if active_settings.camera_source_mode == "local":
         frame = get_camera_source_frame_hub("active").latest_frame()
         if frame and len(frame) > 100:
@@ -1047,6 +1107,10 @@ async def camera_processed_snapshot() -> Response:
     if frame is None:
         frame = get_camera_source_frame_hub("active").latest_frame()
     if frame is None:
+        vision_frame = await asyncio.to_thread(_capture_vision_service_latest_frame)
+        if vision_frame is not None:
+            image_bytes, headers = vision_frame
+            return Response(content=image_bytes, media_type="image/jpeg", headers=headers)
         try:
             frame = await _latest_camera_frame_for_overlay()
         except HTTPException as exc:

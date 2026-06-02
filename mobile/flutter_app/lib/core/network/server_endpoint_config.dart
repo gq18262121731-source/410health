@@ -16,7 +16,7 @@ class ServerEndpointConfig extends ChangeNotifier {
 
   ServerEndpointConfig(this._prefs) {
     _host = _prefs.getString(_keyHost) ?? _defaultHost();
-    _port = _prefs.getInt(_keyPort) ?? 8000;
+    _port = _prefs.getInt(_keyPort) ?? 18080;
     _scheme = _normalizeScheme(_prefs.getString(_keyScheme) ?? 'http');
   }
 
@@ -70,7 +70,7 @@ class ServerEndpointConfig extends ChangeNotifier {
       return '请输入 1 到 65535 之间的端口。';
     }
     if (isReservedFrontendPort(port)) {
-      return '当前移动端只能连接后端 8000 端口，不能填写 5173/5182/7860/8090 这类前端或工具端口。';
+      return '当前移动端只能连接后端 18080 端口，不能填写 5173/5182/7860/8090 这类前端或工具端口。';
     }
     if (isAndroidRealDeviceMode && normalizedHost == '10.0.2.2') {
       return '10.0.2.2 仅适用于 Android 模拟器，不适用于真机。请填写运行后端服务那台电脑的局域网 IP。';
@@ -88,7 +88,7 @@ class ServerEndpointConfig extends ChangeNotifier {
 
   String suggestRealDeviceOrigin({String? preferredHost}) {
     final candidate = (preferredHost?.trim().isNotEmpty ?? false) ? preferredHost!.trim() : '192.168.8.252';
-    return 'http://$candidate:8000';
+    return 'http://$candidate:18080';
   }
 
   Future<void> save({
@@ -141,16 +141,16 @@ class ServerEndpointConfig extends ChangeNotifier {
       if (response.statusCode == 200 && data is Map && data['status'] == 'ok') {
         return null;
       }
-      return '服务器有响应，但这不是可用的后端健康检查接口。请确认填写的是后端服务地址，例如 http://<局域网IP>:8000。';
+      return '服务器有响应，但这不是可用的后端健康检查接口。请确认填写的是后端服务地址，例如 http://<局域网IP>:18080。';
     } on DioException catch (error) {
       if (error.type == DioExceptionType.connectionTimeout ||
           error.type == DioExceptionType.receiveTimeout) {
-        return '连接超时。请确认手机和平板与运行后端的电脑在同一局域网，并检查地址是否应为类似 192.168.8.xxx:8000。';
+        return '连接超时。请确认手机和平板与运行后端的电脑在同一局域网，并检查地址是否应为类似 192.168.8.xxx:18080。';
       }
       if (error.type == DioExceptionType.connectionError) {
         final message = (error.message ?? '').toLowerCase();
         if (message.contains('connection refused')) {
-          return '后端地址可达，但 8000 端口未响应。请确认后端服务已经启动。';
+          return '后端地址可达，但 18080 端口未响应。请确认后端服务已经启动。';
         }
         return '无法连接到后端服务。请检查局域网 IP、端口和 Windows 防火墙设置。';
       }

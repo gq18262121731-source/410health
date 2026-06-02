@@ -966,6 +966,18 @@ export interface VideoBridgeStatusResponse {
   latest?: VideoBridgeAnalysisRecord | null;
   cameras: VideoBridgeAnalysisRecord[];
   notes: string[];
+  vision_service?: {
+    enabled?: boolean;
+    base_url?: string;
+    camera_id?: string;
+    poll_hz?: number;
+    last_poll_at?: string | null;
+    last_ok_at?: string | null;
+    last_error?: string | null;
+    health?: unknown;
+    source?: unknown;
+    latest_received_at?: string | null;
+  };
 }
 
 export interface VideoBridgeIngestResponse {
@@ -976,6 +988,20 @@ export interface VideoBridgeIngestResponse {
   received_at: string;
   service_state: VideoBridgeServiceState;
   stale: boolean;
+}
+
+export interface VideoBridgeFallAlarmSimulationResponse {
+  ok: boolean;
+  accepted: boolean;
+  alarm: AlarmRecord;
+  camera_id: string;
+  stream_name: string;
+  risk: VideoBridgeRisk;
+  fall_prob: number;
+  snapshot_url: string;
+  triggered_at: string;
+  elder_id?: string;
+  elder_name?: string;
 }
 
 export interface CameraAudioStatusResponse {
@@ -1264,7 +1290,7 @@ export interface TargetUserCreateResponse {
   warnings: string[];
 }
 
-export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+export const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:18080/api/v1";
 
 function deriveWsBase() {
   const rawWsBase = (import.meta.env.VITE_WS_BASE ?? "").trim();
@@ -1289,7 +1315,7 @@ function deriveWsBase() {
     return window.location.origin.replace(/^http/i, "ws").replace(/\/$/, "");
   }
 
-  return "ws://localhost:8000";
+  return "ws://127.0.0.1:18080";
 }
 
 const WS_BASE = deriveWsBase();
@@ -1509,19 +1535,58 @@ export const api = {
       },
       { timeoutMs: 20000 },
     ),
-  getCameraFallSnapshotUrl: (path: string) =>
-    `${API_BASE}/camera/fall-detection/snapshot?path=${encodeURIComponent(path)}&t=${Date.now()}`,
+  getCameraFallSnapshotUrl: (path: string) => {
+    const normalized = path.trim();
+    if (/^https?:\/\//i.test(normalized)) return normalized;
+    if (normalized.startsWith("/api/v1/")) return `${API_BASE.replace(/\/api\/v1\/?$/i, "")}${normalized}`;
+    if (normalized.startsWith("/")) return normalized;
+    return `${API_BASE}/camera/fall-detection/snapshot?path=${encodeURIComponent(normalized)}&t=${Date.now()}`;
+  },
   getCameraSnapshotUrl: () => `${API_BASE}/camera/snapshot?t=${Date.now()}`,
   getCameraStreamUrl: () => `${API_BASE}/camera/stream.mjpg?t=${Date.now()}`,
   getCameraDetectionStreamUrl: () => `${API_BASE}/camera/stream.detect.mjpg?t=${Date.now()}`,
   getCameraPoseStreamUrl: () => `${API_BASE}/camera/stream.pose.mjpg?t=${Date.now()}`,
   getCameraProcessedStreamUrl: () => `${API_BASE}/camera/stream.processed.mjpg?t=${Date.now()}`,
   getVideoBridgeStatus: () => requestJson<VideoBridgeStatusResponse>(`${API_BASE}/video-bridge/status`),
+  pollVideoBridgeVisionOnce: () =>
+    requestJson<Record<string, unknown>>(`${API_BASE}/video-bridge/vision/poll-once`, { method: "POST" }),
+  probeVideoBridgeVisionStream: (payload: { host: string; port?: number; timeout_ms?: number }) =>
+    requestJson<Record<string, unknown>>(`${API_BASE}/video-bridge/vision/probe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }, { timeoutMs: 10000 }),
+  switchVideoBridgeVisionHost: (payload: {
+    camera_id?: string;
+    host: string;
+    username?: string;
+    password?: string;
+    port?: number;
+    main_path?: string;
+    analysis_path?: string;
+  }) =>
+    requestJson<Record<string, unknown>>(`${API_BASE}/video-bridge/vision/switch-host`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }, { timeoutMs: 15000 }),
   pushVideoBridgeAnalysis: (payload: Partial<VideoBridgeAnalysisRecord> & { camera_id: string }) =>
     requestJson<VideoBridgeIngestResponse>(`${API_BASE}/video-bridge/analysis`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+    }),
+  simulateVideoBridgeFallAlarm: (payload?: {
+    camera_id?: string;
+    stream_name?: string;
+    fall_prob?: number;
+    snapshot_url?: string;
+    track_id?: string;
+  }) =>
+    requestJson<VideoBridgeFallAlarmSimulationResponse>(`${API_BASE}/video-bridge/simulate-fall-alarm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
     }),
   cameraFrameSocket: () => new WebSocket(`${WS_BASE}/ws/camera`),
   cameraAudioSocket: () => new WebSocket(`${WS_BASE}/ws/camera/audio/listen`),

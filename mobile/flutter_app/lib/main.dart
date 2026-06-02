@@ -288,12 +288,6 @@ class _AiHealthAppState extends State<AiHealthApp> {
 
   @override
   Widget build(BuildContext context) {
-    final authStatus = context.watch<AuthProvider>().status;
-    final authUser = context.select<AuthProvider, Object?>(
-      (provider) => provider.user?.id ?? provider.user?.role ?? authStatus,
-    );
-    final homeKey = ValueKey<String>('app-home-shell-$authStatus-$authUser');
-
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'AIoT Health',
@@ -380,19 +374,23 @@ class _AiHealthAppState extends State<AiHealthApp> {
           hintStyle: const TextStyle(color: AppColors.textMuted),
         ),
       ),
-      home: GlobalAlarmListener(
-        child: KeyedSubtree(
-          key: homeKey,
-          child: _buildHome(context, authStatus),
-        ),
-      ),
+      home: const GlobalAlarmListener(child: _AuthGate()),
     );
+  }
+}
+
+class _AuthGate extends StatelessWidget {
+  const _AuthGate();
+
+  @override
+  Widget build(BuildContext context) {
+    final authStatus = context.watch<AuthProvider>().status;
+    return _buildHome(context, authStatus);
   }
 
   Widget _buildHome(BuildContext context, AuthStatus status) {
     if (status == AuthStatus.initial) {
       return const Scaffold(
-        key: ValueKey('app-home-initial'),
         backgroundColor: Color(0xFFF8FAFC),
         body:
             Center(child: CircularProgressIndicator(color: Color(0xFF2563EB))),
@@ -402,16 +400,14 @@ class _AiHealthAppState extends State<AiHealthApp> {
     if (status == AuthStatus.authenticated) {
       final user = context.read<AuthProvider>().user;
       if (user?.role == 'elder') {
-        return const ElderHomeScreen(key: ValueKey('app-home-elder'));
+        return const ElderHomeScreen();
       }
       if (user?.role == 'family') {
-        return const FamilyHomeScreen(key: ValueKey('app-home-family'));
+        return const FamilyHomeScreen();
       }
-      return const CommunityMobileNoticeScreen(
-        key: ValueKey('app-home-community'),
-      );
+      return const CommunityMobileNoticeScreen();
     }
 
-    return const LoginScreen(key: ValueKey('app-home-login'));
+    return const LoginScreen();
   }
 }

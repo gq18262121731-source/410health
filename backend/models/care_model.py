@@ -25,6 +25,7 @@ class ElderProfile(BaseModel):
     community_id: str
     device_mac: str
     device_macs: list[str] = Field(default_factory=list)
+    camera_id: str | None = None
     family_ids: list[str] = Field(default_factory=list)
 
 
@@ -256,6 +257,7 @@ class CareAccessProfile(BaseModel):
     binding_state: Literal["bound", "unbound", "not_applicable"]
     bound_device_macs: list[str] = Field(default_factory=list)
     related_elder_ids: list[str] = Field(default_factory=list)
+    related_camera_ids: list[str] = Field(default_factory=list)
     capabilities: CareFeatureAccess
     basic_advice: str
     device_metrics: list[CareAccessDeviceMetric] = Field(default_factory=list)

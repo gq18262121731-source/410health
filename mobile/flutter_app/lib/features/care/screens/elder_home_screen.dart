@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../core/theme/app_colors.dart';
 import '../../../widgets/logout_action.dart';
 import '../../agent/widgets/ai_chat_dialog.dart';
 import '../../auth/providers/auth_provider.dart';
-import '../../../core/theme/app_colors.dart';
+import '../../camera/repositories/camera_repository.dart';
 import '../../voice/screens/voice_screen.dart';
 import '../models/care_profile_model.dart';
 import '../providers/care_provider.dart';
@@ -20,6 +21,8 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
   CareProvider? _careProvider;
   bool _isBindingDevice = false;
   bool _isUnbindingDevice = false;
+  bool _isBindingCamera = false;
+  bool _isUnbindingCamera = false;
 
   @override
   void initState() {
@@ -91,12 +94,19 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
           children: [
             Text(
               provider.errorMessage ?? '加载失败',
-              style: const TextStyle(color: AppColors.textSub, fontSize: 22, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: AppColors.textSub,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 24),
             ElevatedButton(
               onPressed: () => provider.fetchProfile(),
-              child: const Text('重试', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Colors.white)),
+              child: const Text(
+                '重试',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: Colors.white),
+              ),
             ),
           ],
         ),
@@ -111,6 +121,9 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
     final hasRealtimeSample = metric?.hasRealtimeSample ?? false;
     final deviceStatus = metric?.deviceStatus ?? 'unknown';
     final batteryLabel = metric?.battery != null ? '${metric!.battery}%' : '--';
+    final currentCameraId = profile.relatedCameraIds.isNotEmpty
+        ? profile.relatedCameraIds.first
+        : null;
 
     return SingleChildScrollView(
       child: Padding(
@@ -128,11 +141,9 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
               batteryLabel,
             ),
             const SizedBox(height: 20),
-            _buildRealtimeMetrics(
-              metric,
-              hasDevice: hasDevice,
-              hasRealtimeSample: hasRealtimeSample,
-            ),
+            _buildRealtimeMetrics(metric),
+            const SizedBox(height: 20),
+            _buildCameraBindingCard(provider, currentCameraId),
             const SizedBox(height: 24),
             Row(
               children: [
@@ -189,7 +200,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
               profile.basicAdvice.isNotEmpty
                   ? profile.basicAdvice
                   : hasDevice
-                      ? '当前账号已绑定到有效设备链路，可查看设备指标、评估结果和健康报告摘要。'
+                      ? '当前账号已绑定到有效设备链路，可以查看设备指标、评估结果和健康报告摘要。'
                       : '请先登记并绑定手环，绑定成功后就能在这里看到实时指标和提醒。',
             ),
           ],
@@ -205,26 +216,15 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
       decoration: BoxDecoration(
         color: AppColors.primary,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.2),
-            blurRadius: 15,
-            offset: const Offset(0, 8),
-          )
-        ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Text(
-            elderName,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 48,
-              fontWeight: FontWeight.w900,
-            ),
-          ),
-        ],
+      child: Text(
+        elderName,
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 48,
+          fontWeight: FontWeight.w900,
+        ),
       ),
     );
   }
@@ -253,13 +253,6 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
                   : AppColors.warning)
               : AppColors.error,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          )
-        ],
       ),
       child: Column(
         children: [
@@ -284,39 +277,11 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
             Text(
               '${metric.deviceName} · ${metric.deviceMac}',
               textAlign: TextAlign.center,
-              style: const TextStyle(color: AppColors.textSub, fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            if (!hasRealtimeSample) ...[
-              const SizedBox(height: 12),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppColors.warning.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: AppColors.warning.withValues(alpha: 0.35),
-                    width: 1.5,
-                  ),
-                ),
-                child: const Text(
-                  '手环已绑定，正在等待第一批健康数据。请保持佩戴并等待 10-30 秒。',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: AppColors.warning,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w900,
-                    height: 1.35,
-                  ),
-                ),
+              style: const TextStyle(
+                color: AppColors.textSub,
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
               ),
-            ],
-          ] else ...[
-            const SizedBox(height: 8),
-            const Text(
-              '请戴好手环，数据会自动同步。',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: AppColors.textSub, fontSize: 20, fontWeight: FontWeight.bold),
             ),
           ],
           const SizedBox(height: 12),
@@ -337,79 +302,17 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
     );
   }
 
-  Widget _buildRealtimeMetrics(
-    CareAccessDeviceMetric? metric, {
-    required bool hasDevice,
-    required bool hasRealtimeSample,
-  }) {
+  Widget _buildRealtimeMetrics(CareAccessDeviceMetric? metric) {
     return Wrap(
       spacing: 12,
       runSpacing: 12,
       children: [
-        if (hasDevice && !hasRealtimeSample)
-          Container(
-            width: MediaQuery.of(context).size.width - 48,
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFFBEB),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
-            ),
-            child: const Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(Icons.sync, color: Color(0xFFF59E0B), size: 28),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    '已连接手环，但暂未收到有效健康数据包。页面会自动刷新，收到后会立即显示心率、血氧、血压等指标。',
-                    style: TextStyle(
-                      color: Color(0xFF92400E),
-                      fontSize: 18,
-                      fontWeight: FontWeight.w800,
-                      height: 1.35,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        _buildMetricCard(
-          '心率',
-          _formatDouble(metric?.heartRate),
-          'bpm',
-          Icons.favorite,
-        ),
-        _buildMetricCard(
-          '血压',
-          metric?.bloodPressure ?? '--',
-          'mmHg',
-          Icons.bloodtype,
-        ),
-        _buildMetricCard(
-          '血氧',
-          _formatDouble(metric?.bloodOxygen),
-          '%',
-          Icons.water_drop,
-        ),
-        _buildMetricCard(
-          '体温',
-          _formatDouble(metric?.temperature, fractionDigits: 1),
-          '°C',
-          Icons.thermostat,
-        ),
-        _buildMetricCard(
-          '步数',
-          metric?.steps?.toString() ?? '--',
-          '步',
-          Icons.directions_walk,
-        ),
-        _buildMetricCard(
-          '健康度',
-          metric?.healthScore?.toString() ?? '--',
-          '分',
-          Icons.monitor_heart,
-        ),
+        _buildMetricCard('心率', _formatDouble(metric?.heartRate), 'bpm', Icons.favorite),
+        _buildMetricCard('血压', metric?.bloodPressure ?? '--', 'mmHg', Icons.bloodtype),
+        _buildMetricCard('血氧', _formatDouble(metric?.bloodOxygen), '%', Icons.water_drop),
+        _buildMetricCard('体温', _formatDouble(metric?.temperature, fractionDigits: 1), '°C', Icons.thermostat),
+        _buildMetricCard('步数', metric?.steps?.toString() ?? '--', '步', Icons.directions_walk),
+        _buildMetricCard('健康度', metric?.healthScore?.toString() ?? '--', '分', Icons.monitor_heart),
       ],
     );
   }
@@ -426,17 +329,9 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          )
-        ],
         border: Border.all(color: AppColors.border, width: 2),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Icon(icon, color: const Color(0xFF2563EB), size: 42),
           const SizedBox(height: 12),
@@ -453,7 +348,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
                   text: value,
                   style: const TextStyle(
                     color: AppColors.textMain,
-                    fontSize: 56, // Enormous font for elders
+                    fontSize: 56,
                     fontWeight: FontWeight.w900,
                   ),
                 ),
@@ -469,6 +364,181 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
     );
   }
 
+  Widget _buildCameraBindingCard(CareProvider provider, String? currentCameraId) {
+    final busy = _isBindingCamera || _isUnbindingCamera || provider.isMutating;
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.border, width: 2),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.videocam_outlined, color: AppColors.primary, size: 30),
+              SizedBox(width: 10),
+              Text(
+                '摄像头绑定',
+                style: TextStyle(
+                  color: AppColors.textMain,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            currentCameraId == null || currentCameraId.isEmpty
+                ? '当前未绑定摄像头'
+                : '当前摄像头：$currentCameraId',
+            style: const TextStyle(
+              color: AppColors.textMain,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: busy ? null : () => _showBindCameraDialog(provider),
+                  icon: const Icon(Icons.link, color: Colors.white),
+                  label: Text(
+                    busy ? '处理中...' : (currentCameraId == null || currentCameraId.isEmpty ? '绑定摄像头' : '更换摄像头'),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Colors.white),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                ),
+              ),
+              if (currentCameraId != null && currentCameraId.isNotEmpty) ...[
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: busy ? null : () => _unbindCamera(provider),
+                    icon: const Icon(Icons.link_off, color: AppColors.warning),
+                    label: const Text(
+                      '解绑摄像头',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.warning),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: const BorderSide(color: AppColors.warning, width: 2),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showBindCameraDialog(CareProvider provider) async {
+    final elderId = provider.profile?.userId;
+    if (elderId == null || elderId.isEmpty) return;
+    final cameraRepository = context.read<CameraRepository>();
+    final sources = await cameraRepository.listCameraSources();
+    if (!mounted) return;
+    final enabledSources = sources.where((item) => item.enabled).toList(growable: false);
+    if (enabledSources.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('当前没有可用摄像头源')),
+      );
+      return;
+    }
+    String selectedCameraId =
+        provider.profile?.relatedCameraIds.isNotEmpty == true
+            ? provider.profile!.relatedCameraIds.first
+            : enabledSources.first.cameraId;
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('选择摄像头'),
+        content: StatefulBuilder(
+          builder: (context, setState) => SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: enabledSources
+                  .map(
+                    (source) => RadioListTile<String>(
+                      value: source.cameraId,
+                      groupValue: selectedCameraId,
+                      title: Text(source.label),
+                      subtitle: Text('${source.cameraId} · ${source.sourceMode}'),
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setState(() => selectedCameraId = value);
+                      },
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, selectedCameraId),
+            child: const Text('确认绑定'),
+          ),
+        ],
+      ),
+    );
+    if (picked == null || picked.isEmpty) return;
+    setState(() => _isBindingCamera = true);
+    try {
+      final success = await provider.bindElderCamera(elderId: elderId, cameraId: picked);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? '摄像头绑定成功' : (provider.errorMessage ?? '摄像头绑定失败')),
+          backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isBindingCamera = false);
+        _resumeAutoRefreshAfterBuild(provider);
+      }
+    }
+  }
+
+  Future<void> _unbindCamera(CareProvider provider) async {
+    final elderId = provider.profile?.userId;
+    if (elderId == null || elderId.isEmpty) return;
+    setState(() => _isUnbindingCamera = true);
+    try {
+      final success = await provider.unbindElderCamera(elderId: elderId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? '摄像头已解绑' : (provider.errorMessage ?? '解绑摄像头失败')),
+          backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isUnbindingCamera = false);
+        _resumeAutoRefreshAfterBuild(provider);
+      }
+    }
+  }
+
   Widget _buildBindDeviceButton(CareProvider provider) {
     final isBusy = _isBindingDevice || provider.isMutating;
     return ElevatedButton.icon(
@@ -482,11 +552,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
           : const Icon(Icons.add_link, size: 32, color: Colors.white),
       label: Text(
         isBusy ? '处理中...' : '绑定新手环',
-        style: const TextStyle(
-          fontSize: 26,
-          color: Colors.white,
-          fontWeight: FontWeight.w900,
-        ),
+        style: const TextStyle(fontSize: 26, color: Colors.white, fontWeight: FontWeight.w900),
       ),
       style: ElevatedButton.styleFrom(
         padding: const EdgeInsets.symmetric(vertical: 24),
@@ -499,60 +565,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
   Widget _buildUnbindDeviceButton(CareProvider provider) {
     final isBusy = _isUnbindingDevice || provider.isMutating;
     return OutlinedButton.icon(
-      onPressed: isBusy
-          ? null
-          : () async {
-              final confirmed = await showDialog<bool>(
-                context: context,
-                builder: (dialogContext) => AlertDialog(
-                  backgroundColor: AppColors.surface,
-                  shape: RoundedRectangleBorder(
-                    side: const BorderSide(color: AppColors.warning, width: 2),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  title: const Text(
-                    '解绑手环设备',
-                    style: TextStyle(
-                      color: AppColors.warning,
-                      fontWeight: FontWeight.w900,
-                      fontSize: 24,
-                    ),
-                  ),
-                  content: const Text(
-                    '确认解绑后，这只手环会与当前账号解除绑定，实时健康数据将停止同步。',
-                    style: TextStyle(
-                      color: AppColors.textMain,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      height: 1.5,
-                    ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(dialogContext, false),
-                      child: const Text(
-                        '取消',
-                        style: TextStyle(color: AppColors.textSub, fontSize: 20, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(dialogContext, true),
-                      child: const Text(
-                        '确认解绑',
-                        style: TextStyle(
-                          color: AppColors.error,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 20,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-              if (confirmed != true) return;
-
-              await _performUnbindDevice(provider);
-            },
+      onPressed: isBusy ? null : () => _performUnbindDevice(provider),
       icon: isBusy
           ? const SizedBox(
               width: 24,
@@ -562,11 +575,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
           : const Icon(Icons.link_off, size: 28, color: AppColors.warning),
       label: Text(
         isBusy ? '处理中...' : '解绑手环设备',
-        style: const TextStyle(
-          fontSize: 22,
-          color: AppColors.warning,
-          fontWeight: FontWeight.w900,
-        ),
+        style: const TextStyle(fontSize: 22, color: AppColors.warning, fontWeight: FontWeight.w900),
       ),
       style: OutlinedButton.styleFrom(
         padding: const EdgeInsets.symmetric(vertical: 20),
@@ -606,7 +615,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
           const SizedBox(height: 16),
           Text(
             label,
-            style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: color, letterSpacing: 2),
+            style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: color),
           ),
         ],
       ),
@@ -618,7 +627,7 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
       width: double.infinity,
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: AppColors.elderBlueBg, // Light blue background
+        color: AppColors.elderBlueBg,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFBFDBFE), width: 2),
       ),
@@ -651,107 +660,43 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
     final nameController = TextEditingController(text: 'T10-WATCH');
     final result = await showDialog<_BindDeviceResult>(
       context: context,
-      builder: (dialogContext) {
-        String? localError;
-        return StatefulBuilder(
-          builder: (dialogContext, setState) => AlertDialog(
-            backgroundColor: AppColors.surface,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: const BorderSide(color: AppColors.primary, width: 2),
-            ),
-            title: const Text(
-              '登记并绑定手环',
-              style: TextStyle(
-                color: AppColors.primary,
-                fontWeight: FontWeight.w900,
-                fontSize: 26,
-              ),
-            ),
-            content: SizedBox(
-              width: 420,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildDialogField(
-                    controller: macController,
-                    label: '手环 MAC 地址',
-                    hintText: '例如 54:10:26:01:00:DF',
-                  ),
-                  const SizedBox(height: 12),
-                  _buildDialogField(
-                    controller: nameController,
-                    label: '设备名称',
-                    hintText: '默认 T10-WATCH',
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '支持输入 12 位十六进制 MAC，系统会自动格式化。',
-                    style: TextStyle(color: AppColors.textSub, fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  if (localError != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      localError!,
-                      style: const TextStyle(
-                          color: Colors.redAccent, fontSize: 16),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text(
-                  '取消',
-                  style: TextStyle(color: AppColors.textSub, fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-              ),
-              TextButton(
-                onPressed: () {
-                  final normalizedMac = _normalizeMacInput(macController.text);
-                  if (!_isValidMac(normalizedMac)) {
-                    setState(() {
-                      localError = '请输入正确的手环 MAC 地址';
-                    });
-                    return;
-                  }
-
-                  Navigator.pop(
-                    dialogContext,
-                    _BindDeviceResult(
-                      macAddress: normalizedMac,
-                      deviceName: nameController.text.trim(),
-                    ),
-                  );
-                },
-                child: const Text(
-                  '确认绑定',
-                  style: TextStyle(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 20,
-                  ),
-                ),
-              ),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('登记并绑定手环'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildDialogField(controller: macController, label: '手环 MAC 地址', hintText: '例如 54:10:26:01:00:DF'),
+              const SizedBox(height: 12),
+              _buildDialogField(controller: nameController, label: '设备名称', hintText: '默认 T10-WATCH'),
             ],
           ),
-        );
-      },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(
+              dialogContext,
+              _BindDeviceResult(
+                macAddress: _normalizeMacInput(macController.text),
+                deviceName: nameController.text.trim(),
+              ),
+            ),
+            child: const Text('确认绑定'),
+          ),
+        ],
+      ),
     );
-
     macController.dispose();
     nameController.dispose();
-
     if (result == null) {
-      if (mounted) {
-        _resumeAutoRefreshAfterBuild(provider);
-      }
+      _resumeAutoRefreshAfterBuild(provider);
       return;
     }
-
     await _performBindDevice(provider, result);
   }
 
@@ -763,26 +708,18 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
       _resumeAutoRefreshAfterBuild(provider);
       return;
     }
-    provider.stopAutoRefresh();
     setState(() => _isBindingDevice = true);
     try {
-      // Let the dialog route and its inherited-provider dependents fully unmount
-      // before the bind call refreshes CareProvider.
-      await WidgetsBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 180));
-      if (!mounted) return;
-
       final success = await provider.bindSelfDevice(
         result.macAddress,
         deviceName: result.deviceName,
       );
       if (!mounted) return;
-
-      _showOperationSnackBarAfterBuild(
-        success: success,
-        successMessage: '手环已成功登记并绑定',
-        fallbackError: '绑定手环失败，请稍后重试',
-        provider: provider,
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? '手环已成功绑定' : (provider.errorMessage ?? '绑定手环失败')),
+          backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,
+        ),
       );
     } finally {
       if (mounted) {
@@ -794,21 +731,15 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
 
   Future<void> _performUnbindDevice(CareProvider provider) async {
     if (_isUnbindingDevice) return;
-    provider.stopAutoRefresh();
     setState(() => _isUnbindingDevice = true);
     try {
-      await WidgetsBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 140));
-      if (!mounted) return;
-
       final success = await provider.unbindSelfDevice();
       if (!mounted) return;
-
-      _showOperationSnackBarAfterBuild(
-        success: success,
-        successMessage: '手环已成功解绑',
-        fallbackError: '解绑失败，请稍后重试',
-        provider: provider,
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? '手环已解绑' : (provider.errorMessage ?? '解绑手环失败')),
+          backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,
+        ),
       );
     } finally {
       if (mounted) {
@@ -828,40 +759,6 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
     });
   }
 
-  void _showOperationSnackBarAfterBuild({
-    required bool success,
-    required String successMessage,
-    required String fallbackError,
-    required CareProvider provider,
-  }) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _showOperationSnackBar(
-        success: success,
-        successMessage: successMessage,
-        fallbackError: fallbackError,
-        provider: provider,
-      );
-    });
-  }
-
-  void _showOperationSnackBar({
-    required bool success,
-    required String successMessage,
-    required String fallbackError,
-    required CareProvider provider,
-  }) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          success ? successMessage : (provider.errorMessage ?? fallbackError),
-          style: const TextStyle(fontSize: 18),
-        ),
-        backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,
-      ),
-    );
-  }
-
   Widget _buildDialogField({
     required TextEditingController controller,
     required String label,
@@ -877,16 +774,13 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
         const SizedBox(height: 8),
         TextField(
           controller: controller,
-          style: const TextStyle(color: AppColors.textMain, fontSize: 18, fontWeight: FontWeight.bold),
           decoration: InputDecoration(
             hintText: hintText,
-            hintStyle: const TextStyle(color: AppColors.textMuted),
             filled: true,
             fillColor: Colors.white,
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide:
-                  const BorderSide(color: AppColors.border, width: 1.5),
+              borderSide: const BorderSide(color: AppColors.border, width: 1.5),
             ),
             focusedBorder: const OutlineInputBorder(
               borderRadius: BorderRadius.all(Radius.circular(12)),
@@ -914,11 +808,6 @@ class _ElderHomeScreenState extends State<ElderHomeScreen> {
       parts.add(compact.substring(index, index + 2));
     }
     return parts.join(':');
-  }
-
-  bool _isValidMac(String value) {
-    final compact = value.replaceAll(':', '');
-    return RegExp(r'^[0-9A-F]{12}$').hasMatch(compact);
   }
 }
 

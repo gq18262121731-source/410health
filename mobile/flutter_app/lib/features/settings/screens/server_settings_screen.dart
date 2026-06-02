@@ -156,7 +156,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
 
   void _applyRecommendedLanAddress() {
     _hostController.text = _recommendedLanHost;
-    _portController.text = '8000';
+    _portController.text = '18080';
     setState(() {
       _scheme = 'http';
       _testResult = null;
@@ -234,12 +234,12 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
                 style: const TextStyle(color: AppColors.textMain, fontWeight: FontWeight.bold),
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                decoration: _inputDecoration(hintText: '8000'),
+                decoration: _inputDecoration(hintText: '18080'),
                 validator: _validatePort,
               ),
               const SizedBox(height: 12),
               const Text(
-                '移动端只能连接后端服务。请填写运行后端那台电脑的局域网 IP 和 8000 端口，不要填写 5173、5182、7860 或 8090。',
+                '移动端只能连接后端服务。请填写运行后端那台电脑的局域网 IP 和 18080 端口，不要填写 5173、5182、7860 或 8090。',
                 style: TextStyle(color: AppColors.textSub, height: 1.5),
               ),
               const SizedBox(height: 20),
@@ -332,7 +332,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
           ),
           const SizedBox(height: 12),
           const Text(
-            'Android 真机接入同一局域网时，这里应填写运行后端服务那台电脑的局域网 IP 和 8000 端口。',
+            'Android 真机接入同一局域网时，这里应填写运行后端服务那台电脑的局域网 IP 和 18080 端口。',
             style: TextStyle(color: AppColors.textSub, height: 1.5),
           ),
         ],
@@ -358,7 +358,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'http://$_recommendedLanHost:8000',
+            'http://$_recommendedLanHost:18080',
             style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),

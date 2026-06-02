@@ -144,7 +144,7 @@ class AuthProvider extends ChangeNotifier {
         raw.contains('Connection refused') ||
         raw.contains('Connection error') ||
         raw.contains('No route to host')) {
-      return '无法连接到后端服务，请在服务器设置中填写局域网 IP 和 8000 端口。';
+      return '无法连接到后端服务，请在服务器设置中填写局域网 IP 和 18080 端口。';
     }
     if (raw.contains('401') || raw.contains('403')) {
       return '登录失败，请检查账号和密码。';

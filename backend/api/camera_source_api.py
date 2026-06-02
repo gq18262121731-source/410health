@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from backend.dependencies import (
     get_camera_source_audio_hub,
     get_camera_source_frame_hub,
+    get_camera_source_processed_frame_hub,
     get_camera_source_registry,
     get_camera_source_settings,
 )
@@ -183,15 +184,66 @@ async def camera_source_snapshot(camera_id: str) -> Response:
 async def camera_source_stream_status(camera_id: str) -> dict[str, object]:
     try:
         status = get_camera_source_frame_hub(camera_id).status()
+        processed = get_camera_source_processed_frame_hub(camera_id).status()
+        processed_overlay = (
+            get_camera_source_processed_frame_hub(camera_id).overlay_status()
+            if hasattr(get_camera_source_processed_frame_hub(camera_id), "overlay_status")
+            else {}
+        )
     except KeyError as exc:
         raise _camera_not_found(exc) from exc
-    return {"camera_id": camera_id, **status}
+    return {
+        "camera_id": camera_id,
+        **status,
+        "processed": processed,
+        "processed_overlay": processed_overlay,
+    }
 
 
 @router.get("/{camera_id}/stream.mjpg")
 async def camera_source_stream(camera_id: str) -> StreamingResponse:
     try:
         hub = get_camera_source_frame_hub(camera_id)
+    except KeyError as exc:
+        raise _camera_not_found(exc) from exc
+    return StreamingResponse(
+        hub.mjpeg_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/{camera_id}/processed-snapshot")
+async def camera_source_processed_snapshot(camera_id: str) -> Response:
+    try:
+        hub = get_camera_source_processed_frame_hub(camera_id)
+        frame = hub.latest_frame()
+        if frame is None:
+            frame = get_camera_source_frame_hub(camera_id).latest_frame()
+    except KeyError as exc:
+        raise _camera_not_found(exc) from exc
+    if not frame:
+        raise HTTPException(status_code=503, detail="PROCESSED_FRAME_UNAVAILABLE")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@router.get("/{camera_id}/stream.processed.mjpg")
+async def camera_source_processed_stream(camera_id: str) -> StreamingResponse:
+    try:
+        hub = get_camera_source_processed_frame_hub(camera_id)
     except KeyError as exc:
         raise _camera_not_found(exc) from exc
     return StreamingResponse(

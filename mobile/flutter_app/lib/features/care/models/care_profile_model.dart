@@ -1,7 +1,9 @@
 class CareAccessProfile {
+  final String userId;
   final String bindingState; // 'bound', 'unbound', 'not_applicable'
   final List<String> boundDeviceMacs;
   final List<String> relatedElderIds;
+  final List<String> relatedCameraIds;
   final Map<String, dynamic> capabilities;
   final String basicAdvice;
   final List<CareAccessDeviceMetric> deviceMetrics;
@@ -9,9 +11,11 @@ class CareAccessProfile {
   final List<CareHealthReportSummary> healthReports;
 
   CareAccessProfile({
+    required this.userId,
     required this.bindingState,
     required this.boundDeviceMacs,
     required this.relatedElderIds,
+    required this.relatedCameraIds,
     required this.capabilities,
     required this.basicAdvice,
     required this.deviceMetrics,
@@ -21,9 +25,11 @@ class CareAccessProfile {
 
   factory CareAccessProfile.fromJson(Map<String, dynamic> json) {
     return CareAccessProfile(
+      userId: json['user_id'] as String? ?? '',
       bindingState: json['binding_state'] as String,
       boundDeviceMacs: List<String>.from(json['bound_device_macs'] ?? []),
       relatedElderIds: List<String>.from(json['related_elder_ids'] ?? []),
+      relatedCameraIds: List<String>.from(json['related_camera_ids'] ?? []),
       capabilities: json['capabilities'] as Map<String, dynamic>? ?? {},
       basicAdvice: json['basic_advice'] as String? ?? '',
       deviceMetrics: (json['device_metrics'] as List? ?? [])
@@ -58,7 +64,6 @@ class CareAccessDeviceMetric {
     this.latestSample,
   });
 
-  // Helper getters to simplify UI access to nested sample data
   double? get heartRate => (latestSample?['heart_rate'] as num?)?.toDouble();
   double? get temperature => (latestSample?['temperature'] as num?)?.toDouble();
   double? get bloodOxygen => (latestSample?['blood_oxygen'] as num?)?.toDouble();

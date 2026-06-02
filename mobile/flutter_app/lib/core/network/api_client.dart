@@ -56,6 +56,11 @@ class ApiClient {
     return _dio.post(path, data: data, options: options);
   }
 
+  Future<Response> put(String path, {dynamic data, Options? options}) {
+    _syncBaseUrl();
+    return _dio.put(path, data: data, options: options);
+  }
+
   Future<Response> delete(String path, {dynamic data, Options? options}) {
     _syncBaseUrl();
     return _dio.delete(path, data: data, options: options);

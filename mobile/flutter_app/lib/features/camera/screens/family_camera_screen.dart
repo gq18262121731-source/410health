@@ -1136,13 +1136,34 @@ class _AiAnalysisPanel extends StatelessWidget {
   }
 }
 
-class _BridgeAnalysisPanel extends StatelessWidget {
+class _BridgeAnalysisPanel extends StatefulWidget {
   const _BridgeAnalysisPanel();
 
   @override
+  State<_BridgeAnalysisPanel> createState() => _BridgeAnalysisPanelState();
+}
+
+class _BridgeAnalysisPanelState extends State<_BridgeAnalysisPanel> {
+  late final TextEditingController _hostController;
+
+  @override
+  void initState() {
+    super.initState();
+    _hostController = TextEditingController(text: '192.168.8.253');
+  }
+
+  @override
+  void dispose() {
+    _hostController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final bridge = context.watch<CameraProvider>().videoBridgeStatus;
+    final provider = context.watch<CameraProvider>();
+    final bridge = provider.videoBridgeStatus;
     final latest = bridge?.latest;
+    final vision = bridge?.visionService;
     final riskColor = latest?.hasRisk == true
         ? AppColors.error
         : latest?.risk == 'medium'
@@ -1151,6 +1172,10 @@ class _BridgeAnalysisPanel extends StatelessWidget {
     final fallProb = latest?.fallProb == null
         ? '--'
         : '${(latest!.fallProb! * 100).clamp(0, 100).toStringAsFixed(0)}%';
+    final displaySource = latest?.displaySource ??
+        vision?.sourceValue('display_source_current') ??
+        '--';
+    final analysisSource = latest?.analysisSource ?? 'analysis';
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -1183,6 +1208,18 @@ class _BridgeAnalysisPanel extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           _AnalysisRow(
+            label: 'vision url',
+            value: vision?.baseUrl.isNotEmpty == true
+                ? vision!.baseUrl
+                : '等待主系统视觉服务配置',
+            color: AppColors.textSub,
+          ),
+          _AnalysisRow(
+            label: 'source',
+            value: 'display $displaySource / analysis $analysisSource',
+            color: AppColors.textSub,
+          ),
+          _AnalysisRow(
             label: 'service',
             value: latest?.serviceStateLabel ?? '等待视频服务',
             color: latest?.isOnline == true
@@ -1206,6 +1243,57 @@ class _BridgeAnalysisPanel extends StatelessWidget {
             value: latest?.trackId ?? '暂无 track_id',
             color: AppColors.textSub,
           ),
+          _AnalysisRow(
+            label: 'vision action',
+            value: provider.visionActionMessage ?? '可手动拉取、探测或切换视觉服务拉流',
+            color: provider.visionActionMessage == null
+                ? AppColors.textSub
+                : AppColors.success,
+          ),
+          if (vision?.lastError != null && vision!.lastError!.isNotEmpty)
+            _AnalysisRow(
+              label: 'vision error',
+              value: vision.lastError!,
+              color: AppColors.warning,
+            ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _hostController,
+            decoration: InputDecoration(
+              labelText: '摄像头 IP',
+              hintText: '192.168.8.253',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: <Widget>[
+              _VisionActionButton(
+                icon: Icons.refresh,
+                label: '拉取结果',
+                busy: provider.visionActionRunning,
+                onPressed: provider.pollVisionServiceOnce,
+              ),
+              _VisionActionButton(
+                icon: Icons.radar_outlined,
+                label: '探测',
+                busy: provider.visionActionRunning,
+                onPressed: () => provider.probeVisionHost(_hostController.text),
+              ),
+              _VisionActionButton(
+                icon: Icons.swap_horiz,
+                label: '切换拉流',
+                busy: provider.visionActionRunning,
+                onPressed: () => provider.switchVisionHost(_hostController.text),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           _AnalysisRow(
             label: 'snapshot',
             value: latest?.snapshotUrl ?? '等待视频服务快照 URL',
@@ -1254,6 +1342,44 @@ class _ModelToggleButton extends StatelessWidget {
       style: OutlinedButton.styleFrom(
         foregroundColor: color,
         side: BorderSide(color: color.withValues(alpha: 0.38)),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        textStyle: const TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _VisionActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool busy;
+  final VoidCallback onPressed;
+
+  const _VisionActionButton({
+    required this.icon,
+    required this.label,
+    required this.busy,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: busy ? null : onPressed,
+      icon: busy
+          ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(icon),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.primary,
+        side: BorderSide(color: AppColors.primary.withValues(alpha: 0.32)),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         textStyle: const TextStyle(
           fontSize: 14,

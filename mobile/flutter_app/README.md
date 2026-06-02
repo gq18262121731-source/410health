@@ -8,7 +8,7 @@ Use:
 
 - protocol: `http`
 - host: the PC LAN IP, for example `192.168.8.252`
-- port: `8000`
+- port: `18080`
 
 Do **not** use:
 
@@ -21,9 +21,9 @@ Do **not** use:
 ## Expected flow
 
 1. Start backend on the PC.
-2. Confirm `http://<PC-LAN-IP>:8000/healthz` opens from the phone browser.
+2. Confirm `http://<PC-LAN-IP>:18080/healthz` opens from the phone browser.
 3. In the app, open **服务器设置**.
-4. Fill `http + <PC-LAN-IP> + 8000`.
+4. Fill `http + <PC-LAN-IP> + 18080`.
 5. Tap **测试连接**.
 6. Save only after health check passes.
 

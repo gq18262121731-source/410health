@@ -91,9 +91,17 @@ class CameraService:
         self._http_session.mount('https://', adapter)
         # 设置默认超时
         self._http_session.timeout = max(2.0, settings.camera_probe_timeout_seconds)
-        self._runtime_health_url = "http://127.0.0.1:8090/api/v1/camera/health"
-        self._runtime_snapshot_url = "http://127.0.0.1:8090/api/v1/camera/snapshot"
-        self._runtime_mjpeg_url = "http://127.0.0.1:8090/api/v1/camera/stream.mjpg"
+        runtime_base_url = (
+            os.environ.get("CAMERA_RUNTIME_BASE_URL", "").strip()
+            or getattr(settings, "camera_runtime_base_url", "").strip()
+            or settings.camera_local_http_url.strip()
+            or "http://127.0.0.1:8090"
+        ).rstrip("/")
+        self._runtime_base_url = runtime_base_url
+        self._runtime_health_url = f"{runtime_base_url}/api/v1/camera/health"
+        self._runtime_snapshot_url = f"{runtime_base_url}/api/v1/camera/snapshot"
+        self._runtime_mjpeg_url = f"{runtime_base_url}/api/v1/camera/stream.mjpg"
+        self._runtime_status_url = f"{runtime_base_url}/status"
 
     @property
     def configured(self) -> bool:
@@ -126,6 +134,8 @@ class CameraService:
         return "local"
 
     def uses_runtime_managed_source(self) -> bool:
+        if getattr(self._settings, "vision_service_poll_enabled", False):
+            return False
         host = self._settings.camera_ip.strip()
         return bool(host == "192.168.8.253")
 
@@ -182,7 +192,45 @@ class CameraService:
             payload = response.json()
             return payload if isinstance(payload, dict) else None
         except Exception:
+            pass
+
+        try:
+            response = self._http_session.get(
+                self._runtime_status_url,
+                timeout=max(1.0, self._settings.camera_probe_timeout_seconds),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return self._normalize_vision_service_status(payload) if isinstance(payload, dict) else None
+        except Exception:
             return None
+
+    def _normalize_vision_service_status(self, payload: dict[str, Any]) -> dict[str, Any]:
+        stream = payload.get("main_stream")
+        if not isinstance(stream, dict):
+            stream = payload.get("analysis_stream")
+        if not isinstance(stream, dict):
+            cameras = payload.get("cameras")
+            stream = cameras[0] if isinstance(cameras, list) and cameras and isinstance(cameras[0], dict) else {}
+
+        service_state = str(payload.get("service_state") or payload.get("service_status") or "unknown")
+        connected = bool(stream.get("connected"))
+        frame_age_ms = stream.get("frame_age_ms")
+        has_frame = connected and frame_age_ms is not None
+        last_error = str(stream.get("last_error") or "").strip() or None
+        if not last_error and not has_frame:
+            last_error = service_state
+
+        return {
+            "has_frame": has_frame,
+            "frame_age_ms": frame_age_ms,
+            "capture_fps": stream.get("capture_fps"),
+            "last_error": last_error,
+            "stream_state": stream.get("stream_state") or service_state,
+            "bridge_latency_ms": 0.0,
+            "runtime_kind": "vision_service",
+            "detail_url": self._runtime_status_url,
+        }
 
     def can_use_local_camera_fallback(self) -> bool:
         return self._settings.camera_source_mode in {"auto", "local"} and self._settings.camera_local_index >= 0
@@ -290,7 +338,7 @@ class CameraService:
                     latency_ms=round(float(runtime.get("bridge_latency_ms") or 0.0), 2),
                     error=status_error,
                     source="rtsp",
-                    detail=f"runtime-proxy -> {self._runtime_mjpeg_url}",
+                    detail=f"runtime-proxy -> {runtime.get('detail_url') or self._runtime_mjpeg_url}",
                 )
 
         started = time.perf_counter()

@@ -35,6 +35,24 @@ class AlarmRepository {
     await _apiClient.post('alarms/$alarmId/acknowledge');
   }
 
+  String resolveSnapshotUrl(String rawUrl) {
+    final normalized = rawUrl.trim();
+    if (normalized.isEmpty) {
+      return '';
+    }
+    final parsed = Uri.tryParse(normalized);
+    if (parsed != null && parsed.hasScheme) {
+      return normalized;
+    }
+    if (normalized.startsWith('/api/v1/')) {
+      return '${_endpointConfig.origin}$normalized';
+    }
+    if (normalized.startsWith('/')) {
+      return '${_endpointConfig.origin}$normalized';
+    }
+    return '${_endpointConfig.apiBaseUrl}camera/fall-detection/snapshot?path=${Uri.encodeQueryComponent(normalized)}';
+  }
+
   WebSocketChannel connectToAlarms() {
     final token = _sessionManager.token;
     final uri = (token != null && token.trim().isNotEmpty)

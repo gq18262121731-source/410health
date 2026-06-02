@@ -10,6 +10,7 @@ from backend.models.care_model import CareDirectory, CommunityProfile, ElderProf
 from backend.models.device_model import DeviceBindStatus, DeviceIngestMode, DeviceRecord
 from backend.models.user_model import UserRole
 from backend.services.device_service import DeviceService
+from backend.services.elder_camera_binding_service import ElderCameraBindingService
 from backend.services.relation_service import RelationService
 from backend.services.user_service import UserService
 
@@ -83,11 +84,13 @@ class CareService:
         device_service: DeviceService,
         user_service: UserService,
         relation_service: RelationService,
+        elder_camera_binding_service: ElderCameraBindingService,
         settings: Settings,
     ) -> None:
         self._device_service = device_service
         self._user_service = user_service
         self._relation_service = relation_service
+        self._elder_camera_binding_service = elder_camera_binding_service
         self._settings = settings
         self._session_store: dict[str, SessionUser] = {}
         self._session_expiry: dict[str, datetime] = {}
@@ -259,6 +262,7 @@ class CareService:
                     community_id=profile.community_id,
                     device_mac=elder_device_macs[0] if elder_device_macs else "",
                     device_macs=elder_device_macs,
+                    camera_id=self._elder_camera_binding_service.get_camera_id(user.id),
                     family_ids=[relation.family_user_id for relation in relations if relation.status == "active"],
                 )
             )
@@ -425,6 +429,7 @@ class CareService:
                 community_id=community.id,
                 device_mac=assigned_mac,
                 device_macs=device_macs,
+                camera_id=self._elder_camera_binding_service.get_camera_id(elder_seed.id),
                 family_ids=[elder_seed.family_id],
             )
             elders.append(elder)

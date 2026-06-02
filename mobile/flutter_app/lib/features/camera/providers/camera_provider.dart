@@ -9,6 +9,7 @@ import '../repositories/camera_repository.dart';
 
 class CameraProvider extends ChangeNotifier {
   CameraRepository _repository;
+  String? _preferredCameraId;
 
   CameraStatus? status;
   CameraStreamStatus? streamStatus;
@@ -52,6 +53,8 @@ class CameraProvider extends ChangeNotifier {
   bool fallDetectionUpdating = false;
   bool poseDetectionUpdating = false;
   bool simulatingFallAlarm = false;
+  bool visionActionRunning = false;
+  String? visionActionMessage;
   DateTime? lastAiAnalysisAt;
   String? lastAiAnalysisError;
   DateTime? _lastAnalysisStartedAt;
@@ -111,6 +114,30 @@ class CameraProvider extends ChangeNotifier {
     if (!_disposed) {
       notifyListeners();
     }
+  }
+
+  String? get preferredCameraId => _preferredCameraId;
+
+  void setPreferredCameraId(String? cameraId) {
+    final normalized = cameraId?.trim();
+    final next = (normalized == null || normalized.isEmpty) ? null : normalized;
+    if (_preferredCameraId == next) {
+      return;
+    }
+    _preferredCameraId = next;
+    if (autoRefresh) {
+      _closeFrameStream(clearFrame: true);
+      if (usesVideoBridgeSource || setupConfig.sourceMode != 'local') {
+        if (showingProcessedVideo) {
+          unawaited(_prepareProcessedVideoAndStartStream());
+        } else {
+          _startFrameStream();
+        }
+        _ensureSnapshotFallbackTimer();
+      }
+      unawaited(refreshDiagnostics());
+    }
+    _notifyIfAlive();
   }
 
   bool get hasFrame => frameBytes != null;
@@ -512,6 +539,65 @@ class CameraProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> pollVisionServiceOnce() async {
+    if (visionActionRunning) return;
+    visionActionRunning = true;
+    visionActionMessage = null;
+    errorMessage = null;
+    _notifyIfAlive();
+    try {
+      await _repository.pollVisionServiceOnce();
+      videoBridgeStatus = await _repository.getVideoBridgeStatus();
+      visionActionMessage = '已拉取视觉服务最新结果';
+      await refreshDiagnostics();
+    } catch (error) {
+      errorMessage = _formatError(error, fallback: '视觉服务拉取失败');
+    } finally {
+      visionActionRunning = false;
+      _notifyIfAlive();
+    }
+  }
+
+  Future<void> probeVisionHost(String host) async {
+    final normalized = host.trim();
+    if (normalized.isEmpty || visionActionRunning) return;
+    visionActionRunning = true;
+    visionActionMessage = null;
+    errorMessage = null;
+    _notifyIfAlive();
+    try {
+      await _repository.probeVisionStream(host: normalized);
+      visionActionMessage = '探测完成：$normalized:10554';
+      videoBridgeStatus = await _repository.getVideoBridgeStatus();
+    } catch (error) {
+      errorMessage = _formatError(error, fallback: '摄像头探测失败');
+    } finally {
+      visionActionRunning = false;
+      _notifyIfAlive();
+    }
+  }
+
+  Future<void> switchVisionHost(String host) async {
+    final normalized = host.trim();
+    if (normalized.isEmpty || visionActionRunning) return;
+    visionActionRunning = true;
+    visionActionMessage = null;
+    errorMessage = null;
+    _notifyIfAlive();
+    try {
+      await _repository.switchVisionHost(host: normalized);
+      await _repository.pollVisionServiceOnce();
+      videoBridgeStatus = await _repository.getVideoBridgeStatus();
+      visionActionMessage = '已切换视觉服务拉流主机：$normalized';
+      await refreshDiagnostics();
+    } catch (error) {
+      errorMessage = _formatError(error, fallback: '切换视觉服务拉流失败');
+    } finally {
+      visionActionRunning = false;
+      _notifyIfAlive();
+    }
+  }
+
   void stopFrameRefresh({bool clearFrame = false}) {
     if (!autoRefresh && !isConnecting) {
       return;
@@ -852,6 +938,7 @@ class CameraProvider extends ChangeNotifier {
       _frameChannel = _repository.connectFrameStream(
         mode: videoMode,
         bridgeStreamUrl: usesVideoBridgeSource ? _bridgeFrameStreamUrl : null,
+        cameraId: !usesVideoBridgeSource ? _preferredCameraId : null,
       );
       _frameSubscription = _frameChannel!.stream.listen(
         _handleFrame,
@@ -917,6 +1004,7 @@ class CameraProvider extends ChangeNotifier {
       final bytes = await _repository.getCurrentFrameSnapshot(
         mode: videoMode,
         bridgeSnapshotUrl: usesVideoBridgeSource ? _bridgeSnapshotUrl : null,
+        cameraId: !usesVideoBridgeSource ? _preferredCameraId : null,
       );
       if (bytes.isEmpty) return;
       frameBytes = bytes;

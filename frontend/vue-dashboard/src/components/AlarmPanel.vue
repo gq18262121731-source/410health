@@ -63,7 +63,9 @@ function fallAdvice(alarm: AlarmRecord) {
 
 function fallSnapshotUrl(alarm: AlarmRecord) {
   const path = fallEvent(alarm)?.snapshot_path;
-  return typeof path === "string" && path ? api.getCameraFallSnapshotUrl(path) : "";
+  const directUrl = fallEvent(alarm)?.snapshot_url;
+  const value = typeof directUrl === "string" && directUrl ? directUrl : path;
+  return typeof value === "string" && value ? api.getCameraFallSnapshotUrl(value) : "";
 }
 
 function fallReviewLabel(alarm: AlarmRecord) {

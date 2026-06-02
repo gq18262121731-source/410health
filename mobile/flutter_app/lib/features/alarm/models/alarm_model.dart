@@ -148,6 +148,10 @@ class AlarmRecord {
   String? get familyMessage =>
       _readNonEmptyString(familyGuidance?['family_message']);
 
+  String? get fallSnapshotUrl =>
+      _readNonEmptyString(_fallEvent?['snapshot_url']) ??
+      _readNonEmptyString(_fallEvent?['snapshot_path']);
+
   bool get shouldCallEmergency => familyGuidance?['call_emergency'] == true;
 
   List<String> get recommendedActions {

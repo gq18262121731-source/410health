@@ -34,4 +34,20 @@ class CareRepository {
   Future<void> unbindSelfDevice() async {
     await _apiClient.post('devices/unbind/self');
   }
+
+  Future<void> bindElderCamera({
+    required String elderId,
+    required String cameraId,
+  }) async {
+    await _apiClient.put(
+      'care/elders/$elderId/camera-binding',
+      data: <String, dynamic>{'camera_id': cameraId},
+    );
+  }
+
+  Future<void> unbindElderCamera({
+    required String elderId,
+  }) async {
+    await _apiClient.delete('care/elders/$elderId/camera-binding');
+  }
 }

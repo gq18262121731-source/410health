@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +42,7 @@ from backend.dependencies import (
     get_camera_pose_frame_hub,
     get_camera_source_audio_hub,
     get_camera_source_frame_hub,
+    get_camera_source_processed_frame_hub,
     get_camera_source_registry,
     get_care_service,
     get_camera_frame_hub,
@@ -53,6 +55,7 @@ from backend.dependencies import (
     get_parser,
     get_settings_dependency,
     get_target_user_fall_service,
+    get_video_bridge_service,
     get_websocket_manager,
     ingest_sample,
     publish_next_demo_overlay_sample,
@@ -146,6 +149,88 @@ async def _mobile_safe_startup_supervisor(app: FastAPI) -> None:
         tasks.append(asyncio.create_task(_mock_stream_loop()))
 
 
+async def _vision_service_pull_loop() -> None:
+    interval_seconds = 1.0 / max(0.2, min(5.0, float(settings.vision_service_poll_hz or 2.0)))
+    service = get_video_bridge_service()
+    while True:
+        await asyncio.to_thread(service.poll_once)
+        await asyncio.sleep(interval_seconds)
+
+
+def _vision_service_frames_ws_url() -> str:
+    base_url = settings.vision_service_base_url.rstrip("/")
+    parsed = urlparse(base_url)
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    query = urlencode(
+        {
+            "camera_id": settings.vision_service_camera_id or "camera_01",
+            "source": "display",
+            "fps": "5",
+        }
+    )
+    return urlunparse((scheme, parsed.netloc, "/ws/frames", "", query, ""))
+
+
+async def _vision_service_frame_relay_loop() -> None:
+    import websockets
+
+    ws_url = _vision_service_frames_ws_url()
+    raw_hub = get_camera_source_frame_hub("active")
+    processed_hub = get_camera_processed_frame_hub()
+    while True:
+        try:
+            async with websockets.connect(
+                ws_url,
+                open_timeout=max(1.0, settings.vision_service_timeout_seconds),
+                ping_interval=None,
+                max_size=2_500_000,
+            ) as websocket:
+                logger.info("Vision frame relay connected: %s", ws_url)
+                async for message in websocket:
+                    if isinstance(message, str):
+                        continue
+                    await raw_hub.publish_external_frame(
+                        message,
+                        source_label="vision-service-ws-display",
+                        decorate=False,
+                    )
+                    await processed_hub.publish_external_frame(
+                        message,
+                        source_label="vision-service-ws-display-light",
+                        decorate=False,
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Vision frame relay failed, retrying: %s", exc)
+            await asyncio.sleep(1.5)
+
+
+async def _vision_service_frame_proxy(websocket: WebSocket) -> None:
+    import websockets
+
+    await websocket.accept()
+    ws_url = _vision_service_frames_ws_url()
+    try:
+        async with websockets.connect(
+            ws_url,
+            open_timeout=max(1.0, settings.vision_service_timeout_seconds),
+            ping_interval=None,
+            max_size=2_500_000,
+        ) as upstream:
+            logger.info("Vision frame proxy connected: %s", ws_url)
+            async for message in upstream:
+                if isinstance(message, str):
+                    continue
+                await websocket.send_bytes(message)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        logger.warning("Vision frame proxy failed: %s", exc)
+        with suppress(Exception):
+            await websocket.close(code=1011, reason="vision_frame_proxy_failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -153,13 +238,15 @@ async def lifespan(app: FastAPI):
     tasks: list[asyncio.Task] = []
     uses_backend_camera_stream = getattr(settings, "camera_source_mode", "auto") != "local"
     camera_stream_keep_warm = bool(getattr(settings, "camera_stream_keep_warm", True))
-    if camera_stream_keep_warm and uses_backend_camera_stream:
+    if camera_stream_keep_warm and uses_backend_camera_stream and not settings.vision_service_poll_enabled:
         # Keep only the raw active source warm. Processed/pose/fall streams are
         # comparatively expensive because they can trigger overlay inference;
         # starting them eagerly was starving the 8000 API layer and making the
         # mobile snapshot/stream proxy appear much slower than the 8090 runtime.
         await get_camera_source_frame_hub("active").start_keep_warm()
     app.state.background_tasks = tasks
+    if settings.vision_service_poll_enabled:
+        tasks.append(asyncio.create_task(_vision_service_pull_loop()))
     tasks.append(asyncio.create_task(_mobile_safe_startup_supervisor(app)))
     try:
         yield
@@ -371,6 +458,9 @@ async def alarm_stream(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/camera")
 async def camera_frame_stream(websocket: WebSocket) -> None:
+    if settings.vision_service_poll_enabled:
+        await _vision_service_frame_proxy(websocket)
+        return
     hub = get_camera_source_frame_hub("active")
     await hub.connect(websocket)
     try:
@@ -384,6 +474,9 @@ async def camera_frame_stream(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/camera/processed")
 async def camera_processed_frame_stream(websocket: WebSocket) -> None:
+    if settings.vision_service_poll_enabled:
+        await _vision_service_frame_proxy(websocket)
+        return
     hub = get_camera_processed_frame_hub()
     await hub.connect(websocket)
     try:
@@ -438,6 +531,23 @@ async def camera_audio_stream(websocket: WebSocket) -> None:
 async def camera_source_frame_stream(camera_id: str, websocket: WebSocket) -> None:
     try:
         hub = get_camera_source_frame_hub(camera_id)
+    except KeyError:
+        await websocket.close(code=4404, reason="camera_source_not_found")
+        return
+    await hub.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        await hub.disconnect(websocket)
+    finally:
+        await hub.disconnect(websocket)
+
+
+@app.websocket("/ws/camera-sources/{camera_id}/processed")
+async def camera_source_processed_frame_stream(camera_id: str, websocket: WebSocket) -> None:
+    try:
+        hub = get_camera_source_processed_frame_hub(camera_id)
     except KeyError:
         await websocket.close(code=4404, reason="camera_source_not_found")
         return

@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     camera_password: str = ""
     camera_source_mode: Literal["auto", "rtsp", "local"] = "auto"
     camera_local_index: int = 0
+    camera_runtime_base_url: str = ""
     camera_local_http_url: str = ""  # 独立摄像头服务URL，如 http://localhost:8001
     camera_local_backend: Literal["auto", "dshow", "msmf", "any"] = "dshow"
     camera_rtsp_path: str = "/tcp/av0_0"
@@ -161,6 +162,12 @@ class Settings(BaseSettings):
     camera_stream_send_timeout_seconds: float = 0.35
     camera_stream_keep_warm: bool = False
     target_user_vision_warmup_enabled: bool = False
+    vision_service_base_url: str = "http://192.168.8.251:8000"
+    vision_service_local_base_url: str = "http://127.0.0.1:8000"
+    vision_service_camera_id: str = "camera_01"
+    vision_service_poll_enabled: bool = True
+    vision_service_poll_hz: float = 2.0
+    vision_service_timeout_seconds: float = 2.5
     camera_ptz_move_seconds: float = 0.35
     camera_ptz_speed: float = 0.45
     camera1_name: str = "camera1"

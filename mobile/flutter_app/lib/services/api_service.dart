@@ -8,8 +8,8 @@ import '../models/health_sample.dart';
 class ApiService {
   ApiService({
     // Deprecated: use ServerEndpointConfig for dynamic IPs.
-    this.apiBase = 'http://127.0.0.1:8000/api/v1',
-    this.wsBase = 'ws://127.0.0.1:8000',
+    this.apiBase = 'http://127.0.0.1:18080/api/v1',
+    this.wsBase = 'ws://127.0.0.1:18080',
   });
 
   final String apiBase;

@@ -3,6 +3,34 @@ enum CameraVideoMode {
   raw,
 }
 
+class CameraSourceOption {
+  final String cameraId;
+  final String name;
+  final bool enabled;
+  final String source;
+  final String sourceMode;
+
+  const CameraSourceOption({
+    required this.cameraId,
+    required this.name,
+    required this.enabled,
+    required this.source,
+    required this.sourceMode,
+  });
+
+  factory CameraSourceOption.fromJson(Map<String, dynamic> json) {
+    return CameraSourceOption(
+      cameraId: json['camera_id']?.toString() ?? '',
+      name: json['name']?.toString() ?? 'Camera',
+      enabled: json['enabled'] == true,
+      source: json['source']?.toString() ?? '',
+      sourceMode: json['source_mode']?.toString() ?? '',
+    );
+  }
+
+  String get label => name.trim().isNotEmpty ? name.trim() : cameraId;
+}
+
 extension CameraVideoModeLabels on CameraVideoMode {
   String get label {
     return switch (this) {
@@ -110,6 +138,7 @@ class CameraVideoBridgeStatus {
   final CameraVideoBridgeRecord? latest;
   final List<CameraVideoBridgeRecord> cameras;
   final List<String> notes;
+  final CameraVisionServiceStatus visionService;
 
   const CameraVideoBridgeStatus({
     required this.bridgeState,
@@ -119,6 +148,7 @@ class CameraVideoBridgeStatus {
     this.latest,
     required this.cameras,
     required this.notes,
+    required this.visionService,
   });
 
   factory CameraVideoBridgeStatus.fromJson(Map<String, dynamic> json) {
@@ -140,6 +170,9 @@ class CameraVideoBridgeStatus {
           .map((item) => item?.toString() ?? '')
           .where((item) => item.isNotEmpty)
           .toList(growable: false),
+      visionService: CameraVisionServiceStatus.fromJson(
+        _toMap(json['vision_service']) ?? const <String, dynamic>{},
+      ),
     );
   }
 
@@ -158,6 +191,63 @@ class CameraVideoBridgeStatus {
       'error' => '异常',
       _ => '未知',
     };
+  }
+}
+
+class CameraVisionServiceStatus {
+  final bool enabled;
+  final String baseUrl;
+  final String cameraId;
+  final double pollHz;
+  final DateTime? lastPollAt;
+  final DateTime? lastOkAt;
+  final String? lastError;
+  final Map<String, dynamic>? health;
+  final Map<String, dynamic>? source;
+  final DateTime? latestReceivedAt;
+
+  const CameraVisionServiceStatus({
+    required this.enabled,
+    required this.baseUrl,
+    required this.cameraId,
+    required this.pollHz,
+    this.lastPollAt,
+    this.lastOkAt,
+    this.lastError,
+    this.health,
+    this.source,
+    this.latestReceivedAt,
+  });
+
+  factory CameraVisionServiceStatus.fromJson(Map<String, dynamic> json) {
+    return CameraVisionServiceStatus(
+      enabled: json['enabled'] != false,
+      baseUrl: json['base_url']?.toString() ?? '',
+      cameraId: json['camera_id']?.toString() ?? 'camera_01',
+      pollHz: _toDouble(json['poll_hz']) ?? 0,
+      lastPollAt: DateTime.tryParse(json['last_poll_at']?.toString() ?? ''),
+      lastOkAt: DateTime.tryParse(json['last_ok_at']?.toString() ?? ''),
+      lastError: json['last_error']?.toString(),
+      health: _toMap(json['health']),
+      source: _toMap(json['source']),
+      latestReceivedAt:
+          DateTime.tryParse(json['latest_received_at']?.toString() ?? ''),
+    );
+  }
+
+  bool get isConnected => lastOkAt != null && lastError == null;
+
+  String get stateLabel {
+    if (!enabled) return '未启用';
+    if (isConnected) return '已连接';
+    if (lastError != null && lastError!.isNotEmpty) return '连接异常';
+    return '等待连接';
+  }
+
+  String sourceValue(String key) {
+    final value = source?[key];
+    if (value == null) return '--';
+    return value.toString();
   }
 }
 
@@ -295,6 +385,21 @@ class CameraVideoBridgeRecord {
     }
     if (label != null && label.isNotEmpty) return label;
     return matched ? '已匹配目标' : '未匹配目标';
+  }
+
+  String get displaySource =>
+      metadata['display_source']?.toString() ?? '--';
+
+  String get analysisSource =>
+      metadata['analysis_source']?.toString() ?? streamName;
+
+  int get poseKeypointCount {
+    final value = metadata['pose_keypoint_count'];
+    final parsed = _toInt(value);
+    if (parsed != null) return parsed;
+    final pose = _toMap(metadata['pose']);
+    final keypoints = _toList(pose?['keypoints']);
+    return keypoints.length;
   }
 }
 

@@ -11,6 +11,7 @@ import '../../camera/screens/family_camera_route.dart';
 import '../../care/providers/care_provider.dart';
 import '../models/alarm_model.dart';
 import '../providers/alarm_provider.dart';
+import '../repositories/alarm_repository.dart';
 
 class GlobalAlarmListener extends StatefulWidget {
   final Widget child;
@@ -55,20 +56,21 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final provider = context.read<AlarmProvider>();
+    final provider = Provider.of<AlarmProvider>(context, listen: false);
     if (!identical(_alarmProvider, provider)) {
       _alarmProvider?.removeListener(_onAlarmChanged);
       _alarmProvider = provider;
       _alarmProvider?.addListener(_onAlarmChanged);
     }
-    final careProvider = context.read<CareProvider>();
+    final careProvider = Provider.of<CareProvider>(context, listen: false);
     if (!identical(_careProvider, careProvider)) {
       _careProvider?.removeListener(_onCareScopeChanged);
       _careProvider = careProvider;
       _careProvider?.addListener(_onCareScopeChanged);
     }
-    _audioService ??= context.read<AudioService>();
-    _notificationService ??= context.read<AppNotificationService>();
+    _audioService ??= Provider.of<AudioService>(context, listen: false);
+    _notificationService ??=
+        Provider.of<AppNotificationService>(context, listen: false);
   }
 
   @override
@@ -78,7 +80,6 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
     _careProvider?.removeListener(_onCareScopeChanged);
     _stopAlarmToneLoop();
     _hideFloatingWarning();
-    unawaited(_notificationService?.clearAllSosNotifications());
     super.dispose();
   }
 
@@ -556,6 +557,7 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
       return;
     }
 
+    final alarmRepository = context.read<AlarmRepository>();
     _startAlarmToneLoop();
     await showDialog<void>(
       context: context,
@@ -682,6 +684,13 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
                           height: 1.35,
                         ),
                       ),
+                    ),
+                  ],
+                  if (isFall && alarm.fallSnapshotUrl != null) ...[
+                    const SizedBox(height: 12),
+                    _FallSnapshotPreview(
+                      snapshotUrl: alarmRepository
+                          .resolveSnapshotUrl(alarm.fallSnapshotUrl!),
                     ),
                   ],
                   const SizedBox(height: 12),
@@ -837,5 +846,44 @@ class _GlobalAlarmListenerState extends State<GlobalAlarmListener>
   @override
   Widget build(BuildContext context) {
     return widget.child;
+  }
+}
+
+class _FallSnapshotPreview extends StatelessWidget {
+  final String snapshotUrl;
+
+  const _FallSnapshotPreview({
+    required this.snapshotUrl,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (snapshotUrl.trim().isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: AspectRatio(
+        aspectRatio: 16 / 9,
+        child: Image.network(
+          snapshotUrl,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => Container(
+            color: const Color(0xFF3F1D1D),
+            alignment: Alignment.center,
+            padding: const EdgeInsets.all(12),
+            child: const Text(
+              '截图暂不可用，请查看实时监控',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Color(0xFFFECACA),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

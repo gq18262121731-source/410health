@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { api, type AlarmRecord } from "../../api/client";
 
 const props = defineProps<{
@@ -21,6 +21,14 @@ const injuryPayload = computed(() => asRecord(eventPayload.value?.injury));
 const multimodalReview = computed(() => asRecord(eventPayload.value?.multimodal_review));
 const presentation = computed(() => asRecord(props.alarm?.metadata?.presentation) ?? asRecord(eventPayload.value?.presentation));
 const familyGuidance = computed(() => asRecord(props.alarm?.metadata?.family_guidance));
+const snapshotFailed = ref(false);
+
+watch(
+  () => props.alarm?.id,
+  () => {
+    snapshotFailed.value = false;
+  },
+);
 
 const triggeredAt = computed(() => {
   if (!props.alarm?.created_at) return "--";
@@ -80,8 +88,11 @@ const familyMessage = computed(() => {
 const shouldCallEmergency = computed(() => familyGuidance.value?.call_emergency === true);
 
 const snapshotUrl = computed(() => {
+  if (snapshotFailed.value) return "";
+  const directUrl = eventPayload.value?.snapshot_url;
   const path = eventPayload.value?.snapshot_path;
-  return typeof path === "string" && path.trim() ? api.getCameraFallSnapshotUrl(path) : "";
+  const value = typeof directUrl === "string" && directUrl.trim() ? directUrl : path;
+  return typeof value === "string" && value.trim() ? api.getCameraFallSnapshotUrl(value) : "";
 });
 
 const reviewJudgement = computed(() => {
@@ -287,8 +298,8 @@ const acknowledgeLabel = computed(() => {
         </div>
 
         <div class="fall-overlay__snapshot">
-          <img v-if="snapshotUrl" :src="snapshotUrl" alt="fall snapshot" />
-          <div v-else class="fall-overlay__snapshot-empty">Waiting for snapshot</div>
+          <img v-if="snapshotUrl" :src="snapshotUrl" alt="fall snapshot" @error="snapshotFailed = true" />
+          <div v-else class="fall-overlay__snapshot-empty">截图暂不可用，请查看实时视频画面</div>
         </div>
       </div>
     </div>
@@ -302,27 +313,32 @@ const acknowledgeLabel = computed(() => {
   z-index: 1190;
   display: grid;
   place-items: center;
-  padding: 28px;
+  padding: 16px;
   background: rgba(24, 37, 64, 0.74);
   backdrop-filter: blur(10px);
 }
 
 .fall-overlay__panel {
-  width: min(1080px, 100%);
+  width: min(1080px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
-  gap: 20px;
-  padding: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.85fr);
+  gap: 14px;
+  padding: 16px;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(239, 246, 255, 0.94));
   box-shadow: 0 28px 90px rgba(15, 23, 42, 0.34);
+  overflow: hidden;
 }
 
 .fall-overlay__content {
   display: grid;
-  gap: 18px;
+  gap: 10px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .fall-overlay__eyebrow {
@@ -337,7 +353,7 @@ const acknowledgeLabel = computed(() => {
 .fall-overlay h2 {
   margin: 0;
   color: #111827;
-  font-size: clamp(2rem, 4vw, 3.1rem);
+  font-size: clamp(1.6rem, 3vw, 2.35rem);
   line-height: 1.05;
 }
 
@@ -346,19 +362,19 @@ const acknowledgeLabel = computed(() => {
 .fall-overlay__actions p {
   margin: 0;
   color: #475569;
-  line-height: 1.7;
+  line-height: 1.5;
 }
 
 .fall-overlay__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 
 .fall-overlay__grid article {
   display: grid;
-  gap: 7px;
-  padding: 14px;
+  gap: 5px;
+  padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid #dbe4f0;
   background: #ffffff;
@@ -377,7 +393,7 @@ const acknowledgeLabel = computed(() => {
 }
 
 .fall-overlay__advice {
-  padding: 14px 16px;
+  padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid rgba(239, 68, 68, 0.22);
   background: rgba(254, 242, 242, 0.82);
@@ -385,22 +401,22 @@ const acknowledgeLabel = computed(() => {
 }
 
 .fall-overlay__guidance {
-  margin: 14px 0 0;
-  padding: 14px 16px;
+  margin: 0;
+  padding: 10px 12px;
   border: 1px solid rgba(248, 113, 113, 0.35);
-  border-radius: 18px;
-  background: rgba(127, 29, 29, 0.18);
-  color: #fee2e2;
+  border-radius: 10px;
+  background: rgba(254, 242, 242, 0.82);
+  color: #7f1d1d;
 }
 
 .fall-overlay__guidance--warn {
-  background: rgba(120, 53, 15, 0.22);
+  background: rgba(255, 251, 235, 0.9);
   border-color: rgba(251, 191, 36, 0.34);
 }
 
 .fall-overlay__guidance strong {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .fall-overlay__guidance ul {
@@ -409,26 +425,26 @@ const acknowledgeLabel = computed(() => {
 }
 
 .fall-overlay__guidance li {
-  margin: 5px 0;
-  line-height: 1.45;
+  margin: 3px 0;
+  line-height: 1.35;
 }
 
 .fall-overlay__family-message,
 .fall-overlay__emergency {
   margin: 12px 0 0;
-  color: #fecaca;
+  color: #7f1d1d;
   font-weight: 700;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
 .fall-overlay__emergency {
-  color: #fff1f2;
+  color: #b42318;
 }
 
 .fall-overlay__review {
   display: grid;
-  gap: 8px;
-  padding: 14px 16px;
+  gap: 6px;
+  padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid #dbe4f0;
   background: #ffffff;
@@ -484,6 +500,11 @@ const acknowledgeLabel = computed(() => {
   justify-content: space-between;
   align-items: center;
   gap: 14px;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-top: 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(248, 250, 252, 0.96) 35%);
 }
 
 .fall-overlay__actions button {
@@ -504,7 +525,10 @@ const acknowledgeLabel = computed(() => {
 }
 
 .fall-overlay__snapshot {
-  min-height: 360px;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  max-height: calc(100dvh - 64px);
   border-radius: 14px;
   overflow: hidden;
   border: 1px solid #cbd5e1;
@@ -514,16 +538,18 @@ const acknowledgeLabel = computed(() => {
 .fall-overlay__snapshot img {
   width: 100%;
   height: 100%;
-  min-height: 360px;
-  object-fit: cover;
+  min-height: 0;
+  object-fit: contain;
   display: block;
 }
 
 .fall-overlay__snapshot-empty {
   height: 100%;
-  min-height: 360px;
+  min-height: 240px;
   display: grid;
   place-items: center;
+  padding: 16px;
+  text-align: center;
   color: #cbd5e1;
   font-weight: 700;
 }

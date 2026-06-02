@@ -41,6 +41,7 @@ class CameraFrameHub:
         self._active_url: str | None = None
         self._keep_warm = False
         self._last_broadcasted_at = 0.0
+        self._external_frames_active_until = 0.0
         # 优化2: 帧缓存机制 - 避免重复请求，提高响应速度
         self._frame_cache: dict[str, tuple[bytes, float]] = {}  # key: cache_key, value: (frame, timestamp)
         self._frame_cache_ttl = 0.15  # 缓存150ms，适合6fps
@@ -54,7 +55,8 @@ class CameraFrameHub:
         async with self._lock:
             stale_clients = [client for client in self._clients if client is not websocket]
             self._clients = {websocket}
-            self._ensure_capture_task()
+            if not self._external_frames_active():
+                self._ensure_capture_task()
 
         for stale in stale_clients:
             with suppress(Exception):
@@ -142,6 +144,30 @@ class CameraFrameHub:
     def latest_frame(self) -> bytes | None:
         return self._latest_frame
 
+    async def publish_external_frame(
+        self,
+        frame: bytes,
+        *,
+        source_label: str = "external-frame",
+        decorate: bool = True,
+    ) -> None:
+        if not frame or not frame.startswith(b"\xff\xd8"):
+            return
+        if decorate:
+            frame = await self._decorate_frame_async(frame)
+        self._external_frames_active_until = time.monotonic() + self._max_cached_frame_age_seconds()
+        if self._capture_task and not self._capture_task.done():
+            self._capture_task.cancel()
+            self._capture_task = None
+        self._latest_frame = frame
+        self._latest_frame_at = time.time()
+        self._latest_frame_size = len(frame)
+        self._active_url = source_label
+        self._last_error = None
+        self._frame_event.set()
+        self._record_frame()
+        await self._broadcast_frame(frame)
+
     def _decorate_frame(self, frame: bytes) -> bytes:
         return frame
 
@@ -175,6 +201,9 @@ class CameraFrameHub:
             self._latest_frame_at is not None
             and time.time() - self._latest_frame_at <= self._max_cached_frame_age_seconds()
         )
+
+    def _external_frames_active(self) -> bool:
+        return time.monotonic() <= self._external_frames_active_until
 
     async def _capture_loop(self) -> None:
         service = CameraService(self._settings)

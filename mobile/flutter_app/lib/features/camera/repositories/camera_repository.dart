@@ -28,10 +28,70 @@ class CameraRepository {
         Map<String, dynamic>.from(response.data as Map));
   }
 
+  Future<List<CameraSourceOption>> listCameraSources() async {
+    final response = await _apiClient.get('camera-sources');
+    final payload = Map<String, dynamic>.from(response.data as Map);
+    final sources = payload['sources'] as List? ?? const [];
+    return sources
+        .whereType<Map>()
+        .map((item) => CameraSourceOption.fromJson(Map<String, dynamic>.from(item)))
+        .toList(growable: false);
+  }
+
   Future<CameraVideoBridgeStatus> getVideoBridgeStatus() async {
     final response = await _apiClient.get('video-bridge/status');
     return CameraVideoBridgeStatus.fromJson(
         Map<String, dynamic>.from(response.data as Map));
+  }
+
+  Future<Map<String, dynamic>> pollVisionServiceOnce() async {
+    final response = await _apiClient.post(
+      'video-bridge/vision/poll-once',
+      options: Options(receiveTimeout: const Duration(seconds: 8)),
+    );
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> probeVisionStream({
+    required String host,
+    int port = 10554,
+    int timeoutMs = 1500,
+  }) async {
+    final response = await _apiClient.post(
+      'video-bridge/vision/probe',
+      data: <String, dynamic>{
+        'host': host,
+        'port': port,
+        'timeout_ms': timeoutMs,
+      },
+      options: Options(receiveTimeout: const Duration(seconds: 10)),
+    );
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> switchVisionHost({
+    required String host,
+    String cameraId = 'camera_01',
+    String username = 'admin',
+    String password = '',
+    int port = 10554,
+    String mainPath = '/tcp/av0_0',
+    String analysisPath = '/tcp/av0_1',
+  }) async {
+    final response = await _apiClient.post(
+      'video-bridge/vision/switch-host',
+      data: <String, dynamic>{
+        'camera_id': cameraId,
+        'host': host,
+        'username': username,
+        'password': password,
+        'port': port,
+        'main_path': mainPath,
+        'analysis_path': analysisPath,
+      },
+      options: Options(receiveTimeout: const Duration(seconds: 15)),
+    );
+    return Map<String, dynamic>.from(response.data as Map);
   }
 
   Future<CameraAudioStatus> getAudioStatus() async {
@@ -196,12 +256,18 @@ class CameraRepository {
   Future<Uint8List> getCurrentFrameSnapshot({
     CameraVideoMode mode = CameraVideoMode.raw,
     String? bridgeSnapshotUrl,
+    String? cameraId,
   }) async {
+    final normalizedCameraId = cameraId?.trim();
     final path = bridgeSnapshotUrl ??
-        switch (mode) {
-          CameraVideoMode.processed => 'camera/processed-snapshot',
-          CameraVideoMode.raw => 'camera/snapshot',
-        };
+        ((normalizedCameraId != null && normalizedCameraId.isNotEmpty)
+            ? (mode == CameraVideoMode.processed
+                ? 'camera-sources/$normalizedCameraId/processed-snapshot'
+                : 'camera-sources/$normalizedCameraId/snapshot')
+            : switch (mode) {
+                CameraVideoMode.processed => 'camera/processed-snapshot',
+                CameraVideoMode.raw => 'camera/snapshot',
+              });
     final response = await _apiClient.get(
       path,
       options: Options(
@@ -260,12 +326,18 @@ class CameraRepository {
   WebSocketChannel connectFrameStream({
     CameraVideoMode mode = CameraVideoMode.raw,
     String? bridgeStreamUrl,
+    String? cameraId,
   }) {
+    final normalizedCameraId = cameraId?.trim();
     final path = bridgeStreamUrl ??
-        switch (mode) {
-          CameraVideoMode.processed => '/ws/camera/processed',
-          CameraVideoMode.raw => '/ws/camera',
-        };
+        ((normalizedCameraId != null && normalizedCameraId.isNotEmpty)
+            ? (mode == CameraVideoMode.processed
+                ? '/ws/camera-sources/$normalizedCameraId/processed'
+                : '/ws/camera-sources/$normalizedCameraId')
+            : switch (mode) {
+                CameraVideoMode.processed => '/ws/camera/processed',
+                CameraVideoMode.raw => '/ws/camera',
+              });
     return WebSocketChannel.connect(_resolveWebSocketUri(path));
   }
 

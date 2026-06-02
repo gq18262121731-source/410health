@@ -46,6 +46,7 @@ from backend.services.camera_stream_hub import CameraDetectionFrameHub, CameraFr
 from backend.services.community_insight_service import CommunityInsightService
 from backend.services.care_service import CareService
 from backend.services.device_service import DeviceService
+from backend.services.elder_camera_binding_service import ElderCameraBindingService
 from backend.services.explanation_service import ExplanationService
 from backend.services.fall_event_catalog_service import FallEventCatalogService
 from backend.services.fall_detection_service import FallDetectionService
@@ -83,6 +84,7 @@ _project_root = Path(__file__).resolve().parents[1]
 _user_service = UserService()
 _relation_service = RelationService(_user_service)
 _device_service = DeviceService(_user_service, database_url=_settings.database_url)
+_elder_camera_binding_service = ElderCameraBindingService(_settings.data_dir)
 _stream_service = StreamService(retention_points=_settings.stream_retention_points)
 _websocket_manager = WebSocketManager()
 _camera_frame_hub = CameraFrameHub(
@@ -383,6 +385,7 @@ _camera_source_registry = CameraSourceRegistry(_settings)
 _camera_setup_config_service = CameraSetupConfigService(_settings, _camera_source_registry)
 _camera_source_frame_hubs: dict[str, CameraFrameHub] = {}
 _camera_source_audio_hubs: dict[str, CameraAudioHub] = {}
+_camera_source_processed_hubs: dict[str, CameraFrameHub] = {}
 _alarm_priority_queue = AlarmPriorityQueue(redis_url=_settings.redis_url)
 _mobile_push_device_repo = MobilePushDeviceRepository(_settings.database_url)
 _notification_service = NotificationService(_mobile_push_device_repo)
@@ -450,7 +453,13 @@ _parser = T10PacketParser(
 )
 _analysis_service = HealthDataAnalysisService()
 _rag_service = LangChainRAGService(_settings, _settings.data_dir.parent / "docs" / "knowledge-base")
-_care_service = CareService(_device_service, _user_service, _relation_service, _settings)
+_care_service = CareService(
+    _device_service,
+    _user_service,
+    _relation_service,
+    _elder_camera_binding_service,
+    _settings,
+)
 _agent_context_assembler = AgentContextAssembler(
     _stream_service,
     _alarm_service,
@@ -2023,10 +2032,41 @@ def get_camera_source_audio_hub(camera_id: str) -> CameraAudioHub:
     return hub
 
 
+def get_camera_source_processed_frame_hub(camera_id: str) -> CameraFrameHub:
+    source_settings = get_camera_source_settings(camera_id).model_copy(
+        update={
+            "camera_stream_keep_warm": False,
+            "camera_stream_profile": "smooth",
+            "camera_stream_fps": 8.0,
+            "camera_stream_width": 768,
+            "camera_stream_jpeg_quality": 7,
+            "camera_stream_send_timeout_seconds": 1.2,
+        }
+    )
+    normalized = camera_id.strip().lower()
+    hub = _camera_source_processed_hubs.get(normalized)
+    if hub is None:
+        hub = CombinedProcessedFrameHub(
+            source_settings,
+            pose_payload_provider=_latest_combined_pose_payload,
+            fall_payload_provider=_latest_fall_overlay_payload,
+            fall_alarm_callback=lambda payload: promote_processed_fall_payload_to_alarm(payload),
+            pose_fallback_analyzer=lambda frame: _analyze_pose_frame_for_overlay(frame),
+            fall_fallback_analyzer=lambda frame: _analyze_fall_frame_for_overlay(frame),
+            max_payload_age_seconds=10.0,
+            fallback_min_interval_seconds=3.0,
+        )
+        _camera_source_processed_hubs[normalized] = hub
+    return hub
+
+
 async def shutdown_camera_source_hubs() -> None:
     for hub in list(_camera_source_audio_hubs.values()):
         await hub.shutdown()
     _camera_source_audio_hubs.clear()
+    for hub in list(_camera_source_processed_hubs.values()):
+        await hub.stop_keep_warm()
+    _camera_source_processed_hubs.clear()
     for hub in list(_camera_source_frame_hubs.values()):
         await hub.stop_keep_warm()
     _camera_source_frame_hubs.clear()
@@ -2181,6 +2221,10 @@ def get_agent_service() -> HealthAgentService:
 
 def get_care_service() -> CareService:
     return _care_service
+
+
+def get_elder_camera_binding_service() -> ElderCameraBindingService:
+    return _elder_camera_binding_service
 
 
 def get_explanation_service() -> ExplanationService:
