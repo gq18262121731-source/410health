@@ -19,6 +19,7 @@ logs/
 data/
 datasets/
 identity_service/data/
+Ultralytics/
 
 *.pt
 *.pth
