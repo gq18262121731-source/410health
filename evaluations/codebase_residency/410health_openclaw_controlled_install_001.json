@@ -1,0 +1,41 @@
+{
+  "phase": "SE-4.2",
+  "result": "installed_with_gateway_pending",
+  "created_at": "2026-06-05",
+  "openclaw": {
+    "version": "2026.6.1",
+    "commit": "2e08f0f",
+    "install_command": "npm install -g openclaw@latest",
+    "install_exit_code": 0,
+    "npm_prefix": "C:\\Users\\YANG\\AppData\\Roaming\\npm",
+    "path": "C:\\Users\\YANG\\AppData\\Roaming\\npm\\openclaw.cmd"
+  },
+  "environment": {
+    "node": "v24.14.1",
+    "npm": "11.11.0",
+    "git": "2.53.0.windows.3",
+    "python": "3.9.13"
+  },
+  "setup": {
+    "command": "openclaw setup --non-interactive --accept-risk --mode local --workspace D:\\Program\\software_open_claw_workspaces",
+    "exit_code": 1,
+    "config_written": true,
+    "config_validation": "passed",
+    "workspace_ok": true,
+    "workspace": "D:\\Program\\software_open_claw_workspaces",
+    "blocker": "Gateway not listening on 127.0.0.1:18789 because this phase did not start a Gateway or install a daemon."
+  },
+  "boundaries": {
+    "install_approved_by_user": true,
+    "openclaw_onboard_interactive_attempted": false,
+    "openclaw_daemon_install_attempted": false,
+    "gateway_run_attempted": false,
+    "gateway_restart_attempted": false,
+    "business_code_changed": false,
+    "backend_frontend_changed": false,
+    "git_push_attempted": false,
+    "merge_attempted": false,
+    "deployment_attempted": false
+  },
+  "next_phase": "SE-4.3 Controlled Gateway Start / Daemon Decision requires explicit approval"
+}
