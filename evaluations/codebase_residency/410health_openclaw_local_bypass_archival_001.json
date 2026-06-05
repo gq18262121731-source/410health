@@ -1,0 +1,90 @@
+{
+  "phase": "SE-4.1",
+  "result": "passed",
+  "project": "410health",
+  "mode": "local_bypass_residency",
+  "created_at": "2026-06-05",
+  "archival_scope": {
+    "repo": "D:\\Program\\410health",
+    "committable_410health_files": [
+      "scripts/software_open_claw_readonly_entry.py",
+      "docs/410health_openclaw_local_bypass_setup_report.md",
+      "docs/410health_openclaw_local_bypass_archival_report.md",
+      "evaluations/codebase_residency/410health_openclaw_local_bypass_readonly_entry_001.json",
+      "evaluations/codebase_residency/410health_openclaw_local_bypass_archival_001.json"
+    ],
+    "excluded_from_commit": [
+      "daily/autopilot refreshed docs",
+      "daily/autopilot refreshed evaluations",
+      "timestamped daily autopilot run JSON files"
+    ]
+  },
+  "external_assets": [
+    {
+      "path": "D:\\Program\\software_open_claw_local_config\\lobster_employee_registry.json",
+      "sha256": "88D70D9B4D4BB37A974E7463C10FF057E4C0B9D4D7D86A705A41EDFC033D37C2",
+      "git_managed": false
+    },
+    {
+      "path": "D:\\Program\\software_open_claw_local_config\\project_residency_map.json",
+      "sha256": "6857CD38A5B3A8A3691A9A1E2594B705141305F927C2B1165AC2A317F66B7CB3",
+      "git_managed": false
+    },
+    {
+      "path": "D:\\Program\\software_open_claw_local_config\\software_open_claw_local_config.json",
+      "sha256": "5E837C1CEC06B7BAE93E396F2A7D68C4FE25DD9BBDCD038481511E5B632FF4A7",
+      "git_managed": false
+    },
+    {
+      "path": "D:\\Program\\software_open_claw_local_config\\tool_permission_policy.json",
+      "sha256": "11C9ABA42B60630284C0F691A877380D4F86C16BC10EF9430A14E6543FDD1655",
+      "git_managed": false
+    },
+    {
+      "path": "D:\\Program\\software_open_claw_local_config\\employees\\product_manager_lobster.md",
+      "sha256": "A3750B417434C3D3C6FCB36EE2EE8D14370EF9B5D94CAA056009EFA8E6B47FCA",
+      "git_managed": false
+    },
+    {
+      "path": "D:\\Program\\software_open_claw_local_config\\employees\\qa_reviewer_lobster.md",
+      "sha256": "6706D2A3AE0FF022F8A5D1E273B8DA8072ABEA46B4574E2122BF19940AD66683",
+      "git_managed": false
+    },
+    {
+      "path": "D:\\Program\\software_open_claw_local_config\\employees\\safety_officer_lobster.md",
+      "sha256": "4BE74B9F4AB506A3FC0E2F653AC8AE7500A1AC69D81E382E976CB20409A97EF3",
+      "git_managed": false
+    },
+    {
+      "path": "D:\\Program\\software_open_claw_local_config\\employees\\workflow_engineer_lobster.md",
+      "sha256": "DE424C7B377F348BC423BDF7FCF715632790EF99E288C508099EE5AFE6BE84CC",
+      "git_managed": false
+    },
+    {
+      "path": "D:\\Program\\skill\\skills\\410health_residency_skill\\SKILL.md",
+      "sha256": "B94A28D1E54F733C9FAEC5143BDEC73BF4240BEB318F9B5E123A87E736814846",
+      "git_managed": false
+    }
+  ],
+  "validation": {
+    "json_validation": "passed",
+    "readonly_status": "passed",
+    "readonly_daily_autopilot": "passed",
+    "core_steps_passed": true,
+    "stage_a_dirty_workspace_safe": true,
+    "dangerous_action_block_test": "passed",
+    "openclaw_npm_version_query": "2026.6.1",
+    "openclaw_install_attempted": false
+  },
+  "boundaries": {
+    "business_code_changed": false,
+    "dependency_install_attempted": false,
+    "deployment_attempted": false,
+    "git_push_attempted": false,
+    "merge_attempted": false,
+    "remote_branch_deleted": false,
+    "external_config_git_initialized": false,
+    "skill_repo_git_initialized": false
+  },
+  "next_phase": "SE-4.2 Controlled OpenClaw Local Install requires explicit leader approval"
+}
