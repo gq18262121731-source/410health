@@ -4,7 +4,7 @@
 
 ```text
 project = D:\Program\410health
-created_at = 2026-06-06T04:48:18.068236+00:00
+created_at = 2026-06-06T04:51:35.116438+00:00
 overall_status = passed
 business_code_changed = false
 frontend_failure_reason = none
@@ -21,8 +21,7 @@ frontend_failure_reason = none
 ## Git Status
 
 ```text
-?? docs/software-open-claw-code-edit-permission-trial.md
-?? evaluations/codebase_residency/software_open_claw_code_edit_permission_trial_001.json
+clean
 ```
 
 ## Backend Pytest Tail
@@ -65,7 +64,7 @@ tests\test_serial_reader.py .......                                      [100%]
 
 
 
-======================= 95 passed in 102.63s (0:01:42) ========================
+======================= 95 passed in 102.67s (0:01:42) ========================
 
 
 ```
@@ -103,7 +102,7 @@ computing gzip size...
 [2mdist/[22m[36massets/index-CLiEOIty.js    [39m[1m[2m195.34 kB[22m[1m[22m[2m │ gzip:  61.61 kB[22m
 [2mdist/[22m[36massets/vendor-D13T46Hj.js   [39m[1m[2m358.75 kB[22m[1m[22m[2m │ gzip: 133.82 kB[22m
 [2mdist/[22m[36massets/echarts-DD6hS6mV.js  [39m[1m[2m414.50 kB[22m[1m[22m[2m │ gzip: 139.82 kB[22m
-[32m✓ built in 6.93s[39m
+[32m✓ built in 7.23s[39m
 ```
 
 ## Notes
