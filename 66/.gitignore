@@ -1,0 +1,95 @@
+frontend/vue-dashboard/node_modules/
+frontend/vue-dashboard/dist/
+.env
+__pycache__/
+*.pyc
+.playwright-cli/
+output/
+.pytest_cache/
+pytest-cache-files-*
+data/
+backend/tmp_x.txt
+.cursor
+.agents
+.omni_test
+.log
+.pdf
+
+# 测试和临时文件
+test_*.jpg
+test_*.py
+tmp_*/
+*.err.log
+*.out.log
+logs/
+verify_*.ps1
+simple_api_test.jpg
+local_cam_*.jpg
+direct_test_snapshot.jpg
+
+# 备份文件
+*.zip
+*.bak
+
+# 运行与调试产物
+runtime_logs/
+tmp_camera_bench2/
+tmp_camera_debug/
+tmp_camera_probe/
+tmp_video_probe/
+.vscode/
+.idea/
+backend-start.err.log
+backend-start.out.log
+1.png
+3.png
+4.png
+5.jpg
+sos.png
+tmp_detect_frame.jpg
+tmp_normal_frame.jpg
+
+# 摄像头运行时本地输出
+camera_runtime_external/runtime_logs/
+camera_runtime_external/tools/*.msi
+camera_runtime_external/tools/*.exe
+camera_runtime_external/设备搜索助手v3.0/*.exe
+camera_runtime_external/设备搜索助手v3.0/*.url
+camera_runtime_external/设备搜索助手v3.0/*.log
+camera_runtime_external/tools/python_libs/**/__pycache__/
+camera_runtime_external/tools/python_libs/**/*.pyc
+
+# 页面本地日志
+tools/fall-camera-lite/*.log
+tools/target-user-console/*.log
+
+# Local model/runtime caches
+Ultralytics/
+.codex_tmp_docs/
+
+# Fall-detection generated datasets and runtime outputs
+fall_detection_model_bundle/data_processed/
+fall_detection_model_bundle/data_public/
+fall_detection_model_bundle/outputs/
+fall_detection_model_bundle/runs/yolo_posture_person_cls_fallpose_baseline_v1/
+fall_detection_model_bundle/runs/yolo_posture_person_cls_fallpose_baseline_v1-2/
+
+# Local camera SDK/manual bundles and generated backups
+docs/change_backups/
+摄像头说明书/SDK_phone (2)/
+摄像头说明书/WEB-SDK2024/
+摄像头说明书/摄像头内网查找器 (2)/
+backend/workers/__pycache__/
+mobile/flutter_app/lib/features/alarm/widgets/*_copy.dart
+mobile/flutter_app/lib/features/alarm/widgets/*_excerpt.dart
+
+# Local runtime and acceptance artifacts
+.env.local
+*.log
+*.pid
+health/
+artifacts/
+apk_acceptance_*.png
+apk_acceptance_*.xml
+fall_alarm_loop_pc.png
+video_bridge_placeholder.png
