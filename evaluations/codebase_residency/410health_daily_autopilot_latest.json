@@ -1,7 +1,7 @@
 {
   "phase": "SE-2.6",
-  "run_id": "20260606_130539",
-  "created_at": "2026-06-06T05:05:39.894545+00:00",
+  "run_id": "20260606_130831",
+  "created_at": "2026-06-06T05:08:31.975011+00:00",
   "project_path": "D:\\Program\\410health",
   "autopilot_status": "passed",
   "daily_ops_chain": "passed",
@@ -23,8 +23,8 @@
       "status": "passed",
       "stdout_tail": "410HEALTH DAILY OPS CHAIN\ndaily_residency_check=passed\ndaily_ops_summary=passed\nresidency_history_index=passed\noverall_status=passed\nsummary=D:\\Program\\410health\\evaluations\\codebase_residency\\410health_daily_ops_chain_001.json",
       "stderr_tail": "",
-      "started_at": "2026-06-06T05:05:39.894545+00:00",
-      "completed_at": "2026-06-06T05:07:48.245255+00:00"
+      "started_at": "2026-06-06T05:08:31.975011+00:00",
+      "completed_at": "2026-06-06T05:10:42.497374+00:00"
     },
     {
       "name": "task_routing",
@@ -33,8 +33,8 @@
       "status": "passed",
       "stdout_tail": "410HEALTH DAILY TASK ROUTING\noverall_status=passed\ntasks=1\nblocking_tasks=0\nowner=workflow_engineer_lobster\nreport=D:\\Program\\410health\\docs\\410health_daily_task_routing.md\nsummary=D:\\Program\\410health\\evaluations\\codebase_residency\\410health_daily_task_routing_001.json",
       "stderr_tail": "",
-      "started_at": "2026-06-06T05:07:48.245255+00:00",
-      "completed_at": "2026-06-06T05:07:48.338111+00:00"
+      "started_at": "2026-06-06T05:10:42.497374+00:00",
+      "completed_at": "2026-06-06T05:10:42.578823+00:00"
     },
     {
       "name": "triage_note",
@@ -43,8 +43,8 @@
       "status": "passed",
       "stdout_tail": "410HEALTH AUTOPILOT TRIAGE NOTE\ntriage_status=no_action_required\nleader_decision_needed=false\nblocking_task_count=0\nreport=D:\\Program\\410health\\docs\\410health_autopilot_triage_note.md\nsummary=D:\\Program\\410health\\evaluations\\codebase_residency\\410health_autopilot_triage_note_001.json",
       "stderr_tail": "",
-      "started_at": "2026-06-06T05:07:48.338111+00:00",
-      "completed_at": "2026-06-06T05:07:48.418311+00:00"
+      "started_at": "2026-06-06T05:10:42.578823+00:00",
+      "completed_at": "2026-06-06T05:10:42.655338+00:00"
     }
   ],
   "routing_tasks": [
@@ -62,7 +62,7 @@
     "task_routing": "evaluations/codebase_residency/410health_daily_task_routing_001.json",
     "triage_note": "evaluations/codebase_residency/410health_autopilot_triage_note_001.json",
     "autopilot_report": "docs/410health_daily_autopilot_report.md",
-    "autopilot_summary": "evaluations/codebase_residency/410health_daily_autopilot_20260606_130539.json",
+    "autopilot_summary": "evaluations/codebase_residency/410health_daily_autopilot_20260606_130831.json",
     "autopilot_latest": "evaluations/codebase_residency/410health_daily_autopilot_latest.json",
     "autopilot_legacy": "evaluations/codebase_residency/410health_daily_autopilot_001.json"
   }
