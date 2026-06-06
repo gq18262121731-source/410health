@@ -1,0 +1,22 @@
+{
+  "phase": "SE-4.5",
+  "result": "passed",
+  "mode": "local_team_room",
+  "team_room": "docs/410health_lobster_team_room.md",
+  "message_queue": "evaluations/codebase_residency/410health_team_room_messages.json",
+  "daily_standup_message_created": true,
+  "leader_summary_created": true,
+  "next_owner_assigned": true,
+  "employees": [
+    "workflow_engineer_lobster",
+    "product_manager_lobster",
+    "qa_reviewer_lobster",
+    "safety_officer_lobster"
+  ],
+  "external_yuque_sync_attempted": false,
+  "yuque_token_provided": false,
+  "business_code_changed": false,
+  "deployment_attempted": false,
+  "dependency_install_attempted": false,
+  "git_push_attempted": false
+}
