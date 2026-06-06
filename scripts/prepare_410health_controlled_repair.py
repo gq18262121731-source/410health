@@ -42,6 +42,144 @@ TASK_CONFIG = {
             "git branch -D lobster/optimize-vite-chunk-size-001",
             "If merged later and regression appears, revert the merge commit with git revert <merge_commit> after leader approval."
         ]
+    },
+    "backend_fail": {
+        "recommended_branch": "fix/backend-pytest-failure-001",
+        "risk": "medium",
+        "problem_source": "backend_pytest_failed",
+        "severity": "blocking",
+        "blocks_daily_autopilot": True,
+        "allowed_scope": [
+            "tests/",
+            "backend/",
+            "agent/",
+            "docs/",
+            "evaluations/codebase_residency/"
+        ],
+        "prohibited_actions": [
+            "Do not install dependencies.",
+            "Do not deploy.",
+            "Do not push.",
+            "Do not auto-merge.",
+            "Do not change unrelated frontend files.",
+            "Do not edit secrets or production configuration."
+        ],
+        "verification_commands": [
+            "conda run -n helth pytest",
+            "python scripts/run_410health_daily_autopilot.py"
+        ],
+        "rollback": [
+            "git checkout master",
+            "git branch -D fix/backend-pytest-failure-001",
+            "If merged later and regression appears, revert the merge commit with git revert <merge_commit> after leader approval."
+        ]
+    },
+    "frontend_fail": {
+        "recommended_branch": "fix/frontend-check-failure-001",
+        "risk": "medium",
+        "problem_source": "frontend_check_failed",
+        "severity": "blocking",
+        "blocks_daily_autopilot": True,
+        "allowed_scope": [
+            "frontend/vue-dashboard/src/",
+            "frontend/vue-dashboard/package.json",
+            "frontend/vue-dashboard/vite.config.ts",
+            "docs/",
+            "evaluations/codebase_residency/"
+        ],
+        "prohibited_actions": [
+            "Do not install dependencies without leader approval.",
+            "Do not deploy.",
+            "Do not push.",
+            "Do not auto-merge.",
+            "Do not modify backend business logic.",
+            "Do not edit secrets or production configuration."
+        ],
+        "verification_commands": [
+            "npm run check --prefix frontend/vue-dashboard",
+            "python scripts/run_410health_daily_autopilot.py"
+        ],
+        "rollback": [
+            "git checkout master",
+            "git branch -D fix/frontend-check-failure-001",
+            "If merged later and regression appears, revert the merge commit with git revert <merge_commit> after leader approval."
+        ]
+    },
+    "dirty_workspace": {
+        "recommended_branch": "software-open-claw/inspect-dirty-workspace-001",
+        "risk": "low",
+        "problem_source": "git_status_has_uncommitted_or_untracked_changes",
+        "severity": "blocking_until_classified",
+        "blocks_daily_autopilot": True,
+        "allowed_scope": [
+            "docs/",
+            "evaluations/codebase_residency/"
+        ],
+        "prohibited_actions": [
+            "Do not restore, delete, or discard files without leader approval.",
+            "Do not commit source changes until ownership is classified.",
+            "Do not deploy.",
+            "Do not push.",
+            "Do not auto-merge."
+        ],
+        "verification_commands": [
+            "git status --short",
+            "python scripts/run_410health_daily_autopilot.py"
+        ],
+        "rollback": [
+            "No automatic rollback. Classify files first, then request leader approval for cleanup or commit."
+        ]
+    },
+    "warning": {
+        "recommended_branch": "docs/non-blocking-warning-triage-001",
+        "risk": "low",
+        "problem_source": "non_blocking_warning",
+        "severity": "non_blocking",
+        "blocks_daily_autopilot": False,
+        "allowed_scope": [
+            "docs/",
+            "evaluations/codebase_residency/",
+            "scripts/analyze_410health_frontend_bundle_warning.py"
+        ],
+        "prohibited_actions": [
+            "Do not change business code unless leader schedules optimization.",
+            "Do not install dependencies.",
+            "Do not deploy.",
+            "Do not push.",
+            "Do not auto-merge."
+        ],
+        "verification_commands": [
+            "python scripts/analyze_410health_frontend_bundle_warning.py",
+            "python scripts/run_410health_daily_autopilot.py"
+        ],
+        "rollback": [
+            "git checkout master",
+            "git branch -D docs/non-blocking-warning-triage-001"
+        ]
+    },
+    "dependency_block": {
+        "recommended_branch": "software-open-claw/dependency-block-triage-001",
+        "risk": "high",
+        "problem_source": "dependency_or_tooling_missing",
+        "severity": "blocking",
+        "blocks_daily_autopilot": True,
+        "allowed_scope": [
+            "docs/",
+            "evaluations/codebase_residency/"
+        ],
+        "prohibited_actions": [
+            "Do not install dependencies without leader approval.",
+            "Do not modify lockfiles without leader approval.",
+            "Do not deploy.",
+            "Do not push.",
+            "Do not auto-merge."
+        ],
+        "verification_commands": [
+            "python scripts/run_410health_daily_autopilot.py"
+        ],
+        "rollback": [
+            "No automatic rollback. Create install proposal with package, version, risk, and restore plan."
+        ]
     }
 }
 
@@ -51,7 +189,16 @@ def _load_task(task_id: str) -> dict:
     for item in backlog.get("items", []):
         if item.get("item_id") == task_id:
             return item
-    raise SystemExit(f"Unknown backlog task: {task_id}")
+    config = TASK_CONFIG.get(task_id)
+    if config:
+        return {
+            "item_id": task_id,
+            "source": config.get("problem_source"),
+            "severity": config.get("severity"),
+            "blocks_daily_autopilot": config.get("blocks_daily_autopilot", True),
+            "leader_decision_needed": True
+        }
+    raise SystemExit(f"Unknown repair task: {task_id}")
 
 
 def main() -> int:
@@ -63,9 +210,9 @@ def main() -> int:
         raise SystemExit(f"No repair template for task: {args.task}")
 
     item = _load_task(args.task)
-    triage = json.loads(TRIAGE_PATH.read_text(encoding="utf-8"))
+    triage = json.loads(TRIAGE_PATH.read_text(encoding="utf-8")) if TRIAGE_PATH.exists() else {}
     config = TASK_CONFIG[args.task]
-    oversized = triage.get("oversized_js_chunks", [{}])[0]
+    oversized = (triage.get("oversized_js_chunks") or [{}])[0]
 
     plan = {
         "phase": "SE-3.0",

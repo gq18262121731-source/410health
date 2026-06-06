@@ -1,0 +1,20 @@
+{
+  "phase": "SE-4.6",
+  "result": "passed",
+  "helper": "scripts/prepare_410health_controlled_repair.py",
+  "supported_tasks": [
+    "backend_fail",
+    "frontend_fail",
+    "dirty_workspace",
+    "warning",
+    "dependency_block",
+    "vite_chunk_size_warning"
+  ],
+  "validation_command": "python scripts/prepare_410health_controlled_repair.py --task frontend_fail",
+  "repair_plan_created": true,
+  "branch_not_created_without_approval": true,
+  "business_code_unchanged": true,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false
+}

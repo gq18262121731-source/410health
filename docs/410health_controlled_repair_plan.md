@@ -6,51 +6,50 @@
 phase = SE-3.0
 mode = plan_only
 plan_created = true
-task_id = vite_chunk_size_warning
+task_id = frontend_fail
 risk = medium
-recommended_branch = lobster/optimize-vite-chunk-size-001
+recommended_branch = fix/frontend-check-failure-001
 leader_approval_required = true
 ```
 
 ## Problem
 
 ```text
-source = echarts charting dependency
-observed_chunk = echarts-uvSR9kx1.js
-observed_size = 803.9 KB
-severity = non_blocking
-blocks_daily_autopilot = false
+source = frontend_check_failed
+observed_chunk = None
+observed_size = None KB
+severity = blocking
+blocks_daily_autopilot = true
 ```
 
 The current Vite chunk-size warning is non-blocking. This plan prepares a controlled optimization branch only if the leader approves.
 
 ## Allowed Scope
 
-- `frontend/vue-dashboard/src/components/agent/AgentChartAttachment.vue`
-- `frontend/vue-dashboard/src/components/*Chart*.vue`
+- `frontend/vue-dashboard/src/`
+- `frontend/vue-dashboard/package.json`
 - `frontend/vue-dashboard/vite.config.ts`
-- `docs/410health_frontend_bundle_warning_triage.md`
-- `evaluations/codebase_residency/410health_frontend_bundle_warning_triage_001.json`
+- `docs/`
+- `evaluations/codebase_residency/`
 
 ## Prohibited Actions
 
-- Do not install dependencies.
+- Do not install dependencies without leader approval.
 - Do not deploy.
 - Do not push.
 - Do not auto-merge.
-- Do not rewrite unrelated frontend routes.
-- Do not change backend business code.
+- Do not modify backend business logic.
+- Do not edit secrets or production configuration.
 
 ## Verification Commands
 
 - `npm run check --prefix frontend/vue-dashboard`
 - `python scripts/run_410health_daily_autopilot.py`
-- `python scripts/analyze_410health_frontend_bundle_warning.py`
 
 ## Rollback Plan
 
 - `git checkout master`
-- `git branch -D lobster/optimize-vite-chunk-size-001`
+- `git branch -D fix/frontend-check-failure-001`
 - `If merged later and regression appears, revert the merge commit with git revert <merge_commit> after leader approval.`
 
 ## Boundary
