@@ -1,0 +1,41 @@
+{
+  "phase": "SE-4.8",
+  "result": "readiness_created_not_deployed",
+  "backend": {
+    "start_command": "conda run -n helth uvicorn backend.main:app --host 127.0.0.1 --port 8000",
+    "default_port": 8000,
+    "health_check": "GET /healthz",
+    "data_mode_default": "mock",
+    "serial_enabled_default": false,
+    "mqtt_enabled_default": false
+  },
+  "frontend": {
+    "check_command": "npm run check --prefix frontend/vue-dashboard",
+    "build_tool": "vite",
+    "frontend_check": "passed",
+    "oversized_js_chunks": 0
+  },
+  "environment_review_required": [
+    ".env values",
+    ".env.example placeholders",
+    "AI provider keys",
+    "serial / mqtt mode",
+    "CORS policy",
+    "data persistence policy"
+  ],
+  "deployment_blockers": [
+    "production host not selected",
+    "service manager not selected",
+    "env/secrets review not completed",
+    "public exposure / CORS policy not approved",
+    "OpenClaw Gateway service config warning unresolved",
+    "rollback drill not executed"
+  ],
+  "rollback_plan_exists": true,
+  "actual_deployment_attempted": false,
+  "production_service_started": false,
+  "production_config_changed": false,
+  "public_port_opened": false,
+  "dependency_install_attempted": false,
+  "git_push_attempted": false
+}
