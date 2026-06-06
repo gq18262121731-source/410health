@@ -3,7 +3,7 @@
 ## Standup Snapshot
 
 ```text
-created_at = 2026-06-06T03:19:39.119109+00:00
+created_at = 2026-06-06T03:34:17.062951+00:00
 overall_status = pass
 backend_pytest = pass
 frontend_check = pass
@@ -29,7 +29,7 @@ git status
 Backend result:
 
 ```text
-95 passed in 110.38s (0:01:50)
+95 passed in 106.77s (0:01:46)
 ```
 
 Frontend result:
@@ -48,21 +48,3 @@ production_write = false
 deploy = false
 push = false
 ```
-
-## SE-4.5 Team Room Runtime
-
-```text
-phase = SE-4.5
-team_room_runtime = enabled
-external_yuque_sync = disabled_until_token_provided
-message_queue = evaluations/codebase_residency/410health_team_room_messages.json
-```
-
-Current standing assignments:
-
-| Employee | Responsibility |
-| --- | --- |
-| `workflow_engineer_lobster` | Run daily autopilot and maintain the verification chain. |
-| `product_manager_lobster` | Translate status into leader-facing summary and priority. |
-| `qa_reviewer_lobster` | Review failed checks and prepare repair evidence. |
-| `safety_officer_lobster` | Enforce dirty workspace, push, deploy, install, and approval boundaries. |
