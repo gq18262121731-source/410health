@@ -1,0 +1,34 @@
+{
+  "phase": "SE-4.7",
+  "result": "partially_verified_pr_blocked",
+  "branch_model": {
+    "master": "Software Open Claw mainline",
+    "main": "existing remote history branch; unchanged",
+    "feature_fix_docs_software_open_claw": "approved remote collaboration prefixes",
+    "lobster": "historical local branches; not pushed by default"
+  },
+  "verified": {
+    "feature_branch_push": "passed",
+    "remote_branch": "origin/docs/software-open-claw-remote-workflow-trial",
+    "business_code_changed": false
+  },
+  "blocked": {
+    "pr_created": false,
+    "reason": "GitHub collaborator permission unavailable",
+    "gh_cli_available": false,
+    "merged_after_approval": false,
+    "remote_branch_deleted_after_merge": false
+  },
+  "rules": {
+    "force_push": "prohibited",
+    "direct_push_main": "prohibited",
+    "direct_push_master": "prohibited_without_explicit_approval",
+    "push_all_branches": "prohibited",
+    "push_tags": "release_approval_required"
+  },
+  "deployment_attempted": false,
+  "dependency_install_attempted": false,
+  "main_changed": false,
+  "master_history_rewritten": false,
+  "lobster_branches_pushed": false
+}
