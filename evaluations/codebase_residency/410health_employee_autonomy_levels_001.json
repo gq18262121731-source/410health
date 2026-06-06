@@ -1,0 +1,32 @@
+{
+  "phase": "SE-5.6",
+  "result": "passed",
+  "default_mode": "controlled_autonomy",
+  "levels": {
+    "L0": "observe_report",
+    "L1": "propose",
+    "L2": "edit_low_risk_after_approval",
+    "L3": "edit_product_code_after_task_specific_approval",
+    "L4": "leader_only_deploy_merge_push_master"
+  },
+  "employees": {
+    "workflow_engineer_lobster": "L1",
+    "qa_reviewer_lobster": "L1",
+    "product_manager_lobster": "L0",
+    "safety_officer_lobster": "approval_gate"
+  },
+  "eligible_after_approval": {
+    "workflow_engineer_lobster": [
+      "L2_docs",
+      "L2_tests"
+    ],
+    "qa_reviewer_lobster": [
+      "L2_tests"
+    ]
+  },
+  "auto_deploy_allowed": false,
+  "auto_merge_allowed": false,
+  "auto_push_master_allowed": false,
+  "auto_dependency_install_allowed": false,
+  "business_code_edit_without_approval_allowed": false
+}

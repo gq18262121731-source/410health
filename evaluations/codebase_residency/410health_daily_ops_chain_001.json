@@ -1,6 +1,6 @@
 {
   "phase": "SE-1.7",
-  "created_at": "2026-06-06T04:59:03.665827+00:00",
+  "created_at": "2026-06-06T05:03:11.015375+00:00",
   "project_path": "D:\\Program\\410health",
   "overall_status": "passed",
   "steps_total": 3,
@@ -19,8 +19,8 @@
       "status": "passed",
       "stdout_tail": "410HEALTH DAILY RESIDENCY CHECK\ngit_status=passed\nbackend_pytest=passed\nfrontend_check=passed\noverall_status=passed\nreport=D:\\Program\\410health\\docs\\410health_daily_residency_check_report.md\nsummary=D:\\Program\\410health\\evaluations\\codebase_residency\\410health_daily_residency_check_003.json",
       "stderr_tail": "",
-      "started_at": "2026-06-06T04:59:03.665827+00:00",
-      "completed_at": "2026-06-06T05:01:10.617328+00:00"
+      "started_at": "2026-06-06T05:03:11.015375+00:00",
+      "completed_at": "2026-06-06T05:05:20.199614+00:00"
     },
     {
       "name": "daily_ops_summary",
@@ -30,8 +30,8 @@
       "status": "passed",
       "stdout_tail": "410HEALTH DAILY OPS SUMMARY\nsource=D:\\Program\\410health\\evaluations\\codebase_residency\\410health_daily_residency_check_003.json\nops_report=D:\\Program\\410health\\docs\\410health_daily_ops_summary.md\nteam_room=D:\\Program\\410health\\docs\\410health_lobster_team_room.md\noverall_status=pass",
       "stderr_tail": "",
-      "started_at": "2026-06-06T05:01:10.617328+00:00",
-      "completed_at": "2026-06-06T05:01:10.713576+00:00"
+      "started_at": "2026-06-06T05:05:20.199614+00:00",
+      "completed_at": "2026-06-06T05:05:20.303099+00:00"
     },
     {
       "name": "residency_history_index",
@@ -41,8 +41,8 @@
       "status": "passed",
       "stdout_tail": "410HEALTH RESIDENCY HISTORY INDEX\nruns=3\nlatest_status=passed\nindex=D:\\Program\\410health\\evaluations\\codebase_residency\\410health_residency_history_index.json\nsummary=D:\\Program\\410health\\docs\\410health_residency_history_summary.md",
       "stderr_tail": "",
-      "started_at": "2026-06-06T05:01:10.713576+00:00",
-      "completed_at": "2026-06-06T05:01:10.797264+00:00"
+      "started_at": "2026-06-06T05:05:20.303099+00:00",
+      "completed_at": "2026-06-06T05:05:20.405975+00:00"
     }
   ],
   "artifacts": {

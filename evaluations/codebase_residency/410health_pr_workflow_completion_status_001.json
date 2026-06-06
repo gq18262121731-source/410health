@@ -1,0 +1,16 @@
+{
+  "phase": "SE-5.5",
+  "result": "blocked_by_github_collaborator_permission",
+  "feature_branch": "docs/software-open-claw-code-edit-permission-trial-001",
+  "remote_feature_branch_pushed": true,
+  "pr_created": false,
+  "pr_error": "must be a collaborator",
+  "option_a": "leader_creates_pr_through_github_web",
+  "option_b": "grant_collaborator_permission_and_use_api_or_gh_cli",
+  "force_push_attempted": false,
+  "master_push_attempted": false,
+  "main_push_attempted": false,
+  "auto_merge_attempted": false,
+  "deployment_attempted": false,
+  "dependency_install_attempted": false
+}
