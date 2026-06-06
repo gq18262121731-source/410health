@@ -4,7 +4,7 @@
 
 ```text
 project = D:\Program\410health
-created_at = 2026-06-05T03:06:22.871165+00:00
+created_at = 2026-06-06T03:17:02.113514+00:00
 overall_status = passed
 business_code_changed = false
 frontend_failure_reason = none
@@ -21,26 +21,7 @@ frontend_failure_reason = none
 ## Git Status
 
 ```text
- M docs/410health_autopilot_triage_note.md
- M docs/410health_daily_autopilot_report.md
- M docs/410health_daily_ops_summary.md
- M docs/410health_daily_residency_check_report.md
- M docs/410health_daily_task_routing.md
- M docs/410health_lobster_team_room.md
- M docs/410health_residency_history_summary.md
- M evaluations/codebase_residency/410health_autopilot_triage_note_001.json
- M evaluations/codebase_residency/410health_daily_autopilot_001.json
- M evaluations/codebase_residency/410health_daily_autopilot_latest.json
- M evaluations/codebase_residency/410health_daily_ops_chain_001.json
- M evaluations/codebase_residency/410health_daily_residency_check_003.json
- M evaluations/codebase_residency/410health_daily_task_routing_001.json
- M evaluations/codebase_residency/410health_residency_history_index.json
-?? docs/410health_openclaw_local_bypass_setup_report.md
-?? evaluations/codebase_residency/410health_daily_autopilot_20260605_101330.json
-?? evaluations/codebase_residency/410health_daily_autopilot_20260605_101543.json
-?? evaluations/codebase_residency/410health_daily_autopilot_20260605_110320.json
-?? evaluations/codebase_residency/410health_openclaw_local_bypass_readonly_entry_001.json
-?? scripts/software_open_claw_readonly_entry.py
+clean
 ```
 
 ## Backend Pytest Tail
@@ -83,7 +64,7 @@ tests\test_serial_reader.py .......                                      [100%]
 
 
 
-======================= 95 passed in 101.49s (0:01:41) ========================
+======================= 95 passed in 110.38s (0:01:50) ========================
 
 
 ```
@@ -121,7 +102,7 @@ computing gzip size...
 [2mdist/[22m[36massets/index-CLiEOIty.js    [39m[1m[2m195.34 kB[22m[1m[22m[2m │ gzip:  61.61 kB[22m
 [2mdist/[22m[36massets/vendor-D13T46Hj.js   [39m[1m[2m358.75 kB[22m[1m[22m[2m │ gzip: 133.82 kB[22m
 [2mdist/[22m[36massets/echarts-DD6hS6mV.js  [39m[1m[2m414.50 kB[22m[1m[22m[2m │ gzip: 139.82 kB[22m
-[32m✓ built in 6.17s[39m
+[32m✓ built in 7.58s[39m
 ```
 
 ## Notes
