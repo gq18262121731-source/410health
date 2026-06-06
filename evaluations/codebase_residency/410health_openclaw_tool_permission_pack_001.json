@@ -1,0 +1,32 @@
+{
+  "phase": "SE-4.4",
+  "result": "passed",
+  "project": "410health",
+  "tool_permission_pack": "D:/Program/software_open_claw_local_config/410health_tool_permission_pack.json",
+  "tool_registry_loaded": true,
+  "dangerous_action_blocked": true,
+  "daily_autopilot_tool_allowed": true,
+  "auto_allowed_tools": [
+    "python scripts/run_410health_daily_autopilot.py",
+    "python scripts/build_410health_daily_ops_summary.py",
+    "python scripts/build_410health_residency_history_index.py",
+    "python scripts/route_410health_daily_tasks.py",
+    "python scripts/build_410health_autopilot_triage_note.py"
+  ],
+  "approval_required_actions": [
+    "git commit",
+    "git push",
+    "git merge",
+    "dependency install",
+    "deployment",
+    "file delete",
+    "business code edit",
+    "remote branch delete",
+    "gateway service repair",
+    "daemon install"
+  ],
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false
+}
