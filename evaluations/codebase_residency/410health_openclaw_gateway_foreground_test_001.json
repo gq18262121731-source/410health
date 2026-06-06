@@ -1,0 +1,39 @@
+{
+  "phase": "SE-4.3",
+  "result": "passed_with_service_config_warning",
+  "gateway_listening": true,
+  "gateway_health": "OK",
+  "gateway_bind": "127.0.0.1",
+  "gateway_port": 18789,
+  "remote_exposure": false,
+  "openclaw_version": "2026.6.1",
+  "config_validation": "passed",
+  "connectivity_probe": "ok",
+  "dashboard": "http://127.0.0.1:18789/",
+  "service_observation": {
+    "service_registered": true,
+    "runtime": "running",
+    "gateway_version": "2026.6.1",
+    "service_installed_by_this_phase": false,
+    "daemon_install_attempted": false,
+    "service_config_out_of_date": true,
+    "service_installed_by_older_openclaw": "2026.4.19-beta.2",
+    "service_config_contains_managed_env_values": true
+  },
+  "boundaries": {
+    "remote_exposure_enabled": false,
+    "daemon_install_attempted": false,
+    "doctor_repair_attempted": false,
+    "channel_registration_attempted": false,
+    "business_code_changed": false,
+    "dependency_install_attempted": false,
+    "deployment_attempted": false,
+    "git_push_attempted": false
+  },
+  "next_decision_required": [
+    "keep_current_service_as_local_only",
+    "run_openclaw_doctor_inspect_only",
+    "repair_or_reinstall_gateway_service",
+    "stop_gateway_after_test"
+  ]
+}
