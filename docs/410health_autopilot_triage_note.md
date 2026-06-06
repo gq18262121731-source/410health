@@ -4,25 +4,25 @@
 
 ```text
 phase = SE-2.5
-triage_status = no_action_required
+triage_status = action_required
 leader_decision_needed = false
-blocking_task_count = 0
+blocking_task_count = 1
 approval_task_count = 0
-recommended_next_owner = workflow_engineer_lobster
+recommended_next_owner = safety_officer_lobster
 ```
 
-Autopilot found no blocking issue.
+Autopilot detected blocking work that needs triage.
 
 ## Routed Tasks
 
 | Task | Owner | Priority | Reason | Leader Approval |
 | --- | --- | --- | --- | --- |
-| continue_observation | workflow_engineer_lobster | `normal` | daily_ops_chain_passed | no |
+| inspect_dirty_workspace | safety_officer_lobster | `high` | git_status_has_uncommitted_or_untracked_changes | no |
 
 ## Recommended Next Action
 
 ```text
-Continue normal observation; keep non-blocking warnings in backlog.
+Inspect changed files before authorizing any code task.
 ```
 
 ## Prohibited Actions

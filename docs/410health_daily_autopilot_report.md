@@ -4,15 +4,15 @@
 
 ```text
 phase = SE-2.6
-run_id = 20260606_125134
-autopilot_status = passed
+run_id = 20260606_125638
+autopilot_status = needs_attention
 daily_ops_chain = passed
 task_routing = passed
 triage_note = passed
-triage_status = no_action_required
+triage_status = action_required
 leader_decision_needed = false
-blocking_task_count = 0
-recommended_next_owner = workflow_engineer_lobster
+blocking_task_count = 1
+recommended_next_owner = safety_officer_lobster
 ```
 
 The daily autopilot ran the Software Open Claw operating chain, task router, and triage note generator in one command.
@@ -21,7 +21,7 @@ The daily autopilot ran the Software Open Claw operating chain, task router, and
 
 | Task | Owner | Priority | Reason |
 | --- | --- | --- | --- |
-| continue_observation | workflow_engineer_lobster | `normal` | daily_ops_chain_passed |
+| inspect_dirty_workspace | safety_officer_lobster | `high` | git_status_has_uncommitted_or_untracked_changes |
 
 ## Boundary
 

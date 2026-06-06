@@ -1,0 +1,20 @@
+{
+  "phase": "SE-5.4",
+  "result": "passed",
+  "risk": "low",
+  "patch_applied": true,
+  "patch_scope": [
+    "docs"
+  ],
+  "changed_files": [
+    "docs/410health_controlled_patch_application_trial.md"
+  ],
+  "backend_code_changed": false,
+  "frontend_code_changed": false,
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "push_target": "feature/docs branch only",
+  "merge_attempted": false,
+  "leader_approval_required_for_merge": true
+}

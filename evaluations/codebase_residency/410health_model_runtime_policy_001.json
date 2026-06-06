@@ -1,0 +1,20 @@
+{
+  "phase": "SE-5.2",
+  "model_api_configured": true,
+  "policy_path": "D:\\Program\\software_open_claw_local_config\\model_runtime_policy.json",
+  "provider": "openclaw_default_runtime",
+  "primary_model": "deepseek-ai/DeepSeek-V3.2",
+  "fallback_model": "summary_triage_model",
+  "api_key_env_var": "OPENCLAW_MODEL_API_KEY",
+  "api_key_not_committed": true,
+  "external_api_call_attempted": false,
+  "test_prompt_success": true,
+  "test_prompt_scope": "policy_validation_only",
+  "secret_redaction_test": "passed",
+  "token_budget_logged": true,
+  "prohibited_inputs_count": 6,
+  "auto_apply_generated_patch_allowed": false,
+  "auto_push_allowed": false,
+  "auto_merge_allowed": false,
+  "auto_deploy_allowed": false
+}

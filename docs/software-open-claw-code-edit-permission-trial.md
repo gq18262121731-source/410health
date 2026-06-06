@@ -4,7 +4,7 @@
 
 ```text
 phase = SE-5.1
-result = validated_pending_push
+result = passed
 branch = docs/software-open-claw-code-edit-permission-trial-001
 risk = low
 ```
@@ -38,6 +38,8 @@ wait for leader PR approval
 frontend_check = passed
 daily_autopilot_before_commit = needs_attention
 dirty_workspace_reason = authorized low-risk docs/evaluation trial files
+daily_autopilot_after_commit = passed
+remote_feature_branch_pushed = true
 ```
 
 The first autopilot run correctly routed the uncommitted workspace to `safety_officer_lobster`. This is expected during the trial and must clear after the local commit.
