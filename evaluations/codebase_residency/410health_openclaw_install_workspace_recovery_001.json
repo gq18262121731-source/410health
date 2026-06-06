@@ -1,0 +1,21 @@
+{
+  "phase": "SE-4.2R",
+  "result": "archived_dirty_autopilot_outputs",
+  "branch": "software-open-claw/local-install-archive-001",
+  "business_code_dirty": false,
+  "backend_code_dirty": false,
+  "frontend_code_dirty": false,
+  "autopilot_generated_files_dirty": true,
+  "action": "commit_generated_autopilot_outputs",
+  "commit_message": "docs: archive openclaw install autopilot refresh",
+  "business_code_changed": false,
+  "dependency_install_attempted": false,
+  "deployment_attempted": false,
+  "git_push_attempted": false,
+  "merge_attempted": false,
+  "expected_next_verification": {
+    "git_status_clean": true,
+    "autopilot_status": "passed",
+    "blocking_task_count": 0
+  }
+}
